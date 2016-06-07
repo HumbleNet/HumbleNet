@@ -29,9 +29,8 @@ ha_bool humblenet_signaling_connect() {
 	LOG("connecting to signaling server \"%s\" with gameToken \"%s\" \n", humbleNetState.signalingServerAddr.c_str(), humbleNetState.gameToken.c_str());
 
 	humbleNetState.p2pConn.reset(new P2PSignalConnection);
-	humbleNetState.p2pConn->wsi = internal_connect_websocket(humbleNetState.signalingServerAddr.c_str(), "humblepeer");
 
-	if (humbleNetState.p2pConn->wsi == NULL) {
+	if (!humbleNetState.p2pConn->connect()) {
 		humbleNetState.p2pConn.reset();
 		// TODO: can we get more specific reason ?
 		humblenet_set_error("WebSocket connection to signaling server failed");
@@ -48,16 +47,15 @@ namespace humblenet {
 	ha_bool sendP2PMessage(P2PSignalConnection *conn, const uint8_t *buff, size_t length)
 	{
 		if( conn == NULL ) {
-			// this equates to trhe state where we never established / got disconencted
-			// from the peer server.
-
+			// this means that the signaling server was never setup. Or we are in the process of
+			// a full shutdown.
+			LOG("Attempted to send a message to peer server when its not initialized!!\n");
 			return false;
 		}
 
 		assert(conn != NULL);
-		if (conn->wsi == NULL) {
-			// this really shouldn't happen but apparently it can
-			// if the game hasn't properly opened a signaling connection
+		if ( ! conn->valid() ) {
+			conn->connect();
 			return false;
 		}
 
@@ -65,8 +63,13 @@ namespace humblenet {
 			HUMBLENET_UNGUARD();
 
 			int ret = internal_write_socket(conn->wsi, (const void*)buff, length );
+			if( ret < 0 ) {
+				conn->disconnect();
+				conn->connect();
+				return false;
+			}
 
-			return ret == length;
+			return true;
 		}
 	}
 
@@ -94,6 +97,10 @@ namespace humblenet {
 			// this one must be obsolete, close it
 			return -1;
 		}
+
+		// mark us connected
+		conn->state = SIGNALING_CONNECTED;
+
 		// platform info
 		std::string pinfo;
 #if defined(__APPLE__) || defined(__linux__)
@@ -160,7 +167,7 @@ namespace humblenet {
 		if (!helloSuccess) {
 			// something went wrong, close the connection
 			// don't humblenet_set_error, sendHelloServer should have done that
-			humbleNetState.p2pConn.reset();
+			humbleNetState.p2pConn->reconnect();
 			return -1;
 		}
 		return 0;
@@ -194,7 +201,7 @@ namespace humblenet {
 		ha_bool retval = parseMessage(conn->recvBuf, p2pSignalProcess, NULL);
 		if (!retval) {
 			// error while parsing a message, close the connection
-			humbleNetState.p2pConn.reset();
+			humbleNetState.p2pConn->reconnect();
 			return -1;
 		}
 		return 0;
@@ -228,7 +235,7 @@ namespace humblenet {
 		if (retval < 0) {
 			// error while sending, close the connection
 			// TODO: should try to reopen after some time
-			humbleNetState.p2pConn.reset();
+			humbleNetState.p2pConn->reconnect();
 			return -1;
 		}
 
@@ -246,7 +253,7 @@ namespace humblenet {
 			if( s == humbleNetState.p2pConn->wsi ) {
 
 				// handle retry...
-				humbleNetState.p2pConn.reset();
+				humbleNetState.p2pConn->reconnect();
 
 				return 0;
 			}
@@ -269,6 +276,77 @@ namespace humblenet {
 		callbacks.on_destroy = on_disconnect; // on connection failure to establish we only get a destroy, not a disconnect.
 
 		internal_register_protocol( humbleNetState.context, "humblepeer", &callbacks );
+	}
+
+	static void timed_reconnect( void* data ) {
+		P2PSignalConnection* p2pConn = reinterpret_cast<P2PSignalConnection*>( data );
+		if( p2pConn != humbleNetState.p2pConn.get() ) {
+			LOG("Ignoring delayed reconnect. Connection no longer valid\n");
+			return;
+		}
+
+		if( p2pConn->state != SIGNALING_WAITING ) {
+			LOG("Ignoring delayed reconnect. Already reconnected\n");
+			return;
+		}
+
+		p2pConn->state = SIGNALING_DISCONNECTED;
+		p2pConn->connect();
+	}
+
+	P2PSignalConnection::P2PSignalConnection()
+	: wsi(NULL)
+	, state( SIGNALING_DISCONNECTED )
+	, last_attempt( 0 )
+	{
+	}
+
+	P2PSignalConnection::~P2PSignalConnection(){
+		
+	}
+
+	void P2PSignalConnection::disconnect()
+	{
+		if( wsi ) {
+			LOG("Disconnecting from signaling server\n");
+			internal_close_socket(wsi);
+			wsi = NULL;
+#pragma message("TODO: notify humblenet so it can do some cleanup of pending things that require the server be there?")
+		}
+		state = SIGNALING_DISCONNECTED;
+	}
+
+	bool P2PSignalConnection::valid() {
+		bool ret = wsi != NULL && state == SIGNALING_CONNECTED;
+
+		return ret;
+	}
+
+	bool P2PSignalConnection::connect() {
+		if( state != SIGNALING_DISCONNECTED )
+			return false;
+
+		uint64_t now = sys_milliseconds();
+
+		int64_t delay = (5*1000 + last_attempt ) - now;
+		if( last_attempt && delay > 0 ) {
+			state = SIGNALING_WAITING;
+			humblenet_timer( &timed_reconnect, delay, this );
+			return false;
+		}
+
+		last_attempt = now;
+
+		state = SIGNALING_CONNECTING;
+		wsi = internal_connect_websocket(humbleNetState.signalingServerAddr.c_str(), "humblepeer");
+		LOG("connecting to signaling server...\n");
+
+		return wsi != NULL;
+	}
+
+	bool P2PSignalConnection::reconnect() {
+		 disconnect();
+		 return connect();
 	}
 }
 
@@ -365,11 +443,19 @@ static ha_bool p2pSignalProcess(const humblenet::HumblePeer::Message *msg, void 
 			PeerId peer = static_cast<PeerId>(hello->peerId());
 
 			if (humbleNetState.myPeerId != 0) {
-				LOG("Error: got HelloClient but we already have a peer id\n");
-				return true;
+				if( humbleNetState.myPeerId != peer ) {
+					LOG("WANRING: Got new peerId from server after reconnect\n");
+				}
+			//    LOG("Error: got HelloClient but we already have a peer id\n");
+			//    return true;
 			}
+			
 			LOG("My peer id is %u\n", peer);
 			humbleNetState.myPeerId = peer;
+
+			auto reconnectToken = hello->reconnectToken();
+
+			humbleNetState.reconnectToken = reconnectToken ? reconnectToken->c_str() : "";
 
 			humbleNetState.iceServers.clear();
 

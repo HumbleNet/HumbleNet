@@ -6,21 +6,28 @@
 #include <vector>
 
 namespace humblenet {
+    enum SignalingState {
+        SIGNALING_DISCONNECTED,
+        SIGNALING_WAITING,
+        SIGNALING_CONNECTING,
+        SIGNALING_CONNECTED
+    };
+
     struct P2PSignalConnection {
         internal_socket_t *wsi;
+        SignalingState state;
+        uint64_t last_attempt;
         std::vector<uint8_t> recvBuf;
         std::vector<char> sendBuf;
 
-        P2PSignalConnection()
-        : wsi(NULL)
-        {
-        }
+        P2PSignalConnection();
+        ~P2PSignalConnection();
 
-        void disconnect() {
-            if( wsi )
-                internal_close_socket(wsi);
-            wsi = NULL;
-        }
+        bool connect();
+        bool valid();
+        void disconnect();
+
+        bool reconnect();
     };
     
     void register_protocol( internal_context_t* contet );
