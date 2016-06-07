@@ -36,6 +36,7 @@
 #include "logging.h"
 #include "config.h"
 #include "game_db.h"
+#include "peer_db.h"
 
 using namespace humblenet;
 
@@ -174,6 +175,10 @@ int callback_humblepeer(struct libwebsocket_context *context
 			if (conn->peerId != 0) {
 				// remove it from list of peers
 				assert(conn->game != NULL);
+
+				// update the peers state.
+				peerServer->savePeerState( conn );
+
 				auto it2 = conn->game->peers.find(conn->peerId);
 				// if peerId is valid (nonzero)
 				// this MUST exist
@@ -371,7 +376,17 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 
-	peerServer.reset(new Server(gameDB));
+	std::shared_ptr<PeerDB> peerDB;
+	if (config.peerDB.empty()) {
+		peerDB.reset(new PeerDBAnonymous());
+	} else if (config.peerDB.compare(0, 5, "flat:") == 0) {
+		peerDB.reset(new PeerDBFlatFile(config.peerDB.substr(5)));
+	} else {
+		LOG_WARNING("Unknown DB type: %s\n", config.peerDB.c_str());
+		exit(1);
+	}
+
+	peerServer.reset(new Server(gameDB, peerDB));
 	peerServer->stunServerAddress = config.stunServerAddress;
 
 	struct lws_context_creation_info info;
@@ -401,6 +416,8 @@ int main(int argc, char *argv[]) {
 		libwebsocket_service(peerServer->context, 200);
 	}
 
+	LOG_INFO("Shutting down peer server...\n");
+	peerServer->shutdown();
 	peerServer.reset();
 
 	if (!config.pidFile.empty()) {

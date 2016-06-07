@@ -33,6 +33,7 @@ void tConfigOptions::parseFile(const std::string& file)
 		CONFIG_STRING_EX(logfile, logFile)
 		CONFIG_STRING(stunServerAddress)
 		CONFIG_STRING(gameDB)
+		CONFIG_STRING(peerDB)
 	}
 }
 

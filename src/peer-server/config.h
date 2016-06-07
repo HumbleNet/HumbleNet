@@ -14,6 +14,7 @@ struct tConfigOptions {
 	std::string logFile;
 	std::string stunServerAddress;
 	std::string gameDB;
+	std::string peerDB;
 
 	tConfigOptions() : port(8080), daemon(false) {}
 

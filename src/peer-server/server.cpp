@@ -2,11 +2,13 @@
 #include "game_db.h"
 #include "logging.h"
 #include "hmac.h"
+#include "peer_db.h"
 
 namespace humblenet {
-	Server::Server(std::shared_ptr<GameDB> _gameDB)
+	Server::Server(std::shared_ptr<GameDB> _gameDB, std::shared_ptr<PeerDB> _peerDB)
 	: context(NULL)
 	, m_gameDB(_gameDB)
+	, m_peerDB(_peerDB)
 	{
 	}
 
@@ -74,6 +76,28 @@ namespace humblenet {
 		return it->second.get();
 	}
 
+	bool Server::getPeerByToken(const std::string& token, PeerRecord& rec ) {
+		return m_peerDB->findByToken( token, rec );
+	}
+
+	void Server::savePeerState(const P2PSignalConnection* conn) {
+		// if client has a reconnectToken, save thier state so they can reconnect.
+		if( ! conn->reconnectToken.empty() ) {
+			PeerRecord record;
+
+			record.game_id = conn->game->gameId;
+			record.token = conn->reconnectToken;
+			record.peer_id = conn->peerId;
+
+			for( auto it = conn->game->aliases.begin(); it != conn->game->aliases.end(); ++ it ) {
+				if( it->second == conn->peerId )
+					record.aliases.insert( it->first );
+			}
+
+			m_peerDB->insert( record );
+		}
+	}
+
 	void Server::triggerWrite(struct libwebsocket *wsi)
 	{
 		libwebsocket_callback_on_writable(context, wsi);
@@ -83,6 +107,15 @@ namespace humblenet {
 	{
 		if( ! stunServerAddress.empty() ) {
 			servers.emplace_back(stunServerAddress);
+		}
+	}
+
+	void Server::shutdown() {
+		// save all peer state
+		for( auto it = games.begin(); it != games.end(); ++it ) {
+			for( auto peer = it->second->peers.begin(); peer != it->second->peers.end(); ++ peer ) {
+				savePeerState( peer->second );
+			}
 		}
 	}
 }

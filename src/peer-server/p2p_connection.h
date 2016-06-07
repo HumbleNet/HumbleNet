@@ -25,6 +25,7 @@ namespace humblenet {
 		struct libwebsocket *wsi;
 		PeerId peerId;
 		HumblePeerState state;
+		std::string reconnectToken;
 
 		bool webRTCsupport;
 		bool trickleICE;

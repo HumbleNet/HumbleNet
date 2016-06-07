@@ -12,6 +12,7 @@ struct libwebsocket;
 
 namespace humblenet {
 	class GameDB;
+	class PeerDB;
 
 	struct Server {
 		struct libwebsocket_context *context;
@@ -25,14 +26,18 @@ namespace humblenet {
 		std::string stunServerAddress;
 
 
-		Server(std::shared_ptr<GameDB> _gameDB);
+		Server(std::shared_ptr<GameDB> _gameDB, std::shared_ptr<PeerDB> _peerDB);
 
 		Game *getVerifiedGame(const HumblePeer::HelloServer* hello);
 		void populateStunServers(std::vector<ICEServer>& servers);
 		void triggerWrite(struct libwebsocket* wsi);
 
+		bool getPeerByToken(const std::string& token, struct PeerRecord& rec );
+		void savePeerState(const P2PSignalConnection* peer);
+		void shutdown();
 	private:
 		std::shared_ptr<GameDB> m_gameDB;
+		std::shared_ptr<PeerDB> m_peerDB;
 	};
 
 }

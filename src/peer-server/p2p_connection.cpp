@@ -3,9 +3,11 @@
 #include "logging.h"
 #include "game.h"
 #include "server.h"
+#include "peer_db.h"
 
 #include "humblenet_utils.h"
 
+#include <sstream>
 
 namespace humblenet {
 	ha_bool P2PSignalConnection::processMsg(const HumblePeer::Message* msg)
@@ -194,8 +196,49 @@ namespace humblenet {
 					}
 				}
 
-				// generate peer id for this peer
-				peerId = this->game->generateNewPeerId();
+				auto reconnectToken = hello->reconnectToken();
+				if( reconnectToken ) {
+					PeerRecord record;
+
+					if( ! peerServer->getPeerByToken(reconnectToken->c_str(), record ) ) {
+						LOG_INFO("Got reconnect token from client that is no longer valid.\n");
+						peerId = this->game->generateNewPeerId();
+					} else if( record.game_id != this->game->gameId ) {
+						LOG_INFO("Got reconnect token from client, but its not associated with the request game.\n");
+						peerId = this->game->generateNewPeerId();
+					} else {
+						peerId = record.peer_id;
+
+						LOG_INFO("Re-establishing state for peer: %u\n", peerId);
+
+						for( auto it = record.aliases.begin(); it  != record.aliases.end(); ++it ) {
+							this->game->aliases.insert( std::make_pair( *it, peerId ) );
+						}
+
+/*
+						// transfer state from old instance to this one....
+						auto sit = this->game->peers.find( peerId );
+						if( sit != this->game->peers.end() ) {
+							// copy connected peers
+							this->connectedPeers.insert(sit->second->connectedPeers.begin(), sit->second->connectedPeers.end());
+
+							// update all peers with new P2PSignalingConnection
+							for( auto pit = this->game->peers.begin(); pit != this->game->peers.end(); ++pit ) {
+								auto found = pit->second->connectedPeers.find( sit->second );
+								if( found != pit->second->connectedPeers.end() ) {
+									pit->second->connectedPeers.erase(found);
+									pit->second->connectedPeers.insert(this);
+								}
+							}
+						}
+*/
+					}
+
+				} else {
+					// generate peer id for this peer
+					peerId = this->game->generateNewPeerId();
+				}
+
 				LOG_INFO("Got hello from \"%s\" (peer %u, game %u, platform: %s)\n", url.c_str(), peerId, this->game->gameId, platform ? platform->c_str(): "");
 
 				game->peers.insert(std::make_pair(peerId, this));
@@ -209,9 +252,9 @@ namespace humblenet {
 				peerServer->populateStunServers(iceServers);
 
 				// send hello to client
-				std::string reconnectToken = "";
-	#pragma message ("TODO implement reconnect tokens")
-				sendHelloClient(this, peerId, reconnectToken, iceServers);
+				this->reconnectToken = ( std::stringstream() << random() ).str();
+
+				sendHelloClient(this, peerId, this->reconnectToken, iceServers);
 			}
 				break;
 
