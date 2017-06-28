@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
+    <ProductVersion>10.0.0</ProductVersion>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{1AA564C8-C4D4-4C36-8EB0-2BFA1E2DECBB}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>TestPeer</RootNamespace>
+    <AssemblyName>TestPeer</AssemblyName>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
+    <DebugSymbols>True</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>False</Optimize>
+    <OutputPath>bin\Debug</OutputPath>
+    <DefineConstants>DEBUG;</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>x86</PlatformTarget>
+    <Externalconsole>True</Externalconsole>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
+    <DebugType>none</DebugType>
+    <Optimize>True</Optimize>
+    <OutputPath>bin\Release</OutputPath>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>x86</PlatformTarget>
+    <Externalconsole>True</Externalconsole>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.cs" />
+    <Compile Include="TestPeer.cs" />
+    <Compile Include="humblenet.cs">
+      <Link>humblenet.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\ByteBuffer.cs">
+      <Link>FlatBuffers\ByteBuffer.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\FlatBufferBuilder.cs">
+      <Link>FlatBuffers\FlatBufferBuilder.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\FlatBufferConstants.cs">
+      <Link>FlatBuffers\FlatBufferConstants.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\Offset.cs">
+      <Link>FlatBuffers\Offset.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\Struct.cs">
+      <Link>FlatBuffers\Struct.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\Table.cs">
+      <Link>FlatBuffers\Table.cs</Link>
+    </Compile>
+    <Compile Include="test_peer.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
+  <ItemGroup>
+    <Folder Include="FlatBuffers\" />
+  </ItemGroup>
+</Project>

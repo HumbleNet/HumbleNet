@@ -1,0 +1,239 @@
+{
+	"typedefs": [
+		{
+			"typedef": "PeerId",
+			"type": "uint32_t",
+			"cstype": {
+				"type": "int",
+				"mapped": "UInt32"
+			}
+		}
+		,{
+			"typedef": "ha_bool",
+			"type": "uint8_t",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"bool"
+			}
+		}
+		,{"_comment":"Miscellaneous C# Mappings"}
+		,{
+			"typedef": "PeerId *",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"out UInt32"
+			}
+		}
+		,{
+			"typedef": "const char *",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"string"
+			}
+		}
+		,{
+			"typedef": "char *",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"string"
+			}
+		}
+		,{
+			"typedef": "void *",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"byte[]"
+			}
+		}
+		,{
+			"typedef": "const void *",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"byte[]"
+			}
+		}
+		,{
+			"typedef": "uint32_t",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"UInt32"
+			}
+		}
+		,{
+			"typedef": "uint32_t *",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"out UInt32"
+			}
+		}
+		,{
+			"typedef": "uint8_t",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"byte"
+			}
+		}
+		,{
+			"typedef": "int *",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"out int"
+			}
+		}
+	]
+	,"enums": [
+		{
+			"enumname": "SendMode",
+			"values": [
+				 { "name": "SEND_RELIABLE", "value": "0" }
+				,{ "name": "SEND_RELIABLE_BUFFERED", "value": "1"}
+			]
+		}
+	]
+	,"structs": [
+	]
+	,"functions": [
+		{"_comment": "Initialization and Shutdown"}
+		,{
+			"functionname": "humblenet_init",
+			"returntype": "ha_bool"
+		}
+		,{
+			"functionname": "humblenet_shutdown",
+			"returntype": "void"
+		}
+		,{"_comment": "Error Handling"}
+		,{
+			"functionname": "humblenet_get_error",
+			"returntype": "const char *"
+		}
+		,{
+			"functionname": "humblenet_set_error",
+			"returntype": "void",
+			"params": [
+				{  "paramname": "error", "paramtype": "const char *"}
+			]
+		}
+		,{
+			"functionname": "humblenet_clear_error",
+			"returntype": "void"
+		}
+		,{
+			"functionname": "humblenet_set_hint",
+			"returntype": "ha_bool",
+			"params": [
+				 {  "paramname": "name", "paramtype": "const char *"}
+				,{  "paramname": "value", "paramtype": "const char *"}
+			]
+		}
+		,{
+			"functionname": "humblenet_get_hint",
+			"returntype": "const char *",
+			"params": [
+				{  "paramname": "name", "paramtype": "const char *"}
+			]
+		}
+		,{"_comment": "WebRTC / P2P Support"}
+		,{
+			"functionname": "humblenet_p2p_supported",
+			"returntype": "ha_bool"
+		}
+		,{"_comment": "P2P Interface"}
+		,{
+			"functionname": "humblenet_p2p_is_initialized",
+			"returntype": "ha_bool"
+		}
+		,{
+			"functionname": "humblenet_p2p_init",
+			"returntype": "ha_bool",
+			"params": [
+				 {  "paramname": "server", "paramtype": "const char *"}
+				,{  "paramname": "client_token", "paramtype": "const char *"}
+				,{  "paramname": "client_secret", "paramtype": "const char *"}
+				,{  "paramname": "auth_token", "paramtype": "const char *"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_get_my_peer_id",
+			"returntype": "PeerId"
+		}
+		,{
+			"functionname": "humblenet_p2p_register_alias",
+			"returntype": "ha_bool",
+			"params": [
+				{  "paramname": "name", "paramtype": "const char *"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_unregister_alias",
+			"returntype": "ha_bool",
+			"params": [
+				{  "paramname": "name", "paramtype": "const char *"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_virtual_peer_for_alias",
+			"returntype": "PeerId",
+			"params": [
+				{  "paramname": "name", "paramtype": "const char *"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_sendto",
+			"returntype": "int",
+			"params": [
+				 { "paramname": "message", "paramtype": "const void *"}
+				,{ "paramname": "length", "paramtype": "uint32_t"}
+				,{ "paramname": "topeer", "paramtype": "PeerId"}
+				,{ "paramname": "sendmode", "paramtype": "SendMode"}
+				,{ "paramname": "channel", "paramtype": "uint8_t"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_recvfrom",
+			"returntype": "int",
+			"params": [
+				 { "paramname": "message", "paramtype": "void *"}
+				,{ "paramname": "length", "paramtype": "uint32_t"}
+				,{ "paramname": "topeer", "paramtype": "PeerId *"}
+				,{ "paramname": "channel", "paramtype": "uint8_t"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_peek",
+			"returntype": "ha_bool",
+			"params": [
+				 {  "paramname": "length", "paramtype": "uint32_t *"}
+				,{  "paramname": "channel", "paramtype": "uint8_t"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_disconnect",
+			"returntype": "ha_bool",
+			"params": [
+				{  "paramname": "peer", "paramtype": "PeerId"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_wait",
+			"returntype": "ha_bool",
+			"params": [
+				{  "paramname": "timeout_ms", "paramtype": "int"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_select",
+			"returntype": "int",
+			"params": [
+				 {  "paramname": "nfds", "paramtype": "int"}
+				,{  "paramname": "readfds", "paramtype": "fd_set*"}
+				,{  "paramname": "writefds", "paramtype": "fd_set*"}
+				,{  "paramname": "exceptfds", "paramtype": "fd_set*"}
+				,{  "paramname": "timeout", "paramtype": "struct timeval*"}
+			],
+			"options" : [
+				"native"
+			]
+		}
+	]
+}

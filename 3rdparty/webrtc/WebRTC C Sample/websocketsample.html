@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+
+<!--
+Copyright 2014 Intel Corporation
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+<html>
+<head>
+    <title>WebRTC/WebSocket Sample</title>
+</head>
+<body onload="start()" onunload="stop()">
+    <span id="outputtext"></span>
+    <hr />
+    <textarea id="inputtext" style="width:100%" onkeypress="onUserKeyPressEvent(event)"></textarea>
+    <script type="text/javascript">
+        var connection = null;
+        var datachannel = null;
+        var configuration = { "iceServers": [/*{{{ICESERVERS}}}*/] };
+        var currentoffer = null;
+        var requester;
+        var sdp = "";
+        var outputtextbox = document.getElementById("outputtext");
+        var inputtextbox = document.getElementById("inputtext");
+
+        var wsocket = null;
+
+        function stop() { connection.close(); }
+
+        function start() {
+            msg("Starting...");
+
+            if (typeof mozRTCPeerConnection !== 'undefined') { connection = new mozRTCPeerConnection(configuration); }
+            else if (typeof RTCPeerConnection !== 'undefined') { connection = new RTCPeerConnection(configuration); }
+            else if (typeof webkitRTCPeerConnection !== 'undefined') { connection = new webkitRTCPeerConnection(configuration); }
+            else return false;
+
+            datachannel = connection.createDataChannel("sampleDataChannel", { reliable: true });
+            datachannel.onmessage = function (event) { msg("Remote: " + event.data); };
+            datachannel.onopen = function () { msg("Web RTC Connected."); };
+
+            connection.ondatachannel = onNewDataChannel;
+            connection.onicecandidate = onIceCandidate;
+            connection.createOffer(onOfferDone, onError, { mandatory: { OfferToReceiveAudio: false, OfferToReceiveVideo: false } });
+            connection.oniceconnectionstatechange = function ()
+            {
+                if (connection.iceConnectionState == 'disconnected')
+                {
+                    msg('DISCONNECTED');
+                }
+            }
+        }
+
+        function onNewDataChannel(e)
+        {
+            msg("Channel [" + e.channel.label + "] created");
+            datachannel = e.channel;
+            datachannel.onmessage = function (event) { msg("Remote: " + event.data); }
+        }
+
+        function onUserKeyPressEvent(event) {
+            if (event.keyCode == 13) {
+                datachannel.send(inputtextbox.value);
+                msg("Local: " + inputtextbox.value);
+                inputtextbox.value = "";
+                if (e.preventDefault) e.preventDefault();
+                if (e.stopPropagation) e.stopPropagation();
+                return false;
+            }
+        }
+
+        function onIceCandidate(e) {
+            if (e.candidate == null) {
+                if (sdp == "") {
+                    msg("SDP ERROR!");
+                    return;
+                }
+                msg('Posting WebRTC offer...');
+
+                wsocket = new WebSocket((window.location.protocol == "http:" ? "ws" : "wss" ) + "://" + window.location.host + "/websocketInit");
+                wsocket.onopen = function (evt) { msg("WebSocket connected"); wsocket.send(sdp);}
+                wsocket.onmessage = function (evt)
+                {
+                    msg('Got answer, connecting...');
+                    var ax;
+                    if (typeof mozRTCSessionDescription !== 'undefined') { ax = new mozRTCSessionDescription({ type: "answer", sdp: evt.data }) } else { ax = new RTCSessionDescription({ type: "answer", sdp: evt.data }) }
+                    connection.setRemoteDescription(ax, onSetRemoteDescriptionDone, onError);
+                }
+                
+                return;
+            }
+            currentoffer.sdp += ("a=" + e.candidate.candidate + "\r\n");
+            sdp = currentoffer.sdp;
+        }
+
+        function onCandidateAdded(e) { debug('onCandidateAdded: ' + e); }
+
+        function onOfferDone(offer)
+        {
+            // debug(offer.sdp);
+            currentoffer = offer;
+            connection.setLocalDescription(offer, onSetLocalDescriptionDone, onError);
+            sdp = currentoffer.sdp;
+        }
+
+        function onSetLocalDescriptionDone() { }
+
+        function initiatorErrorResponse() { msg('Could not contact server.'); }
+
+        function onSetRemoteDescriptionDone() { debug('setRemoteDescription() completed'); }
+        function stop() { connection.close(); }
+        function onError(e) { if (e.message) alert("onError: " + e.message); else alert(e); }
+        function debug(m) { /* console.log(m); */ }
+        function msg(m) { outputtextbox.innerHTML += (m + "<br />"); }
+    </script>
+</body>
+</html>

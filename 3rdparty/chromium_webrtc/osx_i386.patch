@@ -1,0 +1,83 @@
+diff --git a/talk/app/webrtc/legacy_objc_api.gyp b/talk/app/webrtc/legacy_objc_api.gyp
+index d2698e4..2b82a24 100755
+--- a/talk/app/webrtc/legacy_objc_api.gyp
++++ b/talk/app/webrtc/legacy_objc_api.gyp
+@@ -27,7 +27,7 @@
+ {
+   'includes': ['../../build/common.gypi'],
+   'conditions': [
+-    ['OS=="ios" or (OS=="mac" and target_arch!="ia32")', {
++    ['OS=="ios" or (OS=="mac" and target_arch!="?ia32")', {
+       # The >= 10.7 above is required for ARC.
+       'targets': [
+         {
+diff --git a/webrtc/base/base.gyp b/webrtc/base/base.gyp
+index a5f0f7b..67787c0 100644
+--- a/webrtc/base/base.gyp
++++ b/webrtc/base/base.gyp
+@@ -615,7 +615,7 @@
+             },
+           }
+         }],
+-        ['OS=="ios" or (OS=="mac" and target_arch!="ia32")', {
++        ['OS=="ios" or (OS=="mac" and target_arch!="?ia32")', {
+           'defines': [
+             'CARBON_DEPRECATED=YES',
+           ],
+diff --git a/webrtc/base/base_tests.gyp b/webrtc/base/base_tests.gyp
+index caef35c..87f1947 100644
+--- a/webrtc/base/base_tests.gyp
++++ b/webrtc/base/base_tests.gyp
+@@ -163,7 +163,7 @@
+               'sslstreamadapter_unittest.cc',
+             ],
+           }],
+-          ['OS=="ios" or (OS=="mac" and target_arch!="ia32")', {
++          ['OS=="ios" or (OS=="mac" and target_arch!="?ia32")', {
+             'defines': [
+               'CARBON_DEPRECATED=YES',
+             ],
+diff --git a/webrtc/media/media.gyp b/webrtc/media/media.gyp
+index 621af83..9bcc96a 100644
+--- a/webrtc/media/media.gyp
++++ b/webrtc/media/media.gyp
+@@ -176,7 +176,7 @@
+             },
+           },
+         }],
+-        ['OS=="mac" and target_arch=="ia32"', {
++        ['OS=="mac" and target_arch=="?ia32"', {
+           'sources': [
+             'devices/carbonvideorenderer.cc',
+             'devices/carbonvideorenderer.h',
+@@ -189,7 +189,7 @@
+             },
+           },
+         }],
+-        ['OS=="ios" or (OS=="mac" and target_arch!="ia32")', {
++        ['OS=="ios" or (OS=="mac" and target_arch!="?ia32")', {
+           'defines': [
+             'CARBON_DEPRECATED=YES',
+           ],
+diff --git a/webrtc/webrtc_examples.gyp b/webrtc/webrtc_examples.gyp
+index d5d8ade..2c1ee43 100755
+--- a/webrtc/webrtc_examples.gyp
++++ b/webrtc/webrtc_examples.gyp
+@@ -148,7 +148,7 @@
+       ], # targets
+     }],  # OS=="linux" or OS=="win"
+ 
+-    ['OS=="ios" or (OS=="mac" and target_arch!="ia32")', {
++    ['OS=="ios" or (OS=="mac" and target_arch!="?ia32")', {
+       'targets': [
+         {
+           'target_name': 'apprtc_common',
+@@ -346,7 +346,7 @@
+                 ],
+               },
+             }],
+-            ['target_arch=="ia32"', {
++            ['OS=="iOS" and target_arch=="ia32"', {
+               'dependencies' : [
+                 '<(DEPTH)/testing/iossim/iossim.gyp:iossim#host',
+               ],

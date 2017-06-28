@@ -1,0 +1,108 @@
+namespace humblenet.HumblePeer;
+
+// Component tables
+table Attribute {
+	key:string (required, key);
+	value:string (required);
+}
+
+enum ICEServerType : ubyte { STUNServer = 1, TURNServer = 2}
+
+table ICEServer {
+	type			: ICEServerType = STUNServer;
+	server			:string (required);
+	username		:string;
+	password		:string;
+}
+
+// Message tables
+
+// Hello
+table HelloServer {
+	version			: uint;
+	flags			: ubyte;
+	gameToken		: string (required);
+	gameSignature	: string (required);
+	authToken		: string;
+	reconnectToken	: string;
+	attributes		: [Attribute];
+}
+
+table HelloClient {
+	peerId			: uint;
+	reconnectToken	: string;
+	iceServers		: [ICEServer];
+}
+
+// P2P Handshaking
+
+table P2POffer {
+	peerId			: uint;
+	flags			: ubyte;
+	offer			: string;
+}
+
+table P2PAnswer {
+	peerId			: uint;
+	offer			: string;
+}
+
+table P2PConnected {
+	peerId			: uint;
+}
+
+table P2PDisconnect {
+	peerId			: uint;
+}
+
+enum P2PRejectReason : ubyte { NotFound = 1, PeerRefused = 2 }
+
+table P2PReject {
+	peerId			: uint;
+	reason			: P2PRejectReason = NotFound;
+}
+
+table ICECandidate {
+	peerId			: uint;
+	offer			: string;
+}
+
+table P2PRelayData {
+	peerId			: uint;
+	data			: [byte];
+}
+
+// Name alias handling
+
+table AliasRegister {
+	alias			: string (required);
+}
+
+table AliasUnregister {
+	alias			: string;
+}
+
+table AliasLookup {
+	alias			: string (required);
+}
+
+table AliasResolved {
+	alias			: string (required);
+	peerId			: uint;
+}
+
+// Message switch
+union MessageType {
+	// Main peer-server connection (1 -> 9)
+	HelloServer, HelloClient,
+	// P2P Negotiation specific messages (10 -> 19)
+	P2PConnected = 10, P2PDisconnect, P2POffer, P2PAnswer, P2PReject, ICECandidate, P2PRelayData,
+	// Name Alias system (20 -> 29)
+	AliasRegister = 20, AliasUnregister, AliasLookup, AliasResolved,
+}
+
+table Message {
+	message			: MessageType;
+}
+
+root_type Message;

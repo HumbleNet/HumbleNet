@@ -1,0 +1,21 @@
+namespace TestClient;
+
+table HelloPeer {
+	peers: [uint];
+	is_response: bool;
+}
+
+table Chat {
+	message: string;
+}
+
+union MessageSwitch {
+	HelloPeer,
+	Chat
+}
+
+table Message {
+	message: MessageSwitch (required);
+}
+
+root_type Message;

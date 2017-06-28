@@ -1,0 +1,16 @@
+{
+global:
+    libwebrtc_create_context;
+    libwebrtc_destroy_context;
+    libwebrtc_set_stun_servers;
+    libwebrtc_create_connection_extended;
+    libwebrtc_create_channel;
+    libwebrtc_create_offer;
+    libwebrtc_set_offer;
+    libwebrtc_set_answer;
+    libwebrtc_add_ice_candidate;
+    libwebrtc_write;
+    libwebrtc_close_channel;
+    libwebrtc_close_connection;
+local:*;
+};

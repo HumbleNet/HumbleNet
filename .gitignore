@@ -1,0 +1,4 @@
+/build
+/tests/**/bin
+/tests/**/*.userprefs
+

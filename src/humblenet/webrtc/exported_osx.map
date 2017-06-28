@@ -1,0 +1,12 @@
+_libwebrtc_create_context
+_libwebrtc_destroy_context
+_libwebrtc_set_stun_servers
+_libwebrtc_create_connection_extended
+_libwebrtc_create_channel
+_libwebrtc_create_offer
+_libwebrtc_set_offer
+_libwebrtc_set_answer
+_libwebrtc_add_ice_candidate
+_libwebrtc_write
+_libwebrtc_close_channel
+_libwebrtc_close_connection
