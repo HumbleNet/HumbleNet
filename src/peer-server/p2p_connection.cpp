@@ -4,6 +4,7 @@
 #include "game.h"
 #include "server.h"
 #include "peer_db.h"
+#include "random.h"
 
 #include "humblenet_utils.h"
 
@@ -252,7 +253,8 @@ namespace humblenet {
 				peerServer->populateStunServers(iceServers);
 
 				// send hello to client
-				this->reconnectToken = ( std::stringstream() << random() ).str();
+				this->reconnectToken = generate_random_hash(std::to_string(peerId));
+				LOG_INFO("Reconnect token: %s\n", this->reconnectToken.c_str());
 
 				sendHelloClient(this, peerId, this->reconnectToken, iceServers);
 			}
