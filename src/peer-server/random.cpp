@@ -28,6 +28,7 @@ std::string generate_random_hash(const std::string& unique_data, size_t length)
 	auto& rg = *randomGenerator.get();
 
 	stream << unique_data;
+	stream << '-';
 	stream << std::hex;
 	stream.fill('0');
 	stream.width(2);
