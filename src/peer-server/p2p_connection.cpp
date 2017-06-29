@@ -199,6 +199,7 @@ namespace humblenet {
 
 				auto reconnectToken = hello->reconnectToken();
 				if( reconnectToken ) {
+					LOG_INFO("We received a reconnect token: %s!\n", reconnectToken->c_str());
 					PeerRecord record;
 
 					if( ! peerServer->getPeerByToken(reconnectToken->c_str(), record ) ) {
