@@ -33,6 +33,7 @@ namespace humblenet {
 		void triggerWrite(struct libwebsocket* wsi);
 
 		bool getPeerByToken(const std::string& token, struct PeerRecord& rec );
+		void erasePeerState(const std::string& token);
 		void savePeerState(const P2PSignalConnection* peer);
 		void shutdown();
 	private:

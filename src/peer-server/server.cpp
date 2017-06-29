@@ -80,6 +80,10 @@ namespace humblenet {
 		return m_peerDB->findByToken( token, rec );
 	}
 
+	void Server::erasePeerState(const std::string& token ) {
+		return m_peerDB->erase( token );
+	}
+
 	void Server::savePeerState(const P2PSignalConnection* conn) {
 		// if client has a reconnectToken, save thier state so they can reconnect.
 		if( ! conn->reconnectToken.empty() ) {

@@ -210,6 +210,8 @@ namespace humblenet {
 						peerId = this->game->generateNewPeerId();
 					} else {
 						peerId = record.peer_id;
+						// clear the old state
+						peerServer->erasePeerState(reconnectToken->c_str());
 
 						LOG_INFO("Re-establishing state for peer: %u\n", peerId);
 
@@ -256,6 +258,8 @@ namespace humblenet {
 				// send hello to client
 				this->reconnectToken = generate_random_hash(std::to_string(peerId));
 				LOG_INFO("Reconnect token: %s\n", this->reconnectToken.c_str());
+
+				peerServer->savePeerState(this);
 
 				sendHelloClient(this, peerId, this->reconnectToken, iceServers);
 			}
