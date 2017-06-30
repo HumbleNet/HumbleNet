@@ -32,6 +32,6 @@ We have a port of Quake2 (Based on [R1Q2](http://www.r1ch.net/stuff/r1q2/)) that
 
 Quake 3
 =======
-We have a port of Quake2 (Based on [QuakeJS](http://quakejs.com/)) that includes HumbleNet networking and runs on Windows, Mac OS X, Linux and Emscripten.
+We have a port of Quake3 (Based on [QuakeJS](http://quakejs.com/)) that includes HumbleNet networking and runs on Windows, Mac OS X, Linux and Emscripten.
 
 [Quake 3 HumbleNet port](https://github.com/HumbleNet/quake3)
