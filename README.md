@@ -22,7 +22,7 @@ We have several demos to show off integrating HumbleNet.
 
 TestPeer
 ========
-This is a simple "chat" app in the tests folder for both Cand C#.   The C app will run on Windows, MacOS X, Linux, and Emscripten.   The C# will run on .NET or Mono.
+This is a simple "chat" app in the tests folder for both C and C#.   The C app will run on Windows, MacOS X, Linux, and Emscripten.   The C# will run on .NET or Mono.
 
 Quake 2
 =======
