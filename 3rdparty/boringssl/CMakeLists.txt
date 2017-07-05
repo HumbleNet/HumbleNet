@@ -55,6 +55,7 @@ elseif(MSVC)
       "C4365" # '=' : conversion from 'size_t' to 'int',
               # signed/unsigned mismatch
       "C4389" # '!=' : signed/unsigned mismatch
+      "C4464" # relative include path contains '..'
       "C4510" # 'argument' : default constructor could not be generated
       "C4512" # 'argument' : assignment operator could not be generated
       "C4514" # 'function': unreferenced inline function has been removed
@@ -66,6 +67,8 @@ elseif(MSVC)
               # copy constructor is inaccessible or deleted
       "C4626" # assignment operator could not be generated because a base class
               # assignment operator is inaccessible or deleted
+      "C4701" # potentially uninitialized local variable
+      "C4702" # unreachable code
       "C4706" # assignment within conditional expression
       "C4710" # 'function': function not inlined
       "C4711" # function 'function' selected for inline expansion
