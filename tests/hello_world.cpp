@@ -9,6 +9,9 @@
 
 #include <iostream>
 #include <cstring>
+#include <algorithm>
+#include <string>
+#include <ctime>
 
 enum class PeerStatus : uint8_t{
 	NONE,
@@ -99,7 +102,7 @@ void process_message(PeerId remotePeer, const uint8_t* buffer, int buffer_size, 
 
 void sendChat(PeerId peer, const char* message)
 {
-	send_message(peer, MessageType::TEXT, message, strlen(message));
+	send_message(peer, MessageType::TEXT, message, (int)strlen(message));
 }
 
 void connectToPeer(PeerId peer)
