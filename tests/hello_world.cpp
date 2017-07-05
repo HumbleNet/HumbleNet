@@ -8,6 +8,7 @@
 #endif
 
 #include <iostream>
+#include <cstring>
 
 enum class PeerStatus : uint8_t{
 	NONE,
