@@ -95,6 +95,10 @@
 	,"functions": [
 		{"_comment": "Initialization and Shutdown"}
 		,{
+			"functionname": "humblenet_version",
+			"returntype": "uint32_t"
+		}
+		,{
 			"functionname": "humblenet_init",
 			"returntype": "ha_bool"
 		}

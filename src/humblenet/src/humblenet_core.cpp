@@ -540,6 +540,10 @@ int on_destroy( internal_socket_t* s, void* user_data ) {
 
 // BEGIN INITIALIZATION
 
+uint32_t HUMBLENET_CALL humblenet_version() {
+	return HUMBLENET_COMPILEDVERSION;
+}
+
 ha_bool HUMBLENET_CALL humblenet_init() {
 	return true;
 }

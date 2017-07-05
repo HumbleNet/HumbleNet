@@ -37,6 +37,29 @@
 
 #define HUMBLENET_API HUMBLENET_DLL_EXPORT
 
+#define HUMBLENET_MAJOR_VERSION 1
+#define HUMBLENET_MINOR_VERSION 0
+#define HUMBLENET_PATCHLEVEL 0
+
+/**
+ * Create a comparable version number value
+ *
+ * e.g.  (1,2,3) -> (0x010203)
+ */
+#define HUMBLENET_VERSIONNUM(X, Y, Z) \
+	(((X) << 16) | ((Y) << 8) | (Z))
+
+/**
+ * this is the version that we are currently compiling against
+ */
+#define HUMBLENET_COMPILEDVERSION \
+	HUMBLENET_VERSIONNUM(HUMBLENET_MAJOR_VERSION, HUMBLENET_MINOR_VERSION, HUMBLENET_PATCHLEVEL)
+
+/**
+ * check if compiled with HumbleNet version of at least X.Y.Z
+ */
+#define HUMBLENET_VERSION_ATLEAST(X, Y, Z) \
+	(HUMBLENET_COMPILEDVERSION >= HUMBLENET_VERSIONNUM(X, Y, Z))
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,6 +68,10 @@ extern "C" {
 typedef uint8_t ha_bool;
 typedef uint32_t PeerId;
 
+/*
+ * Get the version of the humblenet library we are linked to
+ */
+HUMBLENET_API uint32_t HUMBLENET_CALL humblenet_version();
 
 /*
  * Initialize the core humblenet library

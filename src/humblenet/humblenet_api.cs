@@ -76,6 +76,11 @@ public static class HumbleNet {
 	}
 #endregion
 #region Public Interface
+	public static UInt32 Version()
+	{
+		return NativeMethods.humblenet_version();
+	}
+
 	public static bool Init()
 	{
 		return NativeMethods.humblenet_init();
