@@ -1,0 +1,31 @@
+---
+engines:
+  duplication:
+    enabled: true
+    config:
+      languages:
+      - ruby
+      - javascript
+      - php
+  fixme:
+    enabled: true
+  gnu-complexity:
+    enabled: true
+  cppcheck:
+    enabled: true
+    stds:
+      - c++11
+ratings:
+  paths:
+  - "**.c"
+  - "**.cpp"
+  - "**.h"
+  - "**.hpp"
+exclude_paths:
+- tests/
+- "3rdparty/boringssl/"
+- "3rdparty/Amalgamate/"
+- "3rdparty/libwebsockets/"
+- "3rdparty/webrtc/"
+#- "3rdparty/crc/"
+#- "3rdparty/sha1/"
