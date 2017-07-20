@@ -69,7 +69,7 @@ void WebRTCConnectionStatus(ILibWrapper_WebRTC_Connection webRTCConnection, int 
 		ILibWrapper_WebRTC_Connection_SetUserData(webRTCConnection, NULL, NULL, NULL);
 
 		ctx->callback( ctx, conn, NULL, LWRTC_CALLBACK_DISCONNECTED, user_data, NULL, 0);
-		// for all intensive purposes the connection object is destroyed at this point. We dont have a specific callback,
+		// for all intensive purposes the connection object is destroyed at this point. We don't have a specific callback,
 		// but since this was called it WILL be destroyed when this call returns.
 		ctx->callback( ctx, conn, NULL, LWRTC_CALLBACK_DESTROY, user_data, NULL, 0);
 	}
