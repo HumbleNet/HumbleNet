@@ -363,7 +363,7 @@ int on_ice_candidate( internal_socket_t* s, const char* offer, void* user_data )
 	return 0;
 }
 
-// called for incomming connections to indicate the connection process is completed.
+// called for incoming connections to indicate the connection process is completed.
 int on_accept (internal_socket_t* s, void* user_data) {
 	HUMBLENET_GUARD();
 
@@ -378,14 +378,14 @@ int on_accept (internal_socket_t* s, void* user_data) {
 		// track the connection, ALL connections will reside here.
 		humbleNetState.connections.insert( std::make_pair( s, conn ) );
 	} else {
-		// should be a webrtrc connection (as we create the socket inorder to start the process)
+		// should be a webrtc connection (as we create the socket in order to start the process)
 		conn = it->second;
 	}
 
 	// TODO: This should be "waiting for accept"
 	conn->status = HUMBLENET_CONNECTION_CONNECTED;
 
-	// expose it as an incomming connection to be accepted...
+	// expose it as an incoming connection to be accepted...
 	humbleNetState.pendingNewConnections.insert( conn );
 
 	LOG("accepted peer: %d\n", conn->otherPeer );

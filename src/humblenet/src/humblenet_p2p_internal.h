@@ -77,7 +77,7 @@ typedef struct HumbleNetState {
 	std::unordered_map<std::string, Connection *> pendingAliasConnectionsOut;
 
 	// map of peers that are blacklisted, value is when they they were blacklisted
-	// incomming peers are added to this list when they are disconnected.
+	// incoming peers are added to this list when they are disconnected.
 	// this is to prevent anemic connection attempts.
 	std::unordered_map<PeerId, uint64_t> peerBlacklist;
 

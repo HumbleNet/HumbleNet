@@ -48,7 +48,7 @@ namespace humblenet {
 	ha_bool sendP2PMessage(P2PSignalConnection *conn, const uint8_t *buff, size_t length)
 	{
 		if( conn == NULL ) {
-			// this equates to trhe state where we never established / got disconencted
+			// this equates to the state where we never established / got disconnected
 			// from the peer server.
 
 			return false;
@@ -70,13 +70,13 @@ namespace humblenet {
 		}
 	}
 
-	// called for incomming connections to indicate the connection process is completed.
+	// called for incoming connections to indicate the connection process is completed.
 	int on_accept (internal_socket_t* s, void* user_data) {
-		// we dont accept incomming connections
+		// we dont accept incoming connections
 		return -1;
 	}
 
-	// called for outgoing commentions to indicate the connection process is completed.
+	// called for outgoing connections to indicate the connection process is completed.
 	int on_connect (internal_socket_t* s, void* user_data) {
 		HUMBLENET_GUARD();
 
@@ -200,7 +200,7 @@ namespace humblenet {
 		return 0;
 	}
 
-	// called to indicate the connection is wriable.
+	// called to indicate the connection is writable.
 	int on_writable (internal_socket_t* s, void* user_data) {
 		HUMBLENET_GUARD();
 
@@ -480,10 +480,10 @@ static ha_bool p2pSignalProcess(const humblenet::HumblePeer::Message *msg, void 
 			auto data = relay->data();
 			
 			LOG("Got %d bytes relayed from peer %u\n", data->Length(), peer );
-			
-			// Brute force...
+
+			// Sequentially look for the other peer
 			auto it = humbleNetState.connections.begin();
-			for( it = humbleNetState.connections.begin(); it != humbleNetState.connections.end(); ++it ) {
+			for( ; it != humbleNetState.connections.end(); ++it ) {
 				if( it->second->otherPeer == peer )
 					break;
 			}
@@ -503,9 +503,9 @@ static ha_bool p2pSignalProcess(const humblenet::HumblePeer::Message *msg, void 
 			break;
 		case HumblePeer::MessageType::AliasResolved:
 		{
-			auto reolved = reinterpret_cast<const HumblePeer::AliasResolved*>(msg->message());
+			auto resolved = reinterpret_cast<const HumblePeer::AliasResolved*>(msg->message());
 			
-			internal_alias_resolved_to( reolved->alias()->c_str(), reolved->peerId() );
+			internal_alias_resolved_to( resolved->alias()->c_str(), resolved->peerId() );
 		}
 			break;
 			

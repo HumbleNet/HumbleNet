@@ -141,7 +141,7 @@ int libwebsocket_write( struct libwebsocket* socket, const void* data, int len, 
 			return -1;
 		}
 
-		// alloc a Uint8Array backed by the incomming data.
+		// alloc a Uint8Array backed by the incoming data.
 		var data_in = new Uint8Array(Module.HEAPU8.buffer, $1, $2 );
 		// allow the dest array
 		var data = new Uint8Array($2);
