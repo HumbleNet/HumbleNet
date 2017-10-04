@@ -7,8 +7,8 @@
 
 #define VIRTUAL_PEER 0x80000000
 
-static BidiractionalMap<PeerId, std::string> virtualPeerNames;
-static BidiractionalMap<PeerId, Connection*> virtualPeerConnections;
+static BidirectionalMap<PeerId, std::string> virtualPeerNames;
+static BidirectionalMap<PeerId, Connection*> virtualPeerConnections;
 
 static PeerId nextVirtualPeer = 0;
 

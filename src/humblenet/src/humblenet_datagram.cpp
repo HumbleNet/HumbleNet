@@ -15,7 +15,7 @@ struct datagram_connection {
 	Connection*			conn;			// established connection.
 	PeerId				peer;			// "address"
 
-	std::vector<char>	buf_in;			// data we have received buy not yet processed.
+	std::vector<char>	buf_in;			// data we have received but not yet processed.
 	std::vector<char>	buf_out;		// packet combining...
 	int					queued;
 
@@ -79,12 +79,12 @@ restart:
 	if( flags & HUMBLENET_MSG_PEEK )
 		return hdr->size;
 
-	// prevent buffer overrins on read.
+	// prevent buffer overruns on read.
 	// this WILL truncate the message if the supplied buffer is not big enough -- see IEEE Std -> recvfrom.
 	length = std::min<size_t>( length, hdr->size );
 	memcpy((char*)buffer, hdr->data, length);
 
-	// since we are accesing hdr directly out of the buffer, we need a local to store the msg size that was read.
+	// since we are accessing hdr directly out of the buffer, we need a local to store the msg size that was read.
 	uint16_t size = hdr->size;
 	in.erase(start, end);
 	
@@ -113,7 +113,7 @@ static void datagram_flush( datagram_connection& dg, const char* reason ) {
 
 int humblenet_datagram_send( const void* message, size_t length, int flags, Connection* conn, uint8_t channel )
 {
-	// if were still connecting, we cant write yet
+	// if were still connecting, we can't write yet
 	// TODO: Should we queue that data up?
 	switch( humblenet_connection_status( conn ) ) {
 		case HUMBLENET_CONNECTION_CONNECTING: {
@@ -121,7 +121,7 @@ int humblenet_datagram_send( const void* message, size_t length, int flags, Conn
 			if( flags & HUMBLENET_MSG_BUFFERED )
 				break;
 			
-			humblenet_set_error("Connection is still being establisted");
+			humblenet_set_error("Connection is still being established");
 			return 0;
 		}
 		case HUMBLENET_CONNECTION_CLOSED: {
@@ -186,7 +186,7 @@ int humblenet_datagram_recv( void* buffer, size_t length, int flags, Connection*
 		}
 	}
 
-	// next check for incomming data on existing connections...
+	// next check for incoming data on existing connections...
 	while(true) {
 		Connection* conn = humblenet_poll_all(0);
 		if( conn == NULL )

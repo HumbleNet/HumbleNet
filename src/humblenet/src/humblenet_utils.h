@@ -2,7 +2,7 @@
 #define HUMBLENET_UTILS_H
 
 template <typename A, typename B>
-class BidiractionalMap {
+class BidirectionalMap {
 public:
 	typedef A key_type;
 	typedef B mapped_type;
