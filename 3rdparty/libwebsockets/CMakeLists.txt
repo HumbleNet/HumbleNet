@@ -185,7 +185,7 @@ if (NOT HAVE_inline)
 endif()
 
 # Put the libaries and binaries that get built into directories at the
-# top of the build tree rather than in hard-to-find leaf directories. 
+# top of the build tree rather than in hard-to-find leaf directories.
 SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib")
 SET(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib")
@@ -285,7 +285,7 @@ set(HDR_PRIVATE
 	"${PROJECT_BINARY_DIR}/lws_config.h"
 	)
 
-set(HDR_PUBLIC	
+set(HDR_PUBLIC
 	"${PROJECT_SOURCE_DIR}/lib/libwebsockets.h"
 	)
 
@@ -385,7 +385,7 @@ endif()
 
 if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
     if (UNIX)
-	set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror -O4 -fvisibility=hidden" )
+	set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -O4 -fvisibility=hidden" )
 	if(CMAKE_SYSTEM MATCHES "Linux")
 		include(CheckTypeSize)
 		check_type_size("void *" type_size)
@@ -422,14 +422,14 @@ if (WIN32)
 	# On Windows libs have the same file ending (.lib)
 	# for both static and shared libraries, so we
 	# need a unique name for the static one.
-	set_target_properties(websockets 
+	set_target_properties(websockets
 		PROPERTIES
 		OUTPUT_NAME websockets_static)
 
 	# Compile as DLL (export function declarations)
 	set_property(
 		TARGET websockets_shared
-		PROPERTY COMPILE_DEFINITIONS 
+		PROPERTY COMPILE_DEFINITIONS
 		LWS_DLL
 		LWS_INTERNAL
 		)
@@ -438,7 +438,7 @@ endif()
 # We want the shared lib to be named "libwebsockets"
 # not "libwebsocket_shared".
 set_target_properties(websockets_shared
-		PROPERTIES 
+		PROPERTIES
 		OUTPUT_NAME websockets
 		MACOSX_RPATH ON)
 
@@ -446,7 +446,7 @@ set_target_properties(websockets_shared
 # Equivalent to LDFLAGS=-version-info x:x:x
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
 	foreach(lib websockets websockets_shared)
-		set_target_properties(${lib} 
+		set_target_properties(${lib}
 			PROPERTIES
 			SOVERSION ${SOVERSION})
 	endforeach()
@@ -586,18 +586,18 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 	# Helper function for adding a test app.
 	#
 	macro(create_test_app TEST_NAME MAIN_SRC)
-		
+
 		set(TEST_SRCS ${MAIN_SRC})
 		set(TEST_HDR)
 
 		if (WIN32)
-			list(APPEND TEST_SRCS 
+			list(APPEND TEST_SRCS
 				${WIN32_HELPERS_PATH}/getopt.c
 				${WIN32_HELPERS_PATH}/getopt_long.c
 				${WIN32_HELPERS_PATH}/gettimeofday.c
 			)
 
-			list(APPEND TEST_HDR 
+			list(APPEND TEST_HDR
 				${WIN32_HELPERS_PATH}/getopt.h
 				${WIN32_HELPERS_PATH}/gettimeofday.h
 			)
@@ -606,7 +606,7 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 		source_group("Headers Private"   FILES ${TEST_HDR})
 		source_group("Sources"   FILES ${TEST_SRCS})
 		add_executable(${TEST_NAME} ${TEST_SRCS} ${TEST_HDR})
-		
+
 		if (LWS_LINK_TESTAPPS_DYNAMIC)
 			target_link_libraries(${TEST_NAME} websockets_shared)
 			add_dependencies(${TEST_NAME} websockets_shared)
@@ -617,12 +617,12 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 
 		# Set test app specific defines.
 		set_property(TARGET ${TEST_NAME}
-					PROPERTY COMPILE_DEFINITIONS 
+					PROPERTY COMPILE_DEFINITIONS
 						INSTALL_DATADIR="${CMAKE_INSTALL_PREFIX}/share"
 					)
 
 		# Prefix the binary names with libwebsockets.
-		set_target_properties(${TEST_NAME} 
+		set_target_properties(${TEST_NAME}
 			PROPERTIES
 			OUTPUT_NAME libwebsockets-${TEST_NAME})
 
@@ -652,8 +652,8 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 			# Set defines for this executable only.
 			set_property(
 				TARGET test-server-extpoll
-				PROPERTY COMPILE_DEFINITIONS 
-					EXTERNAL_POLL 
+				PROPERTY COMPILE_DEFINITIONS
+					EXTERNAL_POLL
 					INSTALL_DATADIR="${CMAKE_INSTALL_PREFIX}/share"
 				)
 
@@ -719,13 +719,13 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 				endif()
 			endif()
 
-			list(APPEND TEST_SERVER_DATA 
+			list(APPEND TEST_SERVER_DATA
 				"${TEST_SERVER_SSL_KEY}"
 				"${TEST_SERVER_SSL_CERT}")
 		endif()
 
 		add_custom_command(TARGET test-server
-						POST_BUILD 
+						POST_BUILD
 						COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:test-server>/../share/libwebsockets-test-server")
 
 		# Copy the file needed to run the server so that the test apps can
@@ -733,7 +733,7 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 		foreach (TEST_FILE ${TEST_SERVER_DATA})
 			if (EXISTS ${TEST_FILE})
 				add_custom_command(TARGET test-server
-							POST_BUILD 
+							POST_BUILD
 							COMMAND "${CMAKE_COMMAND}" -E copy "${TEST_FILE}" "$<TARGET_FILE_DIR:test-server>/../share/libwebsockets-test-server" VERBATIM)
 			endif()
 		endforeach()
@@ -779,13 +779,13 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 			message(STATUS "  Libeay: ${LIBEAY_BIN}")
 			message(STATUS "  SSLeay: ${SSLEAY_BIN}")
 
-			foreach(TARGET_BIN ${TEST_APP_LIST})			
+			foreach(TARGET_BIN ${TEST_APP_LIST})
 				add_custom_command(TARGET ${TARGET_BIN}
-					POST_BUILD 
+					POST_BUILD
 					COMMAND "${CMAKE_COMMAND}" -E copy "${LIBEAY_BIN}" "$<TARGET_FILE_DIR:${TARGET_BIN}>" VERBATIM)
-					
+
 				add_custom_command(TARGET ${TARGET_BIN}
-					POST_BUILD 
+					POST_BUILD
 					COMMAND "${CMAKE_COMMAND}" -E copy "${SSLEAY_BIN}" "$<TARGET_FILE_DIR:${TARGET_BIN}>" VERBATIM)
 			endforeach()
 		endif()
@@ -847,38 +847,38 @@ export(TARGETS websockets websockets_shared
 export(PACKAGE libwebsockets)
 
 # Generate the config file for the build-tree.
-set(LWS__INCLUDE_DIRS 
+set(LWS__INCLUDE_DIRS
     "${PROJECT_SOURCE_DIR}/lib"
     "${PROJECT_BINARY_DIR}")
 set(LIBWEBSOCKETS_INCLUDE_DIRS ${LWS__INCLUDE_DIRS} CACHE PATH "Libwebsockets include directories")
 configure_file(${PROJECT_SOURCE_DIR}/cmake/LibwebsocketsConfig.cmake.in
-                ${PROJECT_BINARY_DIR}/LibwebsocketsConfig.cmake 
+                ${PROJECT_BINARY_DIR}/LibwebsocketsConfig.cmake
                 @ONLY)
 
 # Generate the config file for the installation tree.
 get_filename_component(LWS_ABSOLUTE_INSTALL_CMAKE_DIR ${LWS_INSTALL_CMAKE_DIR} ABSOLUTE)
 get_filename_component(LWS_ABSOLUTE_INSTALL_INCLUDE_DIR ${LWS_INSTALL_INCLUDE_DIR} ABSOLUTE)
-file(RELATIVE_PATH 
-    REL_INCLUDE_DIR 
+file(RELATIVE_PATH
+    REL_INCLUDE_DIR
     "${LWS_ABSOLUTE_INSTALL_CMAKE_DIR}"
     "${LWS_ABSOLUTE_INSTALL_INCLUDE_DIR}") # Calculate the relative directory from the cmake dir.
 
-# Note the EVENT_CMAKE_DIR is defined in JanssonConfig.cmake.in, 
+# Note the EVENT_CMAKE_DIR is defined in JanssonConfig.cmake.in,
 # we escape it here so it's evaluated when it is included instead
-# so that the include dirs are given relative to where the 
+# so that the include dirs are given relative to where the
 # config file is located.
-set(LWS__INCLUDE_DIRS 
-    "\${LWS_CMAKE_DIR}/${REL_INCLUDE_DIR}") 
+set(LWS__INCLUDE_DIRS
+    "\${LWS_CMAKE_DIR}/${REL_INCLUDE_DIR}")
 configure_file(${PROJECT_SOURCE_DIR}/cmake/LibwebsocketsConfig.cmake.in
-                ${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/LibwebsocketsConfig.cmake 
+                ${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/LibwebsocketsConfig.cmake
                 @ONLY)
 
 # Generate version info for both build-tree and install-tree.
 configure_file(${PROJECT_SOURCE_DIR}/cmake/LibwebsocketsConfigVersion.cmake.in
-                ${PROJECT_BINARY_DIR}/LibwebsocketsConfigVersion.cmake 
+                ${PROJECT_BINARY_DIR}/LibwebsocketsConfigVersion.cmake
                 @ONLY)
 
-set_target_properties(websockets websockets_shared 
+set_target_properties(websockets websockets_shared
 					PROPERTIES PUBLIC_HEADER "${HDR_PUBLIC}")
 
 #

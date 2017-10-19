@@ -27,7 +27,7 @@ if (NOT GO_EXECUTABLE)
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  set(C_CXX_FLAGS "-Wall -Werror -Wformat=2 -Wsign-compare -Wmissing-field-initializers -ggdb -fvisibility=hidden")
+  set(C_CXX_FLAGS "-Wall -Wformat=2 -Wsign-compare -Wmissing-field-initializers -ggdb -fvisibility=hidden")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${C_CXX_FLAGS}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x ${C_CXX_FLAGS}")
   if( (APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang") OR CMAKE_CXX_COMPILER_ID MATCHES "AppleClang" )
