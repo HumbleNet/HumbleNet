@@ -7062,6 +7062,7 @@ int ILibTime_ParseEx(char *timeString, time_t *val)
 	//
 	if (errCode!=0)
 	{
+		if (startTime != NULL) free(startTime);
 		return(1);
 	}
 
