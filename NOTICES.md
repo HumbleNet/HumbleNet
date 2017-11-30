@@ -3,8 +3,8 @@ This product includes the following 3rd party software
 Amalgamate
 ==========
 Copyright (C) 2012 Vinnie Falco
-Proivded under the [MIT License](http://www.opensource.org/license/MIT)
-Used for generating the single-source Emscripten port of HumbleNet
+Provided under the [MIT License](http://www.opensource.org/license/MIT)
+Used for generating the single-source Emscripten port of HumbleNet.
 
 BoringSSL
 =========
@@ -14,7 +14,7 @@ Licensed under the OpenSSL Lcense and SSLeay License.
 Chromium WebRTC
 ===============
 Copyright The WebRTC project authors.
-Used as an alternate WebRTC implementation (in separate respository).
+Used as an alternate WebRTC implementation (in separate repository).
 Licensed uder the [WebRTC Software License](https://webrtc.org/license/software/)
 
 CRC32 implementation
@@ -32,13 +32,13 @@ json-parser
 ===========
 Copyright (C) 2012, 2013 James McLaughlin
 Licensed under a [2 clause BSD license](3rdparty/json-parser)
-Used during the build process by the APIBuilder tool
+Used during the build process by the APIBuilder tool.
 
 libwebsockets
 =============
 Licensed under a modified GNU LGPL 2.1 license that permits static linking.
 Slightly modified to support BoringSSL. [Patch](3rdparty/patches/websockets-boringssl.patch)
-Used for websocket communication on Desktop platforms
+Used for websocket communication on Desktop platforms.
 
 sha1
 ====
