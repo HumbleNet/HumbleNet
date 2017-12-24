@@ -89,10 +89,17 @@ elseif(APPLE)
 
     set(BIN_RPATH "@executable_path/../Frameworks")
 
-    set(CMAKE_SKIP_BUILD_RPATH              TRUE)
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH      TRUE)
-    set(CMAKE_INSTALL_RPATH                 ${BIN_RPATH})
-    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH   FALSE)
+    if (POLICY CMP0068)
+        cmake_policy(SET CMP0068 NEW)
+        set(CMAKE_INSTALL_NAME_DIR "")
+        set(CMAKE_INSTALL_RPATH ${BIN_RPATH})
+        set(CMAKE_BUILD_RPATH ${BIN_RPATH})
+    else()
+        set(CMAKE_SKIP_BUILD_RPATH              TRUE)
+        set(CMAKE_BUILD_WITH_INSTALL_RPATH      TRUE)
+        set(CMAKE_INSTALL_RPATH                 ${BIN_RPATH})
+        set(CMAKE_INSTALL_RPATH_USE_LINK_PATH   FALSE)
+    endif()
 
     ### Enable SSE4 instructions
     if(ENABLE_SSE4)
