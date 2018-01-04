@@ -1,4 +1,4 @@
-Simple C# WebRTC sample, part of the Meshcentral open source project v0.2
+Simple C# WebRTC sample, part of the Meshcentral open source project v0.7
 -------------------------------------------------------------------------
 
 All code is released under Apache 2.0 license except for OpenSSL which comes under it's own license. Open license.txt for more details.
