@@ -77,7 +77,7 @@ struct libwebrtc_context* libwebrtc_create_context( lwrtc_callback_function call
 		var ctx = $0;
 		libwebrtc.connections = new Map();
 		libwebrtc.channels = new Map();
-		libwebrtc.on_event = Module.cwrap('libwebrtc_helper', 'iiiiiiii');
+		libwebrtc.on_event = Module.cwrap('libwebrtc_helper', 'number', ['number', 'number', 'number', 'number', 'number', 'number', 'number']);
 		libwebrtc.options = {};
 
 		libwebrtc.create = function() {
@@ -123,10 +123,10 @@ struct libwebrtc_context* libwebrtc_create_context( lwrtc_callback_function call
 			}
 
 			var sdp = this.localDescription.sdp;
-			var stack = Runtime.stackSave();
+			var stack = stackSave();
 			// local description //
 			libwebrtc.on_event( ctx, this.id, 0, 1, this.user_data, allocate(intArrayFromString(sdp), 'i8', ALLOC_STACK), sdp.length);
-			Runtime.stackRestore(stack);
+			stackRestore(stack);
 		};
 		libwebrtc.on_candidate = function(event){
 			if( !event ) {
@@ -149,10 +149,10 @@ struct libwebrtc_context* libwebrtc_create_context( lwrtc_callback_function call
 			Module.print("ice candidate " + event.candidate.candidate + " -- " + this.iceGatheringState);
 
 			if( this.trickle ) {
-				var stack = Runtime.stackSave();
+				var stack = stackSave();
 				// ice_candidate //
 				libwebrtc.on_event( ctx, this.id, 0, 2, this.user_data, allocate(intArrayFromString(event.candidate.candidate), 'i8', ALLOC_STACK), event.candidate.candidate.length);
-				Runtime.stackRestore(stack);
+				stackRestore(stack);
 			}
 		};
 		libwebrtc.on_signalstatechange = function(event){
@@ -170,10 +170,10 @@ struct libwebrtc_context* libwebrtc_create_context( lwrtc_callback_function call
 			}
 		};
 		libwebrtc.on_disconnected = function(event){
-			var stack = Runtime.stackSave();
+			var stack = stackSave();
 			// disconnected //
 			libwebrtc.on_event( ctx, this.id, 0, 4, this.user_data, 0, 0);
-			Runtime.stackRestore(stack);
+			stackRestore(stack);
 			this.destroy();
 		};
 		libwebrtc.on_datachannel = function(event){
@@ -196,20 +196,20 @@ struct libwebrtc_context* libwebrtc_create_context( lwrtc_callback_function call
 		};
 		libwebrtc.on_channel_accept = function(event){
 			Module.print("accept");
-			var stack = Runtime.stackSave();
+			var stack = stackSave();
 			// channel accepted //
 			libwebrtc.on_event(ctx, this.parent.id, this._id, 5, this.user_data, allocate(intArrayFromString(this.label), 'i8', ALLOC_STACK), this.label.length);
-			Runtime.stackRestore(stack);
+			stackRestore(stack);
 		};
 		libwebrtc.on_channel_connected = function(event){
 			Module.print("connect");
-			var stack = Runtime.stackSave();
+			var stack = stackSave();
 			// channel connected //
 			libwebrtc.on_event(ctx, this.parent.id, this._id, 6, this.user_data, allocate(intArrayFromString(this.label), 'i8', ALLOC_STACK), this.label.length);
-			Runtime.stackRestore(stack);
+			stackRestore(stack);
 		};
 		libwebrtc.on_channel_message = function(event){
-			var stack = Runtime.stackSave();
+			var stack = stackSave();
 			var len = event.data.byteLength;
 			var ptr = allocate( len, 'i8', ALLOC_STACK);
 
@@ -223,17 +223,17 @@ struct libwebrtc_context* libwebrtc_create_context( lwrtc_callback_function call
 
 			// channel data //
 			libwebrtc.on_event( ctx, this.parent.id, this._id, 7, this.user_data, ptr, len);
-			Runtime.stackRestore(stack);
+			stackRestore(stack);
 		};
 		libwebrtc.on_channel_error = function(event){
 			Module.print("Got channel error: " + event);
 			this.close();
 		};
 		libwebrtc.on_channel_close = function(event){
-			var stack = Runtime.stackSave();
+			var stack = stackSave();
 			// close channel //
 			libwebrtc.on_event(ctx, this.parent.id, this._id, 8, this.user_data, 0, 0);
-			Runtime.stackRestore(stack);
+			stackRestore(stack);
 		};
 		libwebrtc.destroy = function() {
 			libwebrtc.connections.set( this.id, undefined );
@@ -277,7 +277,7 @@ void libwebrtc_set_stun_servers( struct libwebrtc_context* ctx, const char** ser
 	for( int i = 0; i < count; ++i ) {
 		EM_ASM_INT({
 			var server = {};
-			server.urls = "stun:" + Pointer_stringify($0);
+			server.urls = "stun:" + UTF8ToString($0);
 			Module.__libwebrtc.options.iceServers.push( server );
 		}, *servers);
 		servers++;
@@ -338,7 +338,7 @@ int libwebrtc_set_offer( struct libwebrtc_connection* connection, const char* sd
 
 		var offer = {};
 		offer.type = 'offer';
-		offer.sdp = Pointer_stringify( $1 );
+		offer.sdp = UTF8ToString( $1 );
 
 		connection.setRemoteDescription( new Module.__libwebrtc.RTCSessionDescription( offer ) )
 			.then(function() {
@@ -369,7 +369,7 @@ int libwebrtc_set_answer( struct libwebrtc_connection* connection, const char* s
 
 		var offer = {};
 		offer.type = 'answer';
-		offer.sdp = Pointer_stringify( $1 );
+		offer.sdp = UTF8ToString( $1 );
 
 		connection.setRemoteDescription( new Module.__libwebrtc.RTCSessionDescription( offer ) )
 			.then( function() {
@@ -389,7 +389,7 @@ int libwebrtc_add_ice_candidate( struct libwebrtc_connection* connection, const 
 		}
 
 		var options = {};
-		options.candidate = Pointer_stringify($1);
+		options.candidate = UTF8ToString($1);
 
 		if( connection.iceConnectionState == 'checking' || connection.iceConnectionState == 'connected'
 		   // FF workaround
@@ -416,7 +416,7 @@ struct libwebrtc_data_channel* libwebrtc_create_channel( struct libwebrtc_connec
 			channel = connection.default_channel;
 			connection.default_channel = 0;
 		}else{
-			channel = Module.__libwebrtc.create_channel( connection, Pointer_stringify($1) );
+			channel = Module.__libwebrtc.create_channel( connection, UTF8ToString($1) );
 		}
 
 		return channel._id;

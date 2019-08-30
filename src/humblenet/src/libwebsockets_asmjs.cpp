@@ -40,7 +40,7 @@ struct libwebsocket_context* libwebsocket_create_context_extended( struct lws_co
 		var ctx = $0;
 
 		libwebsocket.sockets = new Map();
-		libwebsocket.on_event = Module.cwrap('libwebsocket_helper', 'iiiiiiii');
+		libwebsocket.on_event = Module.cwrap('libwebsocket_helper', 'number', ['number', 'number', 'number', 'number', 'number', 'number', 'number']);
 		libwebsocket.connect = function( url, protocol, user_data ) {
 			try {
 				var socket = new WebSocket(url,protocol);
@@ -65,7 +65,7 @@ struct libwebsocket_context* libwebsocket_create_context_extended( struct lws_co
 			}
 		};
 		libwebsocket.on_connect = function() {
-			var stack = Runtime.stackSave();
+			var stack = stackSave();
 			// filter protocol //
 			var ret = libwebsocket.on_event( 0, ctx, this.id, 9, this.user_data, allocate(intArrayFromString(this.protocol), 'i8', ALLOC_STACK), this.protocol.length );
 			if( !ret ) {
@@ -75,10 +75,10 @@ struct libwebsocket_context* libwebsocket_create_context_extended( struct lws_co
 			if( ret ) {
 				this.close();
 			}
-			Runtime.stackRestore(stack);
+			stackRestore(stack);
 		};
 		libwebsocket.on_message = function(event) {
-			var stack = Runtime.stackSave();
+			var stack = stackSave();
 			var len = event.data.byteLength;
 			var ptr = allocate( len, 'i8', ALLOC_STACK);
 
@@ -93,7 +93,7 @@ struct libwebsocket_context* libwebsocket_create_context_extended( struct lws_co
 			if( libwebsocket.on_event( this.protocol_id, ctx, this.id, 6, this.user_data, ptr, len ) ) {
 				this.close();
 			}
-			Runtime.stackRestore(stack);
+			stackRestore(stack);
 		};
 		libwebsocket.on_close = function() {
 			// closed //
@@ -123,7 +123,7 @@ void libwebsocket_context_destroy(struct libwebsocket_context* ctx ) {
 struct libwebsocket* libwebsocket_client_connect_extended(struct libwebsocket_context* ctx , const char* url, const char* protocol, void* user_data ) {
 	
 	struct libwebsocket* s =  (struct libwebsocket*)EM_ASM_INT({
-		var socket = Module.__libwebsocket.connect( Pointer_stringify($0), Pointer_stringify($1), $2);
+		var socket = Module.__libwebsocket.connect( UTF8ToString($0), UTF8ToString($1), $2);
 		if( ! socket ) {
 			return 0;
 		}

@@ -811,7 +811,7 @@ void humblenet_timer( timer_callback_t callback, int timeout, void* data)
 {
 	EM_ASM_({
 		window.setTimeout( function(){
-			Runtime.dynCall('vi', $0, [$2]);
+			dynCall('vi', $0, [$2]);
 		}, $1);
 
 	}, callback, timeout, data );

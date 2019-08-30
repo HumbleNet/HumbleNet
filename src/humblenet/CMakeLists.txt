@@ -136,6 +136,8 @@ CreateLibrary(humblenet
 	DEFINES
 		PUBLIC
 			HUMBLENET_STATIC
+	ASM_FLAGS
+		EXTRA_EXPORTED_RUNTIME_METHODS='["cwrap"]'
 	PROPERTIES
 		OUTPUT_NAME humblenet_static
 )
