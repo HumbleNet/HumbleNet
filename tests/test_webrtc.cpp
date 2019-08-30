@@ -7,7 +7,7 @@
 
 static internal_context_t* context;
 
-bool wait( int* pms ) {
+bool do_wait( int* pms ) {
 	
 	int ms = *pms;
 	
@@ -20,10 +20,6 @@ bool wait( int* pms ) {
 	*pms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
 	
 	return false;
-}
-
-bool wait( int ms ) {
-	return wait( &ms );
 }
 
 /*
@@ -126,7 +122,7 @@ static bool run_message_test(const char *label, internal_socket_t *left, interna
 	
 	int timeout = 5000;
 	for (received_message_count = 0; received_message_count < expected_message_count; ) {
-		wait(&timeout);
+		do_wait(&timeout);
 	
 		// detect time has run out...
 		if( timeout <= 0 )
@@ -201,7 +197,7 @@ int run_webrtc_data_test() {
 	int timeout = 5000;
 	connected = false;
 	while( ! connected ) {
-		wait(&timeout);
+		do_wait(&timeout);
 
 		if( timeout <= 0 ) {
 			printf("call setup timed out\n");
