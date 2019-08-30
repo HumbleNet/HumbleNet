@@ -30,27 +30,27 @@ if(FLATC_EXECUTABLE)
 	)
 endif()
 
-CreateTool(humblenet_test_webrtc
-FILES
-	test_webrtc.cpp
-ASM_FLAGS
-	ASSERTIONS=2
-	DEMANGLE_SUPPORT=1
-DEFINES
-	HUMBLENET_SERVER_URL=\"${HUMBLENET_SERVER_URL}\"
-FEATURES
-	cxx_auto_type cxx_range_for
-LINK
-	humblenet
-	-g
-PROPERTIES
-	FOLDER HumbleNet/Tests
-)
-list(APPEND TEST_TARGETS
-	humblenet_test_webrtc
-)
-
 if(HUMBLENET_DESKTOP)
+	CreateTool(humblenet_test_webrtc
+	FILES
+		test_webrtc.cpp
+	ASM_FLAGS
+		ASSERTIONS=2
+		DEMANGLE_SUPPORT=1
+	DEFINES
+		HUMBLENET_SERVER_URL=\"${HUMBLENET_SERVER_URL}\"
+	FEATURES
+		cxx_auto_type cxx_range_for
+	LINK
+		humblenet
+		-g
+	PROPERTIES
+		FOLDER HumbleNet/Tests
+	)
+	list(APPEND TEST_TARGETS
+		humblenet_test_webrtc
+	)
+
 	CreateTool(humblenet_test_loader
 	FILES
 		test_loader.cpp
