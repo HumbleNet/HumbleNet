@@ -3,7 +3,7 @@
 #include "libwebsockets_asmjs.h"
 
 #include <emscripten.h>
-
+#include <stdio.h>
 // TODO: should have a way to disable this on release builds
 #define LOG printf
 
@@ -16,7 +16,7 @@ extern "C" int EMSCRIPTEN_KEEPALIVE libwebsocket_helper( int protocol, struct li
 														struct libwebsocket *wsi,
 														enum libwebsocket_callback_reasons reason, void *user,
 														void *in, size_t len ) {
-	LOG("%d -> %d -> %p -> %d\n", protocol, reason, in, len );
+	LOG("%d -> %d -> %p -> %d\n", protocol, reason, in, (int)len );
 
 	if( reason == LWS_CALLBACK_WSI_DESTROY ) {
 		context->protocols[protocol].callback( context, wsi, reason, user, in, len );

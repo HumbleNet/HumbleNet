@@ -257,7 +257,7 @@ struct libwebrtc_context* libwebrtc_create_context( lwrtc_callback_function call
 
 	if( !supported ) {
 		delete ctx;
-		return NULL;
+		return nullptr;
 	}
 
 	return ctx;
