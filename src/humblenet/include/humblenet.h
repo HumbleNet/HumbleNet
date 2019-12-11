@@ -117,6 +117,14 @@ HUMBLENET_API ha_bool HUMBLENET_CALL humblenet_set_hint(const char* name, const 
  */
 HUMBLENET_API const char* HUMBLENET_CALL humblenet_get_hint(const char* name);
 
+/*
+ * If using the loader this will set the loader path.
+ * If using the loading returns 1 if the library loads or 0 if it fails to load.
+ *    Use humblenet_get_error() to see why loading failed.
+ * If not using the loader, simply returns 1
+ */
+HUMBLENET_API ha_bool HUMBLENET_CALL humblenet_loader_init(const char* libpath);
+
 #ifdef __cplusplus
 }
 #endif

@@ -544,6 +544,10 @@ uint32_t HUMBLENET_CALL humblenet_version() {
 	return HUMBLENET_COMPILEDVERSION;
 }
 
+ha_bool HUMBLENET_CALL humblenet_loader_init(const char* path) {
+	return true;
+}
+
 ha_bool HUMBLENET_CALL humblenet_init() {
 	return true;
 }

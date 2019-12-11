@@ -3,6 +3,9 @@
 
 #include <string>
 
+// globally exclude this as we won't be using the one in the loaded humblenet (it is blank anyway)
+#define HUMBLENET_SKIP_humblenet_loader_init
+
 extern "C" {
 /* Typedefs for function pointers for jump table, and pre-declare default funcs */
 /* The DEFAULT funcs will init jump table and then call real function. */
@@ -106,9 +109,29 @@ static void humblenet_UnloadLibrary()
 #define HUMBLENET_LIBRARY "libhumblenet.dylib"
 #endif
 
-static void humblenet_LoadLibrary()
+static ha_bool humblenet_LoadLibrary(const char* override)
 {
-	dllHandle = LoadObject(HUMBLENET_LIBRARY);
+	if (dllHandle) return  1;
+
+	if (override) {
+		std::string buff(override);
+		auto end = buff.back();
+		if (end != '/' && end != '\\') {
+#ifdef WIN32
+			buff += "\\";
+#else
+			buff += "/";
+#endif
+		}
+		buff += HUMBLENET_LIBRARY;
+
+		dllHandle = LoadObject(buff.c_str());
+	}
+
+	if (!dllHandle) {
+		dllHandle = LoadObject(HUMBLENET_LIBRARY);
+	}
+
 #ifdef __linux__
 	if (!dllHandle) {
 		Dl_info dl_info;
@@ -160,12 +183,20 @@ static void humblenet_LoadLibrary()
 		void *procHandle = nullptr;
 #define LOADER_PROC(rc,fn,params,args,ret) \
 procHandle = LoadFunction(dllHandle, #fn); \
-if (!procHandle) { humblenet_UnloadLibrary(); return; } \
+if (!procHandle) { \
+	humblenet_UnloadLibrary(); \
+	humblenet_set_error_DEFAULT("Failed to load symbol: " #fn); \
+	return 0; \
+} \
 jump_table.fn = (humblenet_DYNFN_##fn)procHandle;
 #include "humblenet_loader_procs.h"
 #undef LOADER_PROC
 
 		humblenet_clear_error_DEFAULT();
+		return 1;
+	} else {
+		humblenet_set_error_DEFAULT("Failed to load humblenet library");
+		return 0;
 	}
 }
 
@@ -175,7 +206,7 @@ jump_table.fn = (humblenet_DYNFN_##fn)procHandle;
 #define HUMBLENET_SKIP_humblenet_clear_error
 #define LOADER_PROC(rc,fn,params,args,ret) \
 	static rc HUMBLENET_CALL fn##_DEFAULT params { \
-		humblenet_LoadLibrary(); \
+		humblenet_LoadLibrary(nullptr); \
 		if (dllHandle) ret jump_table.fn args; \
 		ret (rc)0; \
 	}
@@ -216,6 +247,10 @@ void HUMBLENET_CALL humblenet_set_error_DEFAULT(const char *error) {
 
 void HUMBLENET_CALL humblenet_clear_error_DEFAULT() {
 	_error = nullptr;
+}
+
+ha_bool HUMBLENET_CALL humblenet_loader_init(const char* path) {
+	return humblenet_LoadLibrary(path);
 }
 
 // Shutdown unloads the real library.

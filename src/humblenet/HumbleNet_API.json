@@ -99,6 +99,13 @@
 			"returntype": "uint32_t"
 		}
 		,{
+			"functionname": "humblenet_loader_init",
+			"returntype": "ha_bool",
+			"params": [
+				{  "paramname": "path", "paramtype": "const char *"}
+			]
+		}
+		,{
 			"functionname": "humblenet_init",
 			"returntype": "ha_bool"
 		}
