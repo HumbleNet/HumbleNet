@@ -5,6 +5,8 @@
 #include <cassert>
 #include <errno.h>
 
+#include "mutex.h"
+
 #ifndef WIN32
 #include <pthread.h>
 #endif
@@ -23,179 +25,14 @@ extern "C" {
 	extern sem_t ILibChainLock;
 }
 
-#ifdef WIN32
+static mutex_t* PollLock = nullptr;
 
-#define mutex_t CRITICAL_SECTION
-void mutex_init(mutex_t* m) {
-	InitializeCriticalSectionAndSpinCount( m, 2000 );
-}
-
-void mutex_destroy(mutex_t* m) {
-	DeleteCriticalSection( m );
-}
-void mutex_wait(mutex_t* m) {
-	EnterCriticalSection( m );
-}
-
-int mutex_trywait(mutex_t* m) {
-	return TryEnterCriticalSection( m ) != 0 ? 0 : 1;
-}
-
-int mutex_timedlock(mutex_t* m, long ms) {
-	int ret = TryEnterCriticalSection( m );
-	while (ret ==0 && ms > 0) {
-		ms -= 10;
-		Sleep( 10 );
-		ret = TryEnterCriticalSection( m );
-	}
-	return ret != 0 ? 0 : 1;
-}
-
-void mutex_post(mutex_t* m) {
-	LeaveCriticalSection( m );
-}
-
-#elif _POSIX_TIMEOUTS > 0
-
-#include <pthread.h>
-
-#define mutex_t pthread_mutex_t
-void mutex_init(mutex_t* m) {
-	pthread_mutexattr_t attr;
-
-	pthread_mutexattr_init(&attr);
-	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE );
-
-	pthread_mutex_init(m, &attr);
-}
-
-int mutex_timedlock(mutex_t* m, long ms ) {
-	struct timespec ts;
-
-	ts.tv_sec = ms / 1000;
-	ts.tv_nsec = 1000 * (ms % 1000);
-
-	return pthread_mutex_timedlock( m, &ts );
-}
-
-#define mutex_destroy(x) pthread_mutex_destroy(x)
-#define mutex_wait(x) pthread_mutex_lock(x)
-#define mutex_trywait(x) pthread_mutex_trylock(x)
-#define mutex_post(x) pthread_mutex_unlock(x)
-
-#else
-
-#include <pthread.h>
-
-struct mutex_t {
-	mutex_t()
-	:thread(0)
-	,depth(0)
-	{
-		pthread_mutexattr_t attr;
-
-		pthread_mutexattr_init(&attr);
-		pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE );
-
-		pthread_mutex_init(&m, &attr);
-	}
-
-	int wait() {
-		return was_locked( pthread_mutex_lock(&m) );
-	}
-
-	int trywait() {
-		return was_locked( pthread_mutex_trylock(&m) );
-	}
-
-	int timedwait(long ms) {
-		if( ms == 0 )
-			return trywait();
-
-		int ret = 0;
-		do
-		{
-			ret = pthread_mutex_trylock(&m);
-			if( !ret )
-				break;
-			usleep(1000); // 1ms
-		}while( --ms > 0 );
-
-		return was_locked( ret );
-	}
-
-	void post() {
-		assert( thread == pthread_self() );
-		assert( depth > 0 );
-
-		if( ! depth-- ) {
-			thread = 0;
-		}
-
-		int ret = pthread_mutex_unlock(&m);
-
-		assert( ret == 0 );
-	}
-
-	~mutex_t() {
-		pthread_mutex_destroy(&m);
-	}
-protected:
-	int was_locked( int ret ) {
-		if( ret == 0 ) {
-			depth ++;
-			thread = pthread_self();
-		} else {
-			char self_name[64] = {0};
-			char other_name[64] = {0};
-
-			get_thread_name( pthread_self(), self_name, sizeof(self_name) );
-			get_thread_name( thread, other_name, sizeof(other_name) );
-
-			LOG("Lock failed on thread %s, error %s(%d), currently owner by %s", self_name, strerror(ret), ret, other_name );
-		}
-		return ret;
-	}
-
-	static void get_thread_name( pthread_t t, char* buf, size_t size ) {
-		if( t == 0 ) {
-			strncpy(buf, "<none>", size);
-		} else {
-			pthread_getname_np( t, buf, size );
-			if( ! buf[0] )
-				strncpy(buf, "Thread",size);
-
-			int len = strlen(buf);
-			// add the id..
-
-			uint64_t id;
-			pthread_threadid_np(t, &id);
-			sprintf(buf+len, "(%lld)", id);
-		}
-	}
-private:
-	pthread_mutex_t m;
-	pthread_t thread;
-	volatile int depth;
-};
-
-#define mutex_init(x)           (0)
-#define mutex_wait(x)           (x)->wait()
-#define mutex_trywait(x)        (x)->trywait()
-#define mutex_timedlock(x,ms)   (x)->timedwait(ms)
-#define mutex_post(x)           (x)->post()
-#define mutex_destroy(x)        (0)
-
-#endif
-
-static mutex_t PollLock;
-
-#define LOCK_INIT()     mutex_init(&PollLock)
-#define LOCK_WAIT()     mutex_wait(&PollLock)
-#define LOCK_TRY_WAIT() (mutex_trywait(&PollLock) == 0)
-#define LOCK_TIMED_WAIT( ms ) (mutex_timedlock(&PollLock, ms) == 0)
-#define LOCK_RELEASE()  mutex_post(&PollLock)
-#define LOCK_DESTROY()  mutex_destroy(&PollLock)
+#define LOCK_INIT()     PollLock = mutex_create()
+#define LOCK_WAIT()     mutex_lock(PollLock)
+#define LOCK_TRY_WAIT() (mutex_try_lock(PollLock, 0) == 0)
+#define LOCK_TIMED_WAIT( ms ) (mutex_try_lock(PollLock, ms) == 0)
+#define LOCK_RELEASE()  mutex_unlock(PollLock)
+#define LOCK_DESTROY()  mutex_destroy(PollLock)
 
 
 #define FULL_ASYNC
@@ -613,6 +450,7 @@ void poll_deinit() {
 		ILibDestroyChain( g_chain );
 #endif
 		g_chain = NULL;
+		LOCK_DESTROY();
 	}
 }
 
