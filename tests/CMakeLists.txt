@@ -31,6 +31,9 @@ if(FLATC_EXECUTABLE)
 endif()
 
 if(HUMBLENET_DESKTOP)
+	list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/Catch2/lib/cmake)
+	find_package(Catch2 REQUIRED)
+
 	CreateTool(humblenet_test_webrtc
 	FILES
 		test_webrtc.cpp
@@ -64,6 +67,21 @@ if(HUMBLENET_DESKTOP)
 	)
 
 	add_dependencies(humblenet_test_loader humblenet_shared)
+
+	CreateTool(test_circular_buffer
+	FILES
+		test_circular_buffer.cpp
+	FEATURES
+		cxx_noexcept cxx_explicit_conversions
+	PROPERTIES
+		FOLDER HumbleNet/Tests
+	LINK
+		Catch2::Catch2
+	)
+
+	list(APPEND TEST_TARGETS
+		test_circular_buffer
+	)
 endif()
 
 CreateTool(humblenet_hello_world
