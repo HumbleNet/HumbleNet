@@ -16,6 +16,14 @@
 				"mapped":"bool"
 			}
 		}
+		,{
+			"typedef": "ha_requestId",
+			"type": "uint32_t",
+			"cstype":{
+				"type":"mapped",
+				"mapped":"UInt32"
+			}
+		}
 		,{"_comment":"Miscellaneous C# Mappings"}
 		,{
 			"typedef": "PeerId *",
@@ -170,14 +178,21 @@
 		}
 		,{
 			"functionname": "humblenet_p2p_register_alias",
-			"returntype": "ha_bool",
+			"returntype": "ha_requestId",
 			"params": [
 				{  "paramname": "name", "paramtype": "const char *"}
 			]
 		}
 		,{
 			"functionname": "humblenet_p2p_unregister_alias",
-			"returntype": "ha_bool",
+			"returntype": "ha_requestId",
+			"params": [
+				{  "paramname": "name", "paramtype": "const char *"}
+			]
+		}
+		,{
+			"functionname": "humblenet_p2p_lookup_alias",
+			"returntype": "ha_requestId",
 			"params": [
 				{  "paramname": "name", "paramtype": "const char *"}
 			]

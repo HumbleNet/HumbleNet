@@ -67,6 +67,7 @@ extern "C" {
 
 typedef uint8_t ha_bool;
 typedef uint32_t PeerId;
+typedef uint32_t ha_requestId;
 
 /*
  * Get the version of the humblenet library we are linked to

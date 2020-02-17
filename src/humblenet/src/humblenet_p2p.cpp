@@ -88,7 +88,7 @@ PeerId HUMBLENET_CALL humblenet_p2p_get_my_peer_id() {
 /*
  * Register an alias for this peer so it can be found by name
  */
-ha_bool HUMBLENET_CALL humblenet_p2p_register_alias(const char* name) {
+ha_requestId HUMBLENET_CALL humblenet_p2p_register_alias(const char* name) {
 	P2P_INIT_GUARD( false );
 
 	HUMBLENET_GUARD();
@@ -99,12 +99,23 @@ ha_bool HUMBLENET_CALL humblenet_p2p_register_alias(const char* name) {
 /*
  * Unregister an alias of this peer.
  */
-ha_bool HUMBLENET_CALL humblenet_p2p_unregister_alias(const char* name) {
+ha_requestId HUMBLENET_CALL humblenet_p2p_unregister_alias(const char* name) {
 	P2P_INIT_GUARD( false );
 
 	HUMBLENET_GUARD();
 
 	return internal_alias_unregister( name );
+}
+
+/*
+ * Lookup the peer for an alias.
+ */
+ha_requestId HUMBLENET_CALL humblenet_p2p_lookup_alias(const char* name) {
+	P2P_INIT_GUARD( false );
+
+	HUMBLENET_GUARD();
+
+	return internal_alias_lookup( name );
 }
 
 /*
@@ -115,7 +126,7 @@ PeerId HUMBLENET_CALL humblenet_p2p_virtual_peer_for_alias(const char* name) {
 
 	HUMBLENET_GUARD();
 
-	return internal_alias_lookup( name );
+	return internal_alias_virtual_lookup( name );
 }
 
 /*

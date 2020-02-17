@@ -11,7 +11,7 @@
  *
  * NOTE: The peer server can reject the alias, but that will notify via the events.
  */
-ha_bool internal_alias_register(const char* alias );
+ha_requestId internal_alias_register(const char* alias );
 
 /**
  * Unregister an alias for this peer.
@@ -19,13 +19,18 @@ ha_bool internal_alias_register(const char* alias );
  *
  * Passing NULL means unregister ALL aliases
  */
-ha_bool internal_alias_unregister(const char* alias );
+ha_requestId internal_alias_unregister(const char* alias );
+
+/**
+ * Send a request to lookup an alias.
+ */
+ha_requestId internal_alias_lookup(const char* alias );
 
 /**
  * Return a virtual PeerId that represents the alias.
  *
  */
-PeerId internal_alias_lookup(const char* alias );
+PeerId internal_alias_virtual_lookup(const char* alias );
 
 /**
  * Is this peer id a vritual peer id

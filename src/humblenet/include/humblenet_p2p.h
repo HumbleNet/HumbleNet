@@ -40,12 +40,17 @@ HUMBLENET_API PeerId HUMBLENET_CALL humblenet_p2p_get_my_peer_id();
 /*
 * Register an alias for this peer so it can be found by name
 */
-HUMBLENET_API ha_bool HUMBLENET_CALL humblenet_p2p_register_alias(const char* name);
+HUMBLENET_API ha_requestId HUMBLENET_CALL humblenet_p2p_register_alias(const char* name);
 
 /*
- * Unregister an alias for this peer. Passing NULL will unpublish all aliases for the peer.
+ * Unregister an alias for this peer. Passing NULL will unregister all aliases for the peer.
  */
-HUMBLENET_API ha_bool HUMBLENET_CALL humblenet_p2p_unregister_alias(const char* name);
+HUMBLENET_API ha_requestId HUMBLENET_CALL humblenet_p2p_unregister_alias(const char* name);
+
+/*
+ * Lookup a peer for an alias.
+ */
+HUMBLENET_API ha_requestId HUMBLENET_CALL humblenet_p2p_lookup_alias(const char* name);
 
 /*
  * Create a virtual peer for an alias on the server

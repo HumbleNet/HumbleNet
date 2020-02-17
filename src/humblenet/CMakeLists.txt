@@ -94,7 +94,7 @@ set(CORE_HUMBLENET
 		PRIVATE
 			src
 	FEATURES
-		cxx_auto_type cxx_range_for
+		cxx_auto_type cxx_range_for cxx_noexcept cxx_explicit_conversions
 	DEFINES
 		${PLATFORM_DEFINES}
 		PRIVATE
