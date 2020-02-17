@@ -9,6 +9,7 @@
 #include <vector>
 #include <map>
 
+#include "humblenet.h"
 #include "humblepeer_generated.h"
 
 #ifdef __GNUC__
@@ -97,6 +98,10 @@ namespace humblenet {
 							const std::string& reconnectToken,
 							const std::vector<ICEServer>& iceServers);
 
+	// Generic messages
+	ha_bool sendError(P2PSignalConnection *conn, ha_requestId requestId, const std::string& error, HumblePeer::MessageType errorType);
+	ha_bool sendSuccess(P2PSignalConnection *conn, ha_requestId requestId, HumblePeer::MessageType successType);
+
 	// P2P Handling
 	ha_bool sendNoSuchPeer(humblenet::P2PSignalConnection *conn, PeerId peerId);
 	ha_bool sendPeerRefused(humblenet::P2PSignalConnection *conn, PeerId peerId);
@@ -107,10 +112,10 @@ namespace humblenet {
 	ha_bool sendP2PRelayData(humblenet::P2PSignalConnection *conn, PeerId peer, const void* data, uint16_t length);
 
 	// Name Alias
-	ha_bool sendAliasRegister(P2PSignalConnection *conn, const std::string& alias);
-	ha_bool sendAliasUnregister(P2PSignalConnection *conn, const std::string& alias);
-	ha_bool sendAliasLookup(P2PSignalConnection *conn, const std::string& alias);
-	ha_bool sendAliasResolved(P2PSignalConnection *conn, const std::string& alias, PeerId peer);
+	ha_requestId sendAliasRegister(P2PSignalConnection *conn, const std::string& alias);
+	ha_requestId sendAliasUnregister(P2PSignalConnection *conn, const std::string& alias);
+	ha_requestId sendAliasLookup(P2PSignalConnection *conn, const std::string& alias);
+	ha_bool sendAliasResolved(P2PSignalConnection *conn, const std::string& alias, PeerId peer, ha_requestId requestId);
 
 }  // namespace humblenet
 

@@ -20,26 +20,29 @@ The core WebRTC P2P Component of HumbleNet.  Provides a simple P2P contract that
     - when connecting a reconnect token should be issues that the client will use when reconnecting to the peer-server
     - reconnecting with this token will provide the same Peer ID to the client
     - this will provide continuity in peer IDs and lobby state etc during brief network outages.
-- [ ] Ability to directly lookup a name alias (either a polling method or an event callback)
+- [x] Ability to directly lookup a name alias (either a polling method or an event callback)
 - [ ] Cleanup internal socket handling to no longer need the old Connection API contract
-- [ ] add events 
-  - [ ] peer-server connect/disconnect
-  - [ ] Assignment of My peer ID
+- [ ] connection retry
+- [x] add events 
+  - [ ] peer-server connection failure
+  - [x] peer-server connect
+  - [ ] peer-server disconnect
+  - [ ] peer-server reconnect
+  - [x] Assignment of My peer ID
   - [ ] new incoming peer (for explicit accept/reject policy)
     - [ ] if event is disabled then policy would be auto-accept any incoming connection
-  - [ ] connected / disconnected to/from peer
-  - [ ] name alias resolved
+  - [x] connected / disconnected to/from peer
+  - [x] name alias resolved
  
 #### Questions
 - [ ] How should we handle connecting to my self?
 - [ ] How should we handle cleaner notification of disconnected peer state?
 
 ### Event API (TODO)
-This is a simple API (build similar to how the SDL2 Event system works) that allows a game to opt-in to certain events via a polling loop.
+This is a simple API (build similar to how the SDL2 Event system works) that allows a game to opt-in to certain events via a polling loop or watcher.
 
-- [ ] needs to be fully speced out. But shoud follow the pattern in [SDL2](https://wiki.libsdl.org/CategoryEvents)  
 - [ ] basic functionality would be
-  - [ ] PollEvent
+  - [x] PollEvent
   - [ ] Enable/Disable Event,
     - [ ] If an event is disabled it will have a predefined behavior.
   - [ ] and Add/Remove Event Watcher

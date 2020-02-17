@@ -72,6 +72,14 @@ table P2PRelayData {
 	data			: [byte];
 }
 
+// Generic messages
+table Success {
+}
+
+table Error {
+	error			: string;
+}
+
 // Name alias handling
 
 table AliasRegister {
@@ -98,11 +106,15 @@ union MessageType {
 	// P2P Negotiation specific messages (10 -> 19)
 	P2PConnected = 10, P2PDisconnect, P2POffer, P2PAnswer, P2PReject, ICECandidate, P2PRelayData,
 	// Name Alias system (20 -> 29)
-	AliasRegister = 20, AliasUnregister, AliasLookup, AliasResolved,
+	AliasRegister = 20, AliasUnregister,
+	AliasLookup, AliasResolved,
+	AliasRegisterError:Error, AliasRegisterSuccess:Success,
+	AliasUnregisterError:Error, AliasUnregisterSuccess:Success,
 }
 
 table Message {
 	message			: MessageType;
+	requestId		: uint32;
 }
 
 root_type Message;

@@ -14,7 +14,7 @@ static PeerId nextVirtualPeer = 0;
 
 static std::string virtualName;
 
-ha_bool internal_alias_register( const char* name ) {
+ha_requestId internal_alias_register( const char* name ) {
 	if( !name || !name[0] ) {
 		humblenet_set_error("No name or empty name provided");
 		return 0;
@@ -23,7 +23,7 @@ ha_bool internal_alias_register( const char* name ) {
 	return humblenet::sendAliasRegister(humbleNetState.p2pConn.get(), name);
 }
 
-ha_bool internal_alias_unregister( const char* name ) {
+ha_requestId internal_alias_unregister( const char* name ) {
 	if (name && !name[0] ) {
 		humblenet_set_error("Empty name provided");
 		return 0;
@@ -34,7 +34,16 @@ ha_bool internal_alias_unregister( const char* name ) {
 	return humblenet::sendAliasUnregister(humbleNetState.p2pConn.get(), name);
 }
 
-PeerId internal_alias_lookup( const char* name ) {
+ha_requestId internal_alias_lookup( const char* name ) {
+	if (name && !name[0] ) {
+		humblenet_set_error("Empty name provided");
+		return 0;
+	}
+
+	return humblenet::sendAliasLookup(humbleNetState.p2pConn.get(), name);
+}
+
+PeerId internal_alias_virtual_lookup( const char* name ) {
 	auto it = virtualPeerNames.find( name );
 	if( ! virtualPeerNames.is_end(it) ) {
 		return it->second;
@@ -52,7 +61,7 @@ void internal_alias_resolved_to( const std::string& alias, PeerId peer ) {
 
 	auto it = humbleNetState.pendingAliasConnectionsOut.find(alias);
 	if (it == humbleNetState.pendingAliasConnectionsOut.end()) {
-		LOG("Got resolve message for alias \"%s\" which we're not connecting to\n", alias.c_str());
+//		LOG("Got resolve message for alias \"%s\" which we're not connecting to\n", alias.c_str());
 		return;
 	} else {
 		connection = it->second;

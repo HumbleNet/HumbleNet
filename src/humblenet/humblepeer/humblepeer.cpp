@@ -62,6 +62,15 @@ namespace humblenet {
 		}
 	}
 
+	enum class RequestType : uint8_t {
+		Alias = 0x1,
+	};
+
+	ha_requestId generateRequestId(RequestType type) {
+		static uint32_t id_counter = 0;
+		return (static_cast<uint32_t>(type) << 24u) | ((++id_counter) % 0xffffff);
+	}
+
 	// Sending and parsing
 
 	inline ha_bool WARN_UNUSED_RESULT sendP2PMessage(P2PSignalConnection *conn, const flatbuffers::FlatBufferBuilder& fbb)
@@ -231,6 +240,28 @@ namespace humblenet {
 		return sendP2PMessage(conn, fbb);
 	}
 
+	// ** generic messages
+
+	ha_bool sendSuccess(P2PSignalConnection *conn, ha_requestId requestId, HumblePeer::MessageType successType)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto packet = HumblePeer::CreateSuccess(fbb);
+		auto msg = HumblePeer::CreateMessage(fbb, successType, packet.Union(), requestId);
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+	}
+
+	ha_bool sendError(P2PSignalConnection *conn, ha_requestId requestId, const std::string& error, HumblePeer::MessageType errorType)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto packet = HumblePeer::CreateError(fbb, fbb.CreateString(error));
+		auto msg = HumblePeer::CreateMessage(fbb, errorType, packet.Union(), requestId);
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+	}
+
 	// ** P2P Negotiation messages
 
 	ha_bool sendNoSuchPeer(P2PSignalConnection *conn, PeerId peerId)
@@ -305,43 +336,47 @@ namespace humblenet {
 
 	// ** Name Alias messages
 
-	ha_bool sendAliasRegister(P2PSignalConnection *conn, const std::string& alias)
+	ha_requestId sendAliasRegister(P2PSignalConnection *conn, const std::string& alias)
 	{
 		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto requestId = generateRequestId(RequestType::Alias);
 		auto packet = HumblePeer::CreateAliasRegister(fbb, fbb.CreateString(alias));
-		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::AliasRegister, packet.Union());
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::AliasRegister, packet.Union(), requestId);
 		fbb.Finish(msg);
 
-		return sendP2PMessage(conn, fbb);
+		return sendP2PMessage(conn, fbb) ? requestId : 0;
 	}
 
-	ha_bool sendAliasUnregister(P2PSignalConnection *conn, const std::string& alias)
+	ha_requestId sendAliasUnregister(P2PSignalConnection *conn, const std::string& alias)
 	{
 		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto requestId = generateRequestId(RequestType::Alias);
 		auto packet = HumblePeer::CreateAliasUnregister(fbb, CreateFBBStringIfNotEmpty(fbb, alias));
-		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::AliasUnregister, packet.Union());
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::AliasUnregister, packet.Union(), requestId);
 		fbb.Finish(msg);
 
-		return sendP2PMessage(conn, fbb);
+		return sendP2PMessage(conn, fbb) ? requestId : 0;
 	}
 
-	ha_bool sendAliasLookup(P2PSignalConnection *conn, const std::string& alias)
+	ha_requestId sendAliasLookup(P2PSignalConnection *conn, const std::string& alias)
 	{
 		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto requestId = generateRequestId(RequestType::Alias);
 		auto packet = HumblePeer::CreateAliasLookup(fbb, fbb.CreateString(alias));
-		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::AliasLookup, packet.Union());
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::AliasLookup, packet.Union(), requestId);
 		fbb.Finish(msg);
 
-		return sendP2PMessage(conn, fbb);
+		return sendP2PMessage(conn, fbb) ? requestId : 0;
 	}
 
-	ha_bool sendAliasResolved(P2PSignalConnection *conn, const std::string& alias, PeerId peer)
+	ha_bool sendAliasResolved(P2PSignalConnection *conn, const std::string& alias, PeerId peer, ha_requestId requestId)
 	{
 		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
 		auto packet = HumblePeer::CreateAliasResolved(fbb, fbb.CreateString(alias), peer);
-		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::AliasResolved, packet.Union());
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::AliasResolved, packet.Union(), requestId);
 		fbb.Finish(msg);
 
 		return sendP2PMessage(conn, fbb);
 	}
+
 }  // namespace humblenet

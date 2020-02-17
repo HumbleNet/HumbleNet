@@ -32,7 +32,7 @@ namespace humblenet {
 
 				bool emulated = (p2p->flags() & 0x1);
 
-				LOG_INFO("P2POffer from peer %u (%s) to peer %u", this->peerId, url.c_str(), peer);
+				LOG_INFO("P2POffer from peer %u (%s) to peer %u\n", this->peerId, url.c_str(), peer);
 				if (emulated) {
 					LOG_INFO(", emulated connections not allowed\n");
 					// TODO: better error message
@@ -118,7 +118,7 @@ namespace humblenet {
 				auto it = game->peers.find(peer);
 
 				if (it == game->peers.end()) {
-					LOG_WARNING(", no such peer\n");
+					LOG_WARNING("ICE Candidate: no such peer\n");
 					sendNoSuchPeer(this, peer);
 				} else {
 					P2PSignalConnection *otherPeer = it->second;
@@ -260,13 +260,13 @@ namespace humblenet {
 
 				if( existing != game->aliases.end() && existing->second != peerId ) {
 					LOG_INFO("Rejecting peer %u's request to register alias '%s' which is already registered to peer %u\n", peerId, alias->c_str(), existing->second );
-	#pragma message ("TODO implement registration failure")
+					sendError(this, msg->requestId(), "Alias already registered", HumblePeer::MessageType::AliasRegisterError);
 				} else {
 					if( existing == game->aliases.end() ) {
 						game->aliases.insert( std::make_pair( alias->c_str(), peerId ) );
 					}
 					LOG_INFO("Registering alias '%s' to peer %u\n", alias->c_str(), peerId );
-	#pragma message ("TODO implement registration success")
+					sendSuccess(this, msg->requestId(), HumblePeer::MessageType::AliasRegisterSuccess);
 				}
 			}
 				break;
@@ -282,17 +282,20 @@ namespace humblenet {
 					if( existing != game->aliases.end() && existing->second == peerId ) {
 						game->aliases.erase( existing );
 
-						LOG_INFO("Unregistring alias '%s' for peer %u\n", alias->c_str(), peerId );
-	#pragma message ("TODO implement unregister sucess")
+						LOG_INFO("Unregistering alias '%s' for peer %u\n", alias->c_str(), peerId );
+
+						sendSuccess( this, msg->requestId(), HumblePeer::MessageType::AliasUnregisterSuccess );
 					} else {
 						LOG_INFO("Rejecting unregister of alias '%s' for peer %u\n", alias->c_str(), peerId );
-	#pragma message ("TODO implement unregister failure")
+
+						sendError(this, msg->requestId(), "Unregister failed", HumblePeer::MessageType::AliasUnregisterError);
 					}
 				} else {
 					erase_value(game->aliases, peerId);
 
-					LOG_INFO("Unregistring all aliases for peer for peer %u\n", peerId );
-	#pragma message ("TODO implement unregister sucess")
+					LOG_INFO("Unregistering all aliases for peer for peer %u\n", peerId );
+
+					sendSuccess( this, msg->requestId(), HumblePeer::MessageType::AliasUnregisterSuccess );
 				}
 			}
 				break;
@@ -306,10 +309,10 @@ namespace humblenet {
 
 				if( existing != game->aliases.end() ) {
 					LOG_INFO("Lookup of alias '%s' for peer %u resolved to peer %u\n", alias->c_str(), peerId, existing->second );
-					sendAliasResolved(this, alias->c_str(), existing->second);
+					sendAliasResolved(this, alias->c_str(), existing->second, msg->requestId());
 				} else {
 					LOG_INFO("Lookup of alias '%s' for peer %u failed. No alias registered\n", alias->c_str(), peerId );
-					sendAliasResolved(this, alias->c_str(), 0);
+					sendAliasResolved(this, alias->c_str(), 0, msg->requestId());
 				}
 			}
 				break;
