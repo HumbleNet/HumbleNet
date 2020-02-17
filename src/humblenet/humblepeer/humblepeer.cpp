@@ -21,7 +21,10 @@
 namespace humblenet {
 	const size_t PEER_OFFSET_SIZE = 8;
 
-	class peer_allocator : public flatbuffers::simple_allocator {
+	static_assert( sizeof(flatbuffers::uoffset_t) * 2 == PEER_OFFSET_SIZE, "PEER_OFFSET_SIZE must equal 2x flatbuffers::uoffset_t");
+
+	// Custom allocator so we can pre-build our 2 uoffset_t's one for message size and one for crc
+	class peer_allocator : public flatbuffers::DefaultAllocator {
 		const size_t _offset;
 	public:
 		peer_allocator(size_t offset) : _offset(offset) {}

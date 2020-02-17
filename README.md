@@ -50,9 +50,8 @@ Project Dependencies:
     - Unix: already installed.
     - Win: you can use Cygwin.
 3. FlatBuffers (https://google.github.io/flatbuffers/index.html)
-    - Download the source code. The HumbleNet is way behind the current version of FlatBuffers. It's using the version 1.6.0 (currently 1.7.1).
-        1. You can download/clone the repo, and revert the master to commit `81ecc98e023f85fe003a27e920e78b34db8a0087` [here](https://github.com/google/flatbuffers/commit/81ecc98e023f85fe003a27e920e78b34db8a0087#diff-e644a513ebf0d4b999ed39c245f8f3db).
-        2. Or download the Release [here](https://github.com/google/flatbuffers/releases/tag/v1.6.0). This should work (not tested).
+    - Download the source code. The HumbleNet is way behind the current version of FlatBuffers. It's using the version 1.11.0.
+        1. Download the Release [here](https://github.com/google/flatbuffers/releases/tag/v1.11.0).
     - Follow the instructions here (https://google.github.io/flatbuffers/flatbuffers_guide_building.html);
     - You should get as result the `flatc` compiler executable.
     - Put your output directory (where the `flatc` exists, generally a `build` dir) into your `PATH`, so the compiler can be accessed anywhere.
