@@ -1,7 +1,7 @@
 namespace TestClient;
 
 table HelloPeer {
-	peers: [uint];
+	peers: [uint32];
 	is_response: bool;
 }
 
