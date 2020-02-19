@@ -6,7 +6,7 @@ table Attribute {
 	value:string (required);
 }
 
-enum ICEServerType : ubyte { STUNServer = 1, TURNServer = 2}
+enum ICEServerType : uint8 { STUNServer = 1, TURNServer = 2}
 
 table ICEServer {
 	type			: ICEServerType = STUNServer;
@@ -19,8 +19,8 @@ table ICEServer {
 
 // Hello
 table HelloServer {
-	version			: uint;
-	flags			: ubyte;
+	version			: uint32;
+	flags			: uint8;
 	gameToken		: string (required);
 	gameSignature	: string (required);
 	authToken		: string;
@@ -29,7 +29,7 @@ table HelloServer {
 }
 
 table HelloClient {
-	peerId			: uint;
+	peerId			: uint32;
 	reconnectToken	: string;
 	iceServers		: [ICEServer];
 }
@@ -37,38 +37,38 @@ table HelloClient {
 // P2P Handshaking
 
 table P2POffer {
-	peerId			: uint;
-	flags			: ubyte;
+	peerId			: uint32;
+	flags			: uint8;
 	offer			: string;
 }
 
 table P2PAnswer {
-	peerId			: uint;
+	peerId			: uint32;
 	offer			: string;
 }
 
 table P2PConnected {
-	peerId			: uint;
+	peerId			: uint32;
 }
 
 table P2PDisconnect {
-	peerId			: uint;
+	peerId			: uint32;
 }
 
-enum P2PRejectReason : ubyte { NotFound = 1, PeerRefused = 2 }
+enum P2PRejectReason : uint8 { NotFound = 1, PeerRefused = 2 }
 
 table P2PReject {
-	peerId			: uint;
+	peerId			: uint32;
 	reason			: P2PRejectReason = NotFound;
 }
 
 table ICECandidate {
-	peerId			: uint;
+	peerId			: uint32;
 	offer			: string;
 }
 
 table P2PRelayData {
-	peerId			: uint;
+	peerId			: uint32;
 	data			: [byte];
 }
 
@@ -88,7 +88,7 @@ table AliasLookup {
 
 table AliasResolved {
 	alias			: string (required);
-	peerId			: uint;
+	peerId			: uint32;
 }
 
 // Message switch
