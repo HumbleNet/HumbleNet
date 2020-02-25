@@ -314,6 +314,17 @@ namespace humblenet {
 		return sendP2PMessage(conn, fbb);
 	}
 
+	ha_bool sendP2PConnected(P2PSignalConnection *conn, PeerId peerId)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto packet = HumblePeer::CreateP2PConnected(fbb, peerId);
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::P2PConnected, packet.Union());
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+
+	}
+
 	ha_bool sendP2PDisconnect(P2PSignalConnection *conn, PeerId peerId)
 	{
 		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
