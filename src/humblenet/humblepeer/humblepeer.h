@@ -105,7 +105,7 @@ namespace humblenet {
 	// P2P Handling
 	ha_bool sendNoSuchPeer(humblenet::P2PSignalConnection *conn, PeerId peerId);
 	ha_bool sendPeerRefused(humblenet::P2PSignalConnection *conn, PeerId peerId);
-	ha_bool sendP2PConnect(P2PSignalConnection *conn, PeerId peerId, uint8_t flags, const char* offer);
+	ha_bool sendP2POffer(P2PSignalConnection *conn, PeerId peerId, uint8_t flags, const char* offer);
 	ha_bool sendP2PResponse(P2PSignalConnection *conn, PeerId peerId, const char* offer);
 	ha_bool sendICECandidate(humblenet::P2PSignalConnection *conn, PeerId peerId, const char* offer);
 	ha_bool sendP2PDisconnect(humblenet::P2PSignalConnection *conn, PeerId peer);

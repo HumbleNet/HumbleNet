@@ -335,7 +335,7 @@ int on_sdp( internal_socket_t* s, const char* offer, void* user_data ) {
 		}
 	} else {
 		LOG("outgoing SDP sent %u offer: \"%s\"\n", conn->otherPeer, offer);
-		if( ! sendP2PConnect(humbleNetState.p2pConn.get(), conn->otherPeer, flags, offer) ) {
+		if( !sendP2POffer( humbleNetState.p2pConn.get(), conn->otherPeer, flags, offer ) ) {
 			return -1;
 		}
 	}
