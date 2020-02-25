@@ -284,7 +284,7 @@ namespace humblenet {
 		return sendP2PMessage(conn, fbb);
 	}
 
-	ha_bool sendP2PConnect(P2PSignalConnection *conn, PeerId peerId, uint8_t flags, const char* offer)
+	ha_bool sendP2POffer(P2PSignalConnection *conn, PeerId peerId, uint8_t flags, const char* offer)
 	{
 		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
 		auto packet = HumblePeer::CreateP2POffer(fbb, peerId, flags, fbb.CreateString(offer));

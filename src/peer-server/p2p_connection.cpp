@@ -63,7 +63,7 @@ namespace humblenet {
 					this->connectedPeers.insert(otherPeer);
 
 					// set peer id to originator so target knows who wants to connect
-					sendP2PConnect(otherPeer, this->peerId, p2p->flags(), p2p->offer()->c_str());
+					sendP2POffer( otherPeer, this->peerId, p2p->flags(), p2p->offer()->c_str());
 				}
 
 			}
@@ -222,7 +222,7 @@ namespace humblenet {
 
 			case HumblePeer::MessageType::P2PConnected:
 				// TODO: log address
-				LOG_INFO("P2PConnect from peer %u\n", peerId);
+				LOG_INFO("P2PConnected from peer %u\n", peerId);
 				// TODO: clean up ongoing negotiations lit
 				break;
 			case HumblePeer::MessageType::P2PDisconnect:
