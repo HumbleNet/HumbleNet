@@ -337,3 +337,523 @@ SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : AliasRegisterSuccess
 		}
 	}
 }
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyDidCreate", "[lobby]" )
+{
+	humblenet::Lobby lobby( 0xa0, humbleNetState.myPeerId, HUMBLENET_LOBBY_TYPE_PUBLIC, 4 );
+	lobby.attributes.insert( {"name", "My lobby"} );
+
+	GIVEN( "A lobby did create" ) {
+		humblenet::sendLobbyDidCreate( &conn, 0xdeadbeef, lobby );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby create success event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_CREATE_SUCCESS );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == humbleNetState.myPeerId );
+		}
+
+		THEN( "It registers the lobby in the internal state" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			CHECK( it->second.lobbyId == lobby.lobbyId );
+			CHECK( it->second.type == lobby.type );
+			CHECK( it->second.ownerPeerId == humbleNetState.myPeerId );
+			CHECK( it->second.maxMembers == lobby.maxMembers );
+			CHECK( it->second.attributes == lobby.attributes );
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyCreateError", "[lobby]" )
+{
+	GIVEN( "A create error event" ) {
+		humblenet::sendError( &conn, 0xdeadbeef, "Lobby failed to create", HumblePeer::MessageType::LobbyCreateError );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby create error event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_CREATE_ERROR );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( std::string( e.error.error ) == "Failed to create lobby" );
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyDidJoin", "[lobby]" )
+{
+	humblenet::Lobby lobby( 0xa0, 0xd00d1, HUMBLENET_LOBBY_TYPE_PUBLIC, 4 );
+	lobby.attributes.insert( {"name", "My lobby"} );
+
+	GIVEN( "A lobby did join (self)" ) {
+
+		humblenet::sendLobbyDidJoinSelf( &conn, 0xdeadbeef, lobby, humbleNetState.myPeerId );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby join event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_JOIN );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == humbleNetState.myPeerId );
+		}
+
+		THEN( "It registers the lobby in the internal state" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			CHECK( it->second.lobbyId == lobby.lobbyId );
+			CHECK( it->second.type == lobby.type );
+			CHECK( it->second.ownerPeerId == 0xd00d1 );
+			CHECK( it->second.maxMembers == lobby.maxMembers );
+			CHECK( it->second.attributes == lobby.attributes );
+		}
+	}
+
+	GIVEN( "A lobby did join (another member)" ) {
+		runCommand( conn, [&](humblenet::P2PSignalConnection& c) {
+			humblenet::sendLobbyDidCreate( &c, 0xdeadbeef, lobby );
+		} );
+		humblenet::sendLobbyDidJoin( &conn, lobby.lobbyId, 0xd00d, {{"skill", "2"}} );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby member join event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_MEMBER_JOIN );
+			CHECK( e.common.request_id == 0 );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == 0xd00d );
+		}
+
+		THEN( "It adds the member to the lobby in the internal state" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			auto mit = it->second.members.find( 0xd00d );
+
+			REQUIRE( mit != it->second.members.end());
+
+			CHECK( mit->second.attributes == humblenet::AttributeMap( {{"skill", "2"}} ));
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyJoinError", "[lobby]" )
+{
+	GIVEN( "A join error event" ) {
+		humblenet::sendError( &conn, 0xdeadbeef, "Lobby failed to join", HumblePeer::MessageType::LobbyJoinError );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby join error event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_JOIN_ERROR );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( std::string( e.error.error ) == "Failed to join lobby" );
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyDidLeave", "[lobby]" )
+{
+	humblenet::Lobby lobby( 0xa0, 0xd00d1, HUMBLENET_LOBBY_TYPE_PUBLIC, 4 );
+	lobby.attributes.insert( {"name", "My lobby"} );
+	runCommand( conn, [&](humblenet::P2PSignalConnection& c) {
+		humblenet::sendLobbyDidCreate( &c, 0, lobby );
+	} );
+	REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+	GIVEN( "A lobby did leave (self)" ) {
+		humblenet::sendLobbyDidLeave( &conn, 0xdeadbeef, lobby.lobbyId, humbleNetState.myPeerId );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby leave event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_LEAVE );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == humbleNetState.myPeerId );
+		}
+
+		THEN( "It removes the lobby from the internal state" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 0 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it == humbleNetState.lobbies.end());
+		}
+	}
+
+	GIVEN( "A lobby did leave (another member)" ) {
+		humblenet::sendLobbyDidLeave( &conn, 0, lobby.lobbyId, 0xd00d );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby member leave event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_MEMBER_LEAVE );
+			CHECK( e.common.request_id == 0 );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == 0xd00d );
+		}
+
+		THEN( "It removes the member from the lobby in the internal state" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			auto mit = it->second.members.find( 0xd00d );
+
+			CHECK( mit == it->second.members.end());
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyLeaveError", "[lobby]" )
+{
+	GIVEN( "A leave error event" ) {
+		humblenet::sendError( &conn, 0xdeadbeef, "Lobby failed to leave", HumblePeer::MessageType::LobbyLeaveError );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby leave error event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_LEAVE_ERROR );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( std::string( e.error.error ) == "Failed to leave lobby" );
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyDidUpdate", "[lobby]" )
+{
+	humblenet::Lobby lobby( 0xa0, 0xd00d1, HUMBLENET_LOBBY_TYPE_PUBLIC, 4 );
+	lobby.attributes.insert( {"name", "My lobby"} );
+	runCommand( conn, [&](humblenet::P2PSignalConnection& c) {
+		humblenet::sendLobbyDidCreate( &c, 0, lobby );
+	} );
+	REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+	GIVEN( "A lobby attribute merge update" ) {
+		humblenet::sendLobbyDidUpdate( &conn, 0xdeadbeef, lobby.lobbyId,
+									   HUMBLENET_LOBBY_TYPE_UNKNOWN, 0,
+									   HumblePeer::AttributeMode::Merge, {{"skill", "1"}} );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby update event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_UPDATE );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == 0 );
+		}
+
+		THEN( "It updates the lobby attributes in the internal state" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			CHECK( it->second.lobbyId == lobby.lobbyId );
+			CHECK( it->second.attributes == humblenet::AttributeMap( {{"name",  "My lobby"},
+																	  {"skill", "1"}} ));
+		}
+
+		THEN( "it does not update the type" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it->second.type == HUMBLENET_LOBBY_TYPE_PUBLIC );
+		}
+
+		THEN( "it does not update the max members" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it->second.maxMembers == 4 );
+		}
+	}
+
+	GIVEN( "A lobby attribute replace update" ) {
+		humblenet::sendLobbyDidUpdate( &conn, 0xdeadbeef, lobby.lobbyId,
+									   HUMBLENET_LOBBY_TYPE_UNKNOWN, 0,
+									   HumblePeer::AttributeMode::Replace, {{"skill", "1"}} );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby update event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_UPDATE );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == 0 );
+		}
+
+		THEN( "It updates the lobby attributes in the internal state" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			CHECK( it->second.lobbyId == lobby.lobbyId );
+			CHECK( it->second.attributes == humblenet::AttributeMap( {{"skill", "1"}} ));
+		}
+
+		THEN( "it does not update the type" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it->second.type == HUMBLENET_LOBBY_TYPE_PUBLIC );
+		}
+
+		THEN( "it does not update the max members" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it->second.maxMembers == 4 );
+		}
+	}
+
+	GIVEN( "A lobby type update" ) {
+		humblenet::sendLobbyDidUpdate( &conn, 0xdeadbeef, lobby.lobbyId,
+									   HUMBLENET_LOBBY_TYPE_PRIVATE, 0,
+									   HumblePeer::AttributeMode::Merge, {} );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby update event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_UPDATE );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == 0 );
+		}
+
+		THEN( "it does not update the lobby attributes" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			CHECK( it->second.lobbyId == lobby.lobbyId );
+			CHECK( it->second.attributes == humblenet::AttributeMap( {{"name", "My lobby"}} ));
+		}
+
+		THEN( "it updates the type" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it->second.type == HUMBLENET_LOBBY_TYPE_PRIVATE );
+		}
+
+		THEN( "it does not update the max members" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it->second.maxMembers == 4 );
+		}
+	}
+
+	GIVEN( "A lobby max members update" ) {
+		humblenet::sendLobbyDidUpdate( &conn, 0xdeadbeef, lobby.lobbyId,
+									   HUMBLENET_LOBBY_TYPE_UNKNOWN, 8,
+									   HumblePeer::AttributeMode::Merge, {} );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby update event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_UPDATE );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == 0 );
+		}
+
+		THEN( "it does not update the lobby attributes" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			CHECK( it->second.lobbyId == lobby.lobbyId );
+			CHECK( it->second.attributes == humblenet::AttributeMap( {{"name", "My lobby"}} ));
+		}
+
+		THEN( "it does not update the type" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it->second.type == HUMBLENET_LOBBY_TYPE_PUBLIC );
+		}
+
+		THEN( "it updates the max members" ) {
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			CHECK( it->second.maxMembers == 8 );
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyUpdateError", "[lobby]" )
+{
+	GIVEN( "A lobby update error event" ) {
+		humblenet::sendError( &conn, 0xdeadbeef, "Lobby failed to update", HumblePeer::MessageType::LobbyUpdateError );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby update error event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_UPDATE_ERROR );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( std::string( e.error.error ) == "Failed to update lobby" );
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyMemberDidUpdate", "[lobby]" )
+{
+	humblenet::Lobby lobby( 0xa0, 0xd00d1, HUMBLENET_LOBBY_TYPE_PUBLIC, 4 );
+	lobby.attributes.insert( {"name", "My lobby"} );
+
+	runCommand( conn, [&](humblenet::P2PSignalConnection& c) {
+		humblenet::sendLobbyDidJoinSelf( &c, 0x12345, lobby, humbleNetState.myPeerId, {{"skill", "2"}} );
+	} );
+
+	REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+	GIVEN( "A lobby member merge update" ) {
+		humblenet::sendLobbyMemberDidUpdate( &conn, 0xdeadbeef, lobby.lobbyId, humbleNetState.myPeerId,
+											 HumblePeer::AttributeMode::Merge, {{"ready", "1"}} );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby member update event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_MEMBER_UPDATE );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == humbleNetState.myPeerId );
+		}
+
+		THEN( "It updates the lobby member in the internal state" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			const auto mit = it->second.members.find( humbleNetState.myPeerId );
+
+			REQUIRE( mit != it->second.members.end());
+
+			CHECK( mit->second.attributes == humblenet::AttributeMap( {{"skill", "2"},
+																	   {"ready", "1"}} ));
+		}
+	}
+
+	GIVEN( "A lobby member replace update" ) {
+		humblenet::sendLobbyMemberDidUpdate( &conn, 0xdeadbeef, lobby.lobbyId, humbleNetState.myPeerId,
+											 HumblePeer::AttributeMode::Replace, {{"ready", "1"}} );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby member update event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_MEMBER_UPDATE );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( e.lobby.lobby_id == lobby.lobbyId );
+			CHECK( e.lobby.peer_id == humbleNetState.myPeerId );
+		}
+
+		THEN( "It updates the lobby in the internal state" ) {
+			REQUIRE( humbleNetState.lobbies.size() == 1 );
+
+			const auto it = humbleNetState.lobbies.find( lobby.lobbyId );
+
+			REQUIRE( it != humbleNetState.lobbies.end());
+
+			const auto mit = it->second.members.find( humbleNetState.myPeerId );
+
+			REQUIRE( mit != it->second.members.end());
+
+			CHECK( mit->second.attributes == humblenet::AttributeMap( {{"ready", "1"}} ));
+		}
+	}
+}
+
+SCENARIO_METHOD( ConnectedPeerFixture, "client processMsg : LobbyMemberUpdateError", "[lobby]" )
+{
+	GIVEN( "A member update error event" ) {
+		humblenet::sendError( &conn, 0xdeadbeef, "Lobby failed to update member", HumblePeer::MessageType::LobbyMemberUpdateError );
+
+		conn.processMsg( messages[0].message );
+
+		THEN( "it creates a lobby member update error event" ) {
+			HumbleNet_Event e = {};
+
+			REQUIRE( humblenet_event_poll( &e ));
+
+			CHECK( e.type == HUMBLENET_EVENT_LOBBY_MEMBER_UPDATE_ERROR );
+			CHECK( e.common.request_id == 0xdeadbeef );
+			CHECK( std::string( e.error.error ) == "Failed to update lobby member" );
+		}
+	}
+}

@@ -30,6 +30,24 @@ if(FLATC_EXECUTABLE)
 	)
 endif()
 
+CreateTool(lobby_demo
+FILES
+	lobby_demo.cpp
+DEFINES
+	HUMBLENET_SERVER_URL=\"${HUMBLENET_SERVER_URL}\"
+FEATURES
+	cxx_auto_type cxx_range_for
+LINK
+	humblenet
+	-g
+PROPERTIES
+	FOLDER HumbleNet/Samples
+)
+
+list(APPEND SAMPLE_TARGETS
+	lobby_demo
+)
+
 CreateTool(humblenet_hello_world
 FILES
 	hello_world.cpp

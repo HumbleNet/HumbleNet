@@ -112,5 +112,21 @@ if(HUMBLENET_DESKTOP)
 	)
 
 	catch_discover_tests(test_client_p2p_connection)
+
+	CreateTool(test_client_lobbies
+	FILES
+		test_client_lobbies.cpp
+		../src/humblenet/src/humblenet_lobbies.cpp
+		../src/humblenet/src/humblenet_attributes.cpp
+	DEFINES
+		HUMBLENET_STATIC
+	INCLUDES
+		../src/humblenet/src/
+	LINK
+		Catch2::Catch2
+		humblepeer
+	)
+
+	catch_discover_tests(test_client_lobbies)
 endif()
 
