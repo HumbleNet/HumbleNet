@@ -83,6 +83,8 @@ typedef struct HumbleNetState {
 
 	PeerId myPeerId;
 
+	std::unordered_map<LobbyId, humblenet::Lobby> lobbies;
+
 	std::unique_ptr<humblenet::P2PSignalConnection> p2pConn;
 
 	std::string signalingServerAddr;

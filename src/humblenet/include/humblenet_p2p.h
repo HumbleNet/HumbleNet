@@ -15,7 +15,6 @@ typedef enum SendMode {
 	SEND_RELIABLE_BUFFERED = 1
 } SendMode;
 
-
 /*
 * Is the peer-to-peer network supported on this platform.
 */
@@ -36,7 +35,9 @@ HUMBLENET_API ha_bool HUMBLENET_CALL humblenet_p2p_is_initialized();
 * returns 0 if not yet connected
 */
 HUMBLENET_API PeerId HUMBLENET_CALL humblenet_p2p_get_my_peer_id();
-	
+
+/** Alias handling */
+
 /*
 * Register an alias for this peer so it can be found by name
 */
@@ -56,6 +57,8 @@ HUMBLENET_API ha_requestId HUMBLENET_CALL humblenet_p2p_lookup_alias(const char*
  * Create a virtual peer for an alias on the server
  */
 HUMBLENET_API PeerId HUMBLENET_CALL humblenet_p2p_virtual_peer_for_alias(const char* name);
+
+/** Message handling */
 
 /*
 * Send a message to a peer.
