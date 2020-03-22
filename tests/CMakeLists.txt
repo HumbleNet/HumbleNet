@@ -58,5 +58,21 @@ if(HUMBLENET_DESKTOP)
 	)
 
 	catch_discover_tests(test_humblepeer)
+
+	CreateTool(test_server_p2p_connection
+	FILES
+		test_server_p2p_connection.cpp
+		../src/peer-server/p2p_connection.cpp
+	DEFINES
+		HUMBLENET_STATIC
+	PROPERTIES
+		FOLDER HumbleNet/Tests
+	LINK
+		Catch2::Catch2
+		humblepeer
+		websockets
+	)
+
+	catch_discover_tests(test_server_p2p_connection)
 endif()
 

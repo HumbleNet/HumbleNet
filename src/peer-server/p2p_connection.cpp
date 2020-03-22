@@ -22,6 +22,7 @@ namespace humblenet {
 		}
 
 		switch (msgType) {
+			// region P2P offer handling
 			case HumblePeer::MessageType::P2POffer:
 			{
 				auto p2p = reinterpret_cast<const HumblePeer::P2POffer*>(msg->message());
@@ -162,7 +163,9 @@ namespace humblenet {
 				}
 			}
 				break;
+			// endregion
 
+			// region Hello
 			case HumblePeer::MessageType::HelloServer:
 			{
 				auto hello = reinterpret_cast<const HumblePeer::HelloServer*>(msg->message());
@@ -219,7 +222,9 @@ namespace humblenet {
 				// TODO: log address
 				LOG_ERROR("Got hello HelloClient, not supposed to happen\n");
 				break;
+			// endregion
 
+			// region P2P connect/disconnect (unused)
 			case HumblePeer::MessageType::P2PConnected:
 				// TODO: log address
 				LOG_INFO("P2PConnected from peer %u\n", peerId);
@@ -228,7 +233,9 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2PDisconnect:
 				LOG_INFO("P2PDisconnect from peer %u\n", peerId);
 				break;
+			// endregion
 
+			// region P2P relay
 			case HumblePeer::MessageType::P2PRelayData:
 			{
 				auto relay = reinterpret_cast<const HumblePeer::P2PRelayData*>(msg->message());
@@ -249,8 +256,9 @@ namespace humblenet {
 				}
 			}
 				break;
+			// endregion
 
-				// Alias processing
+			// region Alias processing
 			case HumblePeer::MessageType::AliasRegister:
 			{
 				auto reg = reinterpret_cast<const HumblePeer::AliasRegister*>(msg->message());
@@ -316,6 +324,7 @@ namespace humblenet {
 				}
 			}
 				break;
+			// endregion
 
 			default:
 				LOG_WARNING("Unhandled P2P Message: %s\n", HumblePeer::EnumNameMessageType(msgType));
