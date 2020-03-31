@@ -21,9 +21,13 @@ namespace humblenet {
                 internal_close_socket(wsi);
             wsi = NULL;
         }
+
+        ha_bool sendMessage(const uint8_t* buff, size_t length);
+
+        ha_bool processMsg(const HumblePeer::Message* msg);
     };
     
-    void register_protocol( internal_context_t* contet );
+    void register_protocol( internal_context_t* context );
 }
 
 ha_bool humblenet_signaling_connect();
