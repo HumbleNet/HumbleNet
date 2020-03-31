@@ -74,5 +74,26 @@ if(HUMBLENET_DESKTOP)
 	)
 
 	catch_discover_tests(test_server_p2p_connection)
+
+	CreateTool(test_client_p2p_connection
+	FILES
+		test_client_p2p_connection.cpp
+		../src/humblenet/src/humblenet_p2p_connection.cpp
+		../src/humblenet/src/humblenet_events.cpp
+		../src/humblenet/src/humblenet_core.cpp
+		../src/humblenet/src/mutex.cpp
+	INCLUDES
+		../src/humblenet/src/
+	DEFINES
+		HUMBLENET_STATIC
+	PROPERTIES
+		FOLDER HumbleNet/Tests
+	LINK
+		Catch2::Catch2
+		humblepeer
+		${CMAKE_THREAD_LIBS_INIT}
+	)
+
+	catch_discover_tests(test_client_p2p_connection)
 endif()
 

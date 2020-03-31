@@ -9,6 +9,7 @@
 #include <winsock.h>
 #include <wininet.h>
 #endif
+typedef struct fd_set fd_set;
 #else
 #include <sys/select.h>
 #endif
