@@ -32,6 +32,18 @@ if(LINUX OR APPLE)
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
 endif()
 
+option(ENABLE_COVERAGE "Enable Code coverage" OFF)
+
+if(ENABLE_COVERAGE)
+	set(CMAKE_REQUIRED_LINK_OPTIONS "--coverage")
+	check_cxx_compiler_flag("--coverage" CHECK_CXX_COVERAGE_FLAGS)
+	unset(CMAKE_REQUIRED_LINK_OPTIONS)
+	if (CHECK_CXX_COVERAGE_FLAGS)
+		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --coverage")
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage")
+	endif()
+endif()
+
 find_program(FLATC_EXECUTABLE
 	NAMES flatc
 	NO_CMAKE_FIND_ROOT_PATH
