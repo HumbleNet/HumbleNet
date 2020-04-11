@@ -47,6 +47,23 @@ if(HUMBLENET_DESKTOP)
 
 	catch_discover_tests(test_circular_buffer)
 
+	CreateTool(test_attributes
+	FILES
+		test_attributes.cpp
+		../src/humblenet/src/humblenet_attributes.cpp
+	INCLUDES
+		../src/humblenet/include
+		../src/humblenet/src
+		../src/humblenet/humblepeer
+	FEATURES
+	PROPERTIES
+		FOLDER HumbleNet/Tests
+	LINK
+		Catch2::Catch2
+	)
+
+	catch_discover_tests(test_attributes)
+
 	CreateTool(test_humblepeer
 	FILES
 		test_humblepeer.cpp
