@@ -25,6 +25,7 @@ endif()
 
 option(HUMBLENET_SERVER "Build the humblenet Server" ${HUMBLENET_DESKTOP})
 option(HUMBLENET_TESTS "Build the humblenet tests" ON)
+option(HUMBLENET_SAMPLES "Build the humblenet samples" ON)
 
 if(LINUX OR APPLE)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fvisibility=hidden")
@@ -274,4 +275,8 @@ if(HUMBLENET_SERVER)
 endif()
 if(HUMBLENET_TESTS)
 	add_subdirectory(tests					test)
+endif()
+
+if(HUMBLENET_SAMPLES)
+	add_subdirectory(samples				samples)
 endif()

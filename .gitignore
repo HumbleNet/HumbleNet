@@ -1,4 +1,4 @@
 /build
-/tests/**/bin
-/tests/**/*.userprefs
+/samples/**/bin
+/samples/**/*.userprefs
 
