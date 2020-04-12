@@ -286,6 +286,8 @@ if(HUMBLENET_SERVER)
 	add_subdirectory(src/peer-server		peer-server-build)
 endif()
 if(HUMBLENET_TESTS)
+	enable_testing()
+
 	add_subdirectory(tests					test)
 endif()
 

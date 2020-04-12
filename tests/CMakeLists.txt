@@ -4,6 +4,8 @@ if(HUMBLENET_DESKTOP)
 	list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/Catch2/lib/cmake)
 	find_package(Catch2 REQUIRED)
 
+	include(Catch)
+
 	CreateTool(humblenet_test_webrtc
 	FILES
 		test_webrtc.cpp
@@ -20,9 +22,6 @@ if(HUMBLENET_DESKTOP)
 	PROPERTIES
 		FOLDER HumbleNet/Tests
 	)
-	list(APPEND TEST_TARGETS
-		humblenet_test_webrtc
-	)
 
 	CreateTool(humblenet_test_loader
 	FILES
@@ -33,9 +32,6 @@ if(HUMBLENET_DESKTOP)
 		humblenet_shared
 	PROPERTIES
 		FOLDER HumbleNet/Tests
-	)
-	list(APPEND TEST_TARGETS
-		humblenet_test_loader
 	)
 
 	CreateTool(test_circular_buffer
@@ -49,7 +45,18 @@ if(HUMBLENET_DESKTOP)
 		Catch2::Catch2
 	)
 
-	list(APPEND TEST_TARGETS
-		test_circular_buffer
+	catch_discover_tests(test_circular_buffer)
+
+	CreateTool(test_humblepeer
+	FILES
+		test_humblepeer.cpp
+	PROPERTIES
+		FOLDER HumbleNet/Tests
+	LINK
+		Catch2::Catch2
+		humblepeer
 	)
+
+	catch_discover_tests(test_humblepeer)
 endif()
+
