@@ -1,0 +1,93 @@
+name: Build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2016]
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Cache flatbuffers
+        id: cache-flatbuffers
+        uses: actions/cache@v1
+        with:
+          path: ${{ github.workspace }}/external/flatbuffers/
+          key: ${{ runner.os }}-flatbuffers-v1.11.0
+      - name: Checkout flatbuffers
+        if: steps.cache-flatbuffers.outputs.cache-hit != 'true'
+        uses: actions/checkout@v2
+        with:
+          repository: google/flatbuffers
+          ref: v1.11.0
+          path: 'external/flatbuffers-src'
+      - name: build flatbuffers
+        if: steps.cache-flatbuffers.outputs.cache-hit != 'true'
+        uses: urkle/action-cmake-build@feat-wrapper-command
+        with:
+          source-dir: ${{ github.workspace }}/external/flatbuffers-src/
+          build-dir: ${{ github.workspace }}/external/flatbuffers-src/cmake-build/
+          configure-options: -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/external/flatbuffers/
+          install-build: true
+
+      - name: build humblenet
+        uses: urkle/action-cmake-build@feat-wrapper-command
+        with:
+          configure-options: -DCMAKE_PREFIX_PATH=${{ github.workspace }}/external/flatbuffers/
+          run-test: true
+          parallel: 1
+
+  build_emscripten:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Cache flatbuffers
+        id: cache-flatbuffers
+        uses: actions/cache@v1
+        with:
+          path: ${{ github.workspace }}/external/flatbuffers/
+          key: ${{ runner.os }}-flatbuffers-v1.11.0
+      - name: Checkout flatbuffers
+        if: steps.cache-flatbuffers.outputs.cache-hit != 'true'
+        uses: actions/checkout@v2
+        with:
+          repository: google/flatbuffers
+          ref: v1.11.0
+          path: 'external/flatbuffers-src'
+      - name: build flatbuffers
+        if: steps.cache-flatbuffers.outputs.cache-hit != 'true'
+        uses: urkle/action-cmake-build@feat-wrapper-command
+        with:
+          source-dir: ${{ github.workspace }}/external/flatbuffers-src/
+          build-dir: ${{ github.workspace }}/external/flatbuffers-src/cmake-build/
+          configure-options: -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/external/flatbuffers/
+          install-build: true
+
+      - name: Cache emsdk
+        uses: actions/cache@v1
+        id: emsdk-cache
+        with:
+          path: 'emsdk-cache'
+          key: ${{ runner.os }}-emsdk-1.39.5
+
+      - name: Setup emsdk
+        uses: mymindstorm/setup-emsdk@v2
+        with:
+          version: 1.39.5
+          actions-cache-folder: 'emsdk-cache'
+          no-cache: true
+
+      - name: build humblenet (emscripten)
+        uses: urkle/action-cmake-build@feat-wrapper-command
+        with:
+          wrapper-command: emcmake
+          configure-options: -DCMAKE_PREFIX_PATH=${{ github.workspace }}/external/flatbuffers/
+          parallel: 1
