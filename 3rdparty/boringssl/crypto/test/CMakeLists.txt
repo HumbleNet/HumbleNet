@@ -1,4 +1,5 @@
-add_library(
+if(BUILD_TESTS)
+	add_library(
   test_support
 
   OBJECT
@@ -7,3 +8,4 @@ add_library(
   malloc.cc
   test_util.cc
 )
+endif()
