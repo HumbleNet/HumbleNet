@@ -24,6 +24,8 @@
 
 #if defined(EMSCRIPTEN)
 	#include <emscripten/emscripten.h>
+#else
+	#include "libpoll.h"	// SKIP_AMALGAMATOR_INCLUDE
 #endif
 
 #include "humblepeer.h"
@@ -579,12 +581,10 @@ ha_bool internal_p2p_register_protocol() {
 	return true;
 }
 
-
-#ifndef EMSCRIPTEN
-extern "C" void poll_deinit();
-#endif
-
 void HUMBLENET_CALL humblenet_shutdown() {
+#ifndef EMSCRIPTEN
+	if (poll_was_init())
+#endif
 	{
 		HUMBLENET_GUARD();
 
@@ -780,8 +780,6 @@ HUMBLENET_API const char* HUMBLENET_CALL humblenet_get_hint(const char* name) {
 }
 
 #ifndef EMSCRIPTEN
-
-#include "libpoll.h"	// SKIP_AMALGAMATOR_INCLUDE
 
 void humblenet_lock() {
 	poll_lock();

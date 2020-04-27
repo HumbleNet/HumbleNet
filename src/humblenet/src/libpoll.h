@@ -36,7 +36,7 @@ struct poll_context_t* poll_init();
 void poll_deinit();
     
 // return the poll context
-//struct poll_context_t* poll_chain();
+bool poll_was_init();
 
 // lock the polling system
 void poll_lock();
