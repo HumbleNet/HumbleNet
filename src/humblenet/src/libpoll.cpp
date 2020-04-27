@@ -454,8 +454,8 @@ void poll_deinit() {
 	}
 }
 
-void* poll_chain() {
-	return g_chain;
+bool poll_was_init() {
+	return g_chain != nullptr;
 }
 
 void poll_lock() {
