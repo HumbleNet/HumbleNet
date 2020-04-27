@@ -77,6 +77,10 @@ elseif(MSVC)
       "C4820" # 'bytes' bytes padding added after construct 'member_name'
       "C4996" # 'read': The POSIX name for this item is deprecated. Instead,
               # use the ISO C++ conformant name: _read.
+      "C5026" # move constructor was implicitly defined as deleted
+      "C5027" # move assignment operator was implicitly defined as deleted
+      "C5045" # Compiler will insert Spectre mitigation for memory load if
+              # /Qspectre switch specified
      )
   string(REPLACE "C" " -wd" MSVC_DISABLED_WARNINGS_STR
                             ${MSVC_DISABLED_WARNINGS_LIST})
