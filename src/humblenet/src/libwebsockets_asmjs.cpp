@@ -103,7 +103,7 @@ struct libwebsocket_context* libwebsocket_create_context_extended( struct lws_co
 		libwebsocket.on_error = function() {
 			// client connection error //
 			libwebsocket.on_event( this.protocol_id, ctx, this.id, 2, this.user_data, 0, 0 );
-			this.destroy();
+			// We do not destroy here as close will be called
 		};
 		libwebsocket.destroy = function() {
 			libwebsocket.sockets.set( this.id, undefined );
