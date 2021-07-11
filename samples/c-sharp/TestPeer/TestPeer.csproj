@@ -40,22 +40,22 @@
     <Compile Include="humblenet.cs">
       <Link>humblenet.cs</Link>
     </Compile>
-    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\ByteBuffer.cs">
+    <Compile Include="..\..\..\3rdparty\flatbuffers\net\FlatBuffers\ByteBuffer.cs">
       <Link>FlatBuffers\ByteBuffer.cs</Link>
     </Compile>
-    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\FlatBufferBuilder.cs">
+    <Compile Include="..\..\..\3rdparty\flatbuffers\net\FlatBuffers\FlatBufferBuilder.cs">
       <Link>FlatBuffers\FlatBufferBuilder.cs</Link>
     </Compile>
-    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\FlatBufferConstants.cs">
+    <Compile Include="..\..\..\3rdparty\flatbuffers\net\FlatBuffers\FlatBufferConstants.cs">
       <Link>FlatBuffers\FlatBufferConstants.cs</Link>
     </Compile>
-    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\Offset.cs">
+    <Compile Include="..\..\..\3rdparty\flatbuffers\net\FlatBuffers\Offset.cs">
       <Link>FlatBuffers\Offset.cs</Link>
     </Compile>
-    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\Struct.cs">
+    <Compile Include="..\..\..\3rdparty\flatbuffers\net\FlatBuffers\Struct.cs">
       <Link>FlatBuffers\Struct.cs</Link>
     </Compile>
-    <Compile Include="..\..\..\3rdparty\flatbuffers\csharp\Table.cs">
+    <Compile Include="..\..\..\3rdparty\flatbuffers\net\FlatBuffers\Table.cs">
       <Link>FlatBuffers\Table.cs</Link>
     </Compile>
     <Compile Include="test_peer.cs" />
