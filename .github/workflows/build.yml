@@ -13,11 +13,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-2016]
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout humblenet
+        uses: actions/checkout@v2
 
       - name: Cache flatbuffers
         id: cache-flatbuffers
-        uses: actions/cache@v1
+        uses: actions/cache@v2
         with:
           path: ${{ github.workspace }}/external/flatbuffers/
           key: ${{ runner.os }}-flatbuffers-v1.11.0
@@ -46,12 +47,16 @@ jobs:
 
   build_emscripten:
     runs-on: ubuntu-latest
+    env:
+      EM_VERSION: 1.39.20
+      EM_CACHE_FOLDER: 'emsdk-cache'
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout humblenet
+        uses: actions/checkout@v2
 
       - name: Cache flatbuffers
         id: cache-flatbuffers
-        uses: actions/cache@v1
+        uses: actions/cache@v2
         with:
           path: ${{ github.workspace }}/external/flatbuffers/
           key: ${{ runner.os }}-flatbuffers-v1.11.0
@@ -72,18 +77,16 @@ jobs:
           install-build: true
 
       - name: Cache emsdk
-        uses: actions/cache@v1
+        uses: actions/cache@v2
         id: emsdk-cache
         with:
-          path: 'emsdk-cache'
-          key: ${{ runner.os }}-emsdk-1.39.5
-
+          path: ${{env.EM_CACHE_FOLDER}}
+          key: ${{ runner.os }}-emsdk-${{env.EM_VERSION}}
       - name: Setup emsdk
-        uses: mymindstorm/setup-emsdk@v2
+        uses: mymindstorm/setup-emsdk@v9
         with:
-          version: 1.39.5
-          actions-cache-folder: 'emsdk-cache'
-          no-cache: true
+          version: ${{env.EM_VERSION}}
+          actions-cache-folder: ${{env.EM_CACHE_FOLDER}}
 
       - name: build humblenet (emscripten)
         uses: urkle/action-cmake-build@feat-wrapper-command
