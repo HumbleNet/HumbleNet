@@ -28607,35 +28607,20 @@ String SystemStats::getOperatingSystemName()
    #if JUCE_IOS
 	return "iOS " + nsStringToJuce ([[UIDevice currentDevice] systemVersion]);
    #else
-	SInt32 major, minor;
-	Gestalt (gestaltSystemVersionMajor, &major);
-	Gestalt (gestaltSystemVersionMinor, &minor);
+    NSOperatingSystemVersion version = [[NSProcessInfo processInfo] operatingSystemVersion];
 
 	String s ("Mac OSX ");
-	s << (int) major << '.' << (int) minor;
+	s << (int) version.majorVersion << '.' << (int) version.minorVersion;
 	return s;
    #endif
 }
 
-#if ! JUCE_IOS
-int SystemStats::getOSXMinorVersionNumber()
-{
-	SInt32 versionMinor = 0;
-	OSErr err = Gestalt (gestaltSystemVersionMinor, &versionMinor);
-	(void) err;
-	jassert (err == noErr);
-	return (int) versionMinor;
-}
-#endif
-
 bool SystemStats::isOperatingSystem64Bit()
 {
-   #if JUCE_IOS
-	return false;
-   #elif JUCE_64BIT
+   #if JUCE_64BIT
 	return true;
    #else
-	return getOSXMinorVersionNumber() >= 6;
+	return false;
    #endif
 }
 
@@ -32879,6 +32864,7 @@ String SystemStats::getOperatingSystemName()
 
 bool SystemStats::isOperatingSystem64Bit()
 {
+    // simplify OSx/iOS
    #if JUCE_64BIT
 	return true;
    #else
@@ -33048,5 +33034,3 @@ void Process::lowerPrivilege() {}
 }
 
 /*** End of inlined file: juce_core.cpp ***/
-
-
