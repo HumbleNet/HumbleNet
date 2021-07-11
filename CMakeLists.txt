@@ -44,47 +44,6 @@ if(ENABLE_COVERAGE)
 	endif()
 endif()
 
-find_program(FLATC_EXECUTABLE
-	NAMES flatc
-	NO_CMAKE_FIND_ROOT_PATH
-)
-
-if(NOT FLATC_EXECUTABLE)
-	message(WARNING "Flatc not found.  Flatbuffers headers will not be rebuilt.  Please install flatc.")
-endif()
-
-function(GenerateFlatBuffer outvar)
-	set(_extra_args "")
-	foreach(_fbs ${ARGN})
-		if (_fbs STREQUAL "SCOPED_ENUMS")
-			list(APPEND _extra_args --scoped-enums)
-		else()
-			get_filename_component(_full_fbs ${_fbs} ABSOLUTE)
-			if(NOT EXISTS ${_full_fbs})
-				message(FATAL_ERROR "Could not found input files ${_fbs}")
-			endif()
-			get_filename_component(_base_name ${_fbs} NAME_WE)
-			set(_output ${CMAKE_CURRENT_BINARY_DIR}/${_base_name}_generated.h)
-			list(APPEND _generated_sources ${_output})
-			if (FLATC_EXECUTABLE)
-				set_source_files_properties(${_output} PROPERTIES GENERATED ON)
-				add_custom_command(
-					OUTPUT ${_output}
-					COMMAND ${FLATC_EXECUTABLE}
-					ARGS -o ${CMAKE_CURRENT_BINARY_DIR} ${_extra_args} --cpp ${_full_fbs}
-					DEPENDS ${_full_fbs}
-					COMMENT "Generating flatbuffer source for ${_fbs}"
-				)
-			endif()
-		endif()
-	endforeach()
-	set(${outvar} ${_generated_sources} PARENT_SCOPE)
-endfunction()
-
-add_library(flatbuffers INTERFACE)
-target_include_directories(flatbuffers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/flatbuffers/include)
-
-
 if(HUMBLENET_NATIVE)
 	include(ExternalProject)
 	include(SelectLibraryConfigurations)
@@ -107,6 +66,7 @@ if(HUMBLENET_NATIVE)
 		)
 	endif()
 
+	# region SSL External project
 	if(USE_BORINGSSL)
 		find_program(GO_EXECUTABLE go)
 		if(WIN32)
@@ -170,6 +130,7 @@ if(HUMBLENET_NATIVE)
 			-DLWS_BORINGSSL_INCLUDE_DIRS:STRING=${BoringSSL_INCLUDE_DIR}
 		)
 	endif()
+	# endregion
 
 	add_subdirectory(3rdparty/webrtc		webrtc)
 
@@ -184,6 +145,7 @@ if(HUMBLENET_NATIVE)
 		)
 	endif()
 
+	# region WebSockets external project
 	ExternalProject_Add(websockets-build
 		SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/libwebsockets
 		CMAKE_CACHE_ARGS
@@ -206,7 +168,6 @@ if(HUMBLENET_NATIVE)
 	ExternalProject_Get_Property(websockets-build INSTALL_DIR BINARY_DIR)
 
 	file(MAKE_DIRECTORY ${INSTALL_DIR}/include)
-
 
 	if(WIN32)
 		# win32 adds a _static to the .lib
@@ -240,17 +201,81 @@ if(HUMBLENET_NATIVE)
 		)
 	endif()
 
-
 	set_target_properties(websockets
 		PROPERTIES
 			INTERFACE_LINK_LIBRARIES "${ZLIB_LIBRARY};${LWS_BORING_INTERFACE}"
 	)
 
 	add_dependencies(websockets websockets-build)
+	# endregion
+
+	# region Flatbuffers
+	ExternalProject_Add(flatbuffers-build
+		SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/flatbuffers
+		CMAKE_CACHE_ARGS
+			-DCMAKE_OSX_ARCHITECTURES:STRING=${CMAKE_OSX_ARCHITECTURES}
+			-DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=${CMAKE_OSX_DEPLOYMENT_TARGET}
+			-DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
+			-DCMAKE_C_COMPILER:FILEPATH=${CMAKE_C_COMPILER}
+			-DCMAKE_CXX_COMPILER:FILEPATH=${CMAKE_CXX_COMPILER}
+			-DCMAKE_USER_MAKE_RULES_OVERRIDE:FILEPATH=${CMAKE_USER_MAKE_RULES_OVERRIDE}
+			-DCMAKE_USER_MAKE_RULES_OVERRIDE_CXX:FILEPATH=${CMAKE_USER_MAKE_RULES_OVERRIDE_CXX}
+			-DFLATBUFFERS_BUILD_TESTS:BOOL=OFF
+			${LINUX_ARCH_CONFIG}
+	)
+	ExternalProject_Get_Property(flatbuffers-build BINARY_DIR)
+	if (CMAKE_CONFIGURATION_TYPES)
+		set(FLATC_EXECUTABLE ${BINARY_DIR}/$<CONFIG>/flatc)
+	else()
+		set(FLATC_EXECUTABLE ${BINARY_DIR}/flatc)
+	endif()
+	set(flatbuffer_depends flatbuffers-build)
+	# endregion
 endif()
 
+add_library(flatbuffers INTERFACE)
+target_include_directories(flatbuffers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/flatbuffers/include)
+
+if(NOT FLATC_EXECUTABLE)
+	find_program(FLATC_EXECUTABLE
+			NAMES flatc
+			NO_CMAKE_FIND_ROOT_PATH
+			)
+	if(NOT FLATC_EXECUTABLE)
+		message(WARNING "Flatc not found.  Flatbuffers headers will not be rebuilt.  Please install flatc.")
+	endif()
+endif()
+
+function(GenerateFlatBuffer outvar)
+	set(_extra_args "")
+	foreach(_fbs ${ARGN})
+		if (_fbs STREQUAL "SCOPED_ENUMS")
+			list(APPEND _extra_args --scoped-enums)
+		else()
+			get_filename_component(_full_fbs ${_fbs} ABSOLUTE)
+			if(NOT EXISTS ${_full_fbs})
+				message(FATAL_ERROR "Could not found input files ${_fbs}")
+			endif()
+			get_filename_component(_base_name ${_fbs} NAME_WE)
+			set(_output ${CMAKE_CURRENT_BINARY_DIR}/${_base_name}_generated.h)
+			list(APPEND _generated_sources ${_output})
+			if (FLATC_EXECUTABLE)
+				set_source_files_properties(${_output} PROPERTIES GENERATED ON)
+				add_custom_command(
+						OUTPUT ${_output}
+						COMMAND ${FLATC_EXECUTABLE}
+						ARGS -o ${CMAKE_CURRENT_BINARY_DIR} ${_extra_args} --cpp ${_full_fbs}
+						DEPENDS ${_full_fbs} ${flatbuffer_depends}
+						COMMENT "Generating flatbuffer source for ${_fbs}"
+				)
+			endif()
+		endif()
+	endforeach()
+	set(${outvar} ${_generated_sources} PARENT_SCOPE)
+endfunction()
+
 if(NOT EMSCRIPTEN)
-	find_package(Threads)
+	find_package(Threads QUIET)
 endif()
 
 include(CheckFunctionExists)
