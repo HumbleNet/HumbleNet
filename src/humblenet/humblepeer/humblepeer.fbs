@@ -6,6 +6,13 @@ table Attribute {
 	value:string (required);
 }
 
+enum AttributeMode : uint8 { Replace = 0, Merge = 1 }
+
+table AttributeSet {
+	mode			: AttributeMode;
+	attributes		: [Attribute];
+}
+
 enum ICEServerType : uint8 { STUNServer = 1, TURNServer = 2}
 
 table ICEServer {
@@ -99,6 +106,77 @@ table AliasResolved {
 	peerId			: uint32;
 }
 
+// Lobbies
+
+table LobbyDetails {
+	ownerPeer		: uint32;
+	lobbyType		: uint8;
+	maxMembers		: uint16;
+	attributeSet	: AttributeSet;
+}
+
+table LobbyMemberDetails {
+	attributeSet	: AttributeSet;
+}
+
+table LobbyCreate {
+	lobbyType		: uint8;
+	maxMembers		: uint16;
+}
+
+table LobbyDidCreate {
+	lobbyId			: uint32;
+	lobby			: LobbyDetails;
+}
+
+table LobbyJoin {
+	lobbyId			: uint32;
+}
+
+table LobbyDidJoin {
+	lobbyId			: uint32;
+	peerId			: uint32;
+	lobby			: LobbyDetails;
+	memberDetails	: LobbyMemberDetails;
+}
+
+table LobbyLeave {
+	lobbyId			: uint32;
+}
+
+table LobbyDidLeave {
+	lobbyId			: uint32;
+	peerId			: uint32;
+}
+
+table LobbyUpdate {
+	lobbyId			: uint32;
+	lobbyType		: uint8;
+	maxMembers		: uint16;
+	attributeSet	: AttributeSet;
+}
+
+table LobbyDidUpdate {
+	lobbyId			: uint32;
+	revision		: uint32;
+	lobbyType		: uint8;
+	maxMembers		: uint16;
+	attributeSet	: AttributeSet;
+}
+
+table LobbyMemberUpdate {
+	lobbyId			: uint32;
+	peerId			: uint32;
+	attributeSet	: AttributeSet;
+}
+
+table LobbyMemberDidUpdate {
+	lobbyId			: uint32;
+	peerId			: uint32;
+	revision		: uint32;
+	attributeSet	: AttributeSet;
+}
+
 // Message switch
 union MessageType {
 	// Main peer-server connection (1 -> 9)
@@ -110,6 +188,12 @@ union MessageType {
 	AliasLookup, AliasResolved,
 	AliasRegisterError:Error, AliasRegisterSuccess:Success,
 	AliasUnregisterError:Error, AliasUnregisterSuccess:Success,
+	// Lobby system (40 -> 49)
+	LobbyCreate = 40, LobbyDidCreate, LobbyCreateError:Error,
+	LobbyJoin, LobbyDidJoin, LobbyJoinError:Error,
+	LobbyLeave, LobbyDidLeave, LobbyLeaveError:Error,
+	LobbyUpdate, LobbyDidUpdate, LobbyUpdateError:Error,
+	LobbyMemberUpdate, LobbyMemberDidUpdate, LobbyMemberUpdateError:Error,
 }
 
 table Message {
