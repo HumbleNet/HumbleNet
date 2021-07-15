@@ -46,15 +46,16 @@ Project Dependencies:
     - Linux: use your preferred package manager, like `apt-get`.
     - Mac: can be installed using `brew`.
     - Win: download the installer via site https://cmake.org/download/.
-2. Make (https://www.gnu.org/software/make/manual/make.html)
-    - Unix: already installed.
-    - Win: you can use Cygwin.
+2. Build system supported by CMake
+    - Make (https://www.gnu.org/software/make/manual/make.html)
+    - Visual Studio ( https://visualstudio.microsoft.com/ )
+    - Ninja ( https://ninja-build.org/ )
+    - XCode ( https://developer.apple.com/xcode/ )
 3. FlatBuffers (https://google.github.io/flatbuffers/index.html)
-    - Download the source code. The HumbleNet is way behind the current version of FlatBuffers. It's using the version 1.11.0.
-        1. Download the Release [here](https://github.com/google/flatbuffers/releases/tag/v1.11.0).
-    - Follow the instructions here (https://google.github.io/flatbuffers/flatbuffers_guide_building.html);
-    - You should get as result the `flatc` compiler executable.
-    - Put your output directory (where the `flatc` exists, generally a `build` dir) into your `PATH`, so the compiler can be accessed anywhere.
+    - This is included as a submodule now so ensure you run
+      ```sh
+      git submodule update --init
+      ```
 4. Go Language [here](https://golang.org/)
     - Download and install the compiler via [download page](https://golang.org/dl/).
     - Test on your terminal if you can execute `go version`;
@@ -63,19 +64,14 @@ Project Dependencies:
 Compilation:
 ------------
 
-1. Download the project from github;
-2. Go the downloaded folder;
-3. Create a `build` folder (just to better organize the output code) and enter the directory;
-4. Run the command: `cmake ..` (with 2 dots), this will configure into the directory all files needed to build the library;
-5. Now it's need to copy the FlatBuffers include files:
-    1. Go to folder where you downloaded the FlatBuffers;
-    2. Copy the folder `flatbuffers` inside the `include` dir;
-    3. Go back to your `<HumbleNetDir>/build` folder;
-    4. Paste the `flatbuffers` folder into the `humblenet` dir, along side the `humblepeer_generated.h` file;
-    5. This folder contains the `flatbuffers.h` file, that is a source dependency.
-6. From the `build` folder you can run the `make` command alone, and it will try to build all code, or with the desired `target`, example:
-    1. `make all`: will build all executables and libraries;
-    2. `make clean`: will clean the directory, but mantain the config files;
-    3. `make humblenet_test_peer`: build the test peer found in `<HumberNetDir>/tests/test_peer.cpp`;
-    4. `make peer-server`: will build the test server found in `<HumbleNetDir>/src/peer-server`;
-
+1. Clone the source code from github
+   ```shell
+   git clone https://github.com/HumbleNet/HumbleNet
+   ```
+2. Go into the checkout folder
+3. Run the command: `cmake -S . -B build` this will configure into the directory all files needed to build the library;
+4. From the `build` folder you can run the `cmake --build .` command alone, and it will try to build all code, or with the desired `target`, example:
+    1. `cmake --build .`: will build all executables and libraries;
+    2. `cmake --build . --target clean`: will clean the directory, but mantain the config files;
+    3. `cmake --build . --target humblenet_test_peer`: build the test peer found in `<HumberNetDir>/tests/test_peer.cpp`;
+    4. `cmake --build . --target peer-server`: will build the test server found in `<HumbleNetDir>/src/peer-server`;
