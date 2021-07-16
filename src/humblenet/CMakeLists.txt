@@ -13,20 +13,17 @@ endif()
 if(HUMBLENET_DESKTOP)
 	add_custom_command(OUTPUT exported_osx.map
 		COMMAND APIBuilder osx ${CMAKE_CURRENT_SOURCE_DIR}/HumbleNet_API.json ${CMAKE_CURRENT_BINARY_DIR}/exported_osx.map
-		MAIN_DEPENDENCY HumbleNet_API.json
-		DEPENDS APIBuilder
+		DEPENDS APIBuilder HumbleNet_API.json
 		COMMENT "Process API to OS X exported symbol list"
 	)
 	add_custom_command(OUTPUT exported_linux.map
 		COMMAND APIBuilder linux ${CMAKE_CURRENT_SOURCE_DIR}/HumbleNet_API.json ${CMAKE_CURRENT_BINARY_DIR}/exported_linux.map
-		MAIN_DEPENDENCY HumbleNet_API.json
-		DEPENDS APIBuilder
+		DEPENDS APIBuilder HumbleNet_API.json
 		COMMENT "Process API to Linux exported symbol list"
 	)
 	add_custom_command(OUTPUT cert_pem.h
 		COMMAND APIBuilder include ${CMAKE_CURRENT_SOURCE_DIR}/cert.pem ${CMAKE_CURRENT_BINARY_DIR}/cert_pem.h
-		MAIN_DEPENDENCY cert.pem
-		DEPENDS APIBuilder
+		DEPENDS APIBuilder cert.pem
 		COMMENT "Converting cert.pem into a header"
 	)
 	if(APPLE)
@@ -163,15 +160,13 @@ if(HUMBLENET_DESKTOP)
 
 	add_custom_command(OUTPUT humblenet_loader_procs.h
 		COMMAND APIBuilder loader ${CMAKE_CURRENT_SOURCE_DIR}/HumbleNet_API.json ${CMAKE_CURRENT_BINARY_DIR}/humblenet_loader_procs.h
-		MAIN_DEPENDENCY HumbleNet_API.json
-		DEPENDS APIBuilder
+		DEPENDS APIBuilder HumbleNet_API.json
 		COMMENT "Process API to humblenet_loader_procs.h"
 	)
 
 	add_custom_target(humblenet_cs
 		COMMAND APIBuilder csharp ${CMAKE_CURRENT_SOURCE_DIR}/HumbleNet_API.json ${CMAKE_CURRENT_SOURCE_DIR}/humblenet_api.cs ${CMAKE_BINARY_DIR}/humblenet.cs
-		MAIN_DEPENDENCY HumbleNet_API.json
-		DEPENDS APIBuilder "${CMAKE_CURRENT_SOURCE_DIR}/humblenet_api.cs"
+		DEPENDS APIBuilder "${CMAKE_CURRENT_SOURCE_DIR}/humblenet_api.cs" HumbleNet_API.json
 		BYPRODUCTS ${CMAKE_BINARY_DIR}/humblenet.cs
 		SOURCES humblenet_api.cs
 		COMMENT "Process API to humblenet.cs"

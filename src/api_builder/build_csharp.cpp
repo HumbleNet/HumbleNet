@@ -60,26 +60,12 @@ void template_replace_tokens( std::ostream& out, const std::string& _template, T
 		out.write( _template.c_str() + last, _template.length() - last );
 }
 
-static bool has_option( json_value* options, const std::string& option ) {
-	if( !options )
-		return false;
-
-	for( auto& it : jsonArrayIterator(options) ) {
-		if( get_object_string( it ) == option )
-			return true;
-	}
-
-	return false;
-}
-
 template<typename T>
-static bool has_any_options( json_value* options, const T& list ) {
-	if( !options )
-		return false;
+static bool has_any_options( json& options, const T& list ) {
+	if (!options.is_object()) return false;
 
 	for( auto& option : list ) {
-		if( has_option( options, option ) )
-			return true;
+		if (options.contains("option")) return true;
 	}
 
 	return false;
@@ -99,40 +85,41 @@ static std::unordered_set< std::string > split( const std::string& s, char delim
 	return parts;
 }
 
-static void parseTypedefs(json_value* root, std::map< std::string, std::string >& typeMap )
+static void parseTypedefs(json& root, std::map< std::string, std::string >& typeMap )
 {
-	assert(root->type == json_array);
+	assert(root.is_array());
 
-	for (auto& it: jsonArrayIterator(root)) {
-		std::string tdef = get_object_string_key( it, "typedef" );
+	for (auto& it: root) {
+		std::string tdef =  json_optional<std::string>(it, "typedef");
 
 		if( tdef.empty() )
 			continue;
 
-		json_value* cstype = get_object_key( it, "cstype" );
-		std::string mapped = get_object_string_key( cstype, "mapped" );
+		auto cstype = json_optional<json>(it, "cstype");
+		auto mapped = json_optional<std::string>(cstype, "mapped");
 
-		if( ! mapped.empty() )
+		if (!mapped.empty()) {
 			typeMap.insert( std::make_pair( tdef, mapped ) );
+		}
 	}
 }
 
-void write_functions( std::ostream& out, json_value* function_root, const std::map< std::string, std::string>& typeMap, const std::string& _template, const std::unordered_set< std::string >& includes, const std::unordered_set< std::string >& excludes ) {
-	assert(function_root->type == json_array);
+void write_functions( std::ostream& out, const json& function_root, const std::map< std::string, std::string>& typeMap, const std::string& _template, const std::unordered_set< std::string >& includes, const std::unordered_set< std::string >& excludes ) {
+	assert(function_root.is_array());
 
-	for (auto& it: jsonArrayIterator(function_root))
+	for (auto& it: function_root)
 	{
-		std::string comment = get_object_string_key(it, "_comment");
+		std::string comment = json_optional<std::string>(it, "_comment");
 		if (!comment.empty()) {
 			out << "\n// " << comment << "\n";
 		}
-		std::string funcname = get_object_string_key(it, "functionname");
-		std::string returntype = get_object_string_key(it, "returntype");
+		std::string funcname = json_optional<std::string>(it, "functionname");
+		std::string returntype = json_optional<std::string>(it, "returntype");
 		
 		if (!funcname.empty() && !returntype.empty()) {
 
-			json_value* params = get_object_key(it, "params");
-			json_value* options = get_object_key(it, "options");
+			auto params = json_optional<json>(it, "params");
+			auto options = json_optional<json>(it, "options");
 
 			if( ! excludes.empty() && has_any_options( options, excludes ) )
 				continue;
@@ -142,18 +129,18 @@ void write_functions( std::ostream& out, json_value* function_root, const std::m
 
 			std::stringstream ss;
 
-			if (params) {
+			if (params.is_array()) {
 				ss << "(";
 				std::stringstream argss;
-				for (auto& pit : jsonArrayIterator(params))
+				for (auto& pit : params)
 				{
-					std::string paramtype = get_object_string_key(pit, "paramtype");
+					std::string paramtype = json_optional<std::string>(pit, "paramtype");
 					auto typeIt = typeMap.find( paramtype );
 					if( typeIt != typeMap.end() ) {
 						paramtype = typeIt->second;
 					}
 
-					std::string paramname = get_object_string_key(pit, "paramname");
+					std::string paramname = json_optional<std::string>(pit, "paramname");
 					ss << " " << paramtype << " " << paramname << ",";
 				}
 				ss.seekp(-1, std::ios_base::cur);
@@ -183,25 +170,25 @@ void write_functions( std::ostream& out, json_value* function_root, const std::m
 	}
 }
 
-void write_enums( std::ostream& out, json_value* enum_root ) {
-	assert(enum_root->type == json_array);
+void write_enums( std::ostream& out, const json& enum_root ) {
+	assert(enum_root.is_array());
 
-	for (auto& it: jsonArrayIterator(enum_root))
+	for (auto& it: enum_root)
 	{
-		std::string enumname = get_object_string_key( it, "enumname");
-		json_value* values = get_object_key( it, "values" );
+		std::string enumname =  json_optional<std::string>(it, "enumname");
+		auto values = json_optional<json>(it, "values");
 
-		if( enumname.empty() || !values || values->type != json_array )
+		if( enumname.empty() || !values.is_array() )
 			continue;
 
 		out << "\n";
 		out << "	public enum " << enumname << "\n";
 		out << "	{\n";
 
-		for (auto& vit: jsonArrayIterator(values)) {
-			std::string doc = get_object_string_key( vit, "doc" );
-			std::string name = get_object_string_key( vit, "name" );
-			std::string value = get_object_string_key( vit, "value" );
+		for (auto& vit: values) {
+			std::string doc =  json_optional<std::string>(vit, "doc");
+			std::string name =  json_optional<std::string>(vit, "name");
+			std::string value =  json_optional<std::string>(vit, "value");
 
 			if( ! doc.empty() )
 				out << "		// " << doc << "\n";
@@ -231,12 +218,13 @@ void buildCSharp(const std::string& input, const std::string& _template, const s
 		die("Unable to load template file");
 	}
 
-	json_value *root = json_parse(jsBuff.c_str(), jsBuff.size());
-	if (root) {
+	try {
+		auto root = json::parse(jsBuff);
+
 		std::map< std::string, std::string > typeMap;
 
-		json_value *typedef_root = get_object_key(root, "typedefs");
-		if( typedef_root )
+		auto typedef_root = json_optional<json>(root, "typedefs");
+		if( typedef_root.is_array() )
 			parseTypedefs( typedef_root, typeMap );
 
 		auto processToken = [root,typeMap] ( std::ostream& out, const std::string& token ) {
@@ -256,16 +244,14 @@ void buildCSharp(const std::string& input, const std::string& _template, const s
 					}
 				}
 
-				write_functions( out, get_object_key(root,"functions"), typeMap, function_template, includes, excludes );
+				write_functions( out, root["functions"], typeMap, function_template, includes, excludes );
 			} else if( token == "enums" ) {
-				write_enums( out, get_object_key(root,"enums") );
+				write_enums( out, root["enums"] );
 			}
 		};
 
 		template_replace_tokens(outfile, tpl, processToken );
-
-		json_value_free(root);
-	} else {
+	} catch(json::parse_error& _ex) {
 		die("Unable to parse JSON file");
 	}
 }

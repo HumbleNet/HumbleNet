@@ -13,19 +13,22 @@ void buildExport(const std::string& mode, const std::string& input, const std::s
 
 	std::string jsBuff = loadFile(input);
 
-	json_value *root = json_parse(jsBuff.c_str(), jsBuff.size());
-	if (root) {
-		json_value *function_root = get_object_key(root, "functions");
+	try {
+		auto root = json::parse( jsBuff );
 
-		assert(function_root->type == json_array);
+		assert ( root.is_object() );
+
+		auto function_root = json_optional<json>(root, "functions");
+
+		assert( function_root.is_array() );
 
 		if (isLinux) {
 			outfile << "{\nglobal:\n";
 		}
 
-		for (auto& it: jsonArrayIterator(function_root))
+		for (auto& it: function_root)
 		{
-			std::string funcname = get_object_string_key(it, "functionname");
+			std::string funcname = json_optional<std::string>(it, "functionname");
 			if (!funcname.empty()) {
 				if (isLinux) { // Linux
 					outfile << "\t" << funcname << ";\n";
@@ -38,9 +41,7 @@ void buildExport(const std::string& mode, const std::string& input, const std::s
 		if (isLinux) {
 			outfile << "local: *;\n};\n";
 		}
-
-		json_value_free(root);
-	} else {
+	} catch(json::parse_error &_ex) {
 		die("Unable to parse JSON file");
 	}
 }
