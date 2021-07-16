@@ -36,6 +36,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   endif()
 elseif(MSVC)
   set(MSVC_DISABLED_WARNINGS_LIST
+      "C4061" # enumerator 'enum' in switch of enum 'type' is not explicitly handled by a case label
+      "C4065" # switch statement contains 'default' but no 'case' labels
       "C4100" # 'exarg' : unreferenced formal parameter
       "C4127" # conditional expression is constant
       "C4200" # nonstandard extension used : zero-sized array in
@@ -46,6 +48,7 @@ elseif(MSVC)
               # possible loss of data
       "C4245" # 'initializing' : conversion from 'long' to
               # 'unsigned long', signed/unsigned mismatch
+      "C4255" # no function prototype given: converting '()' to '(void)'
       "C4267" # conversion from 'size_t' to 'int', possible loss of data
       "C4371" # layout of class may have changed from a previous version of the
               # compiler due to better packing of member '...'
@@ -67,6 +70,7 @@ elseif(MSVC)
               # copy constructor is inaccessible or deleted
       "C4626" # assignment operator could not be generated because a base class
               # assignment operator is inaccessible or deleted
+      "C4668" # '__cplusplus' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
       "C4701" # potentially uninitialized local variable
       "C4702" # unreachable code
       "C4706" # assignment within conditional expression
