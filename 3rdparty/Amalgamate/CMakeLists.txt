@@ -1,4 +1,3 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.1)
 PROJECT(Amalgamate)
 
 if(APPLE)
@@ -40,4 +39,3 @@ LINK
 PROPERTIES
 	FOLDER 3rdParty/Tools
 )
-

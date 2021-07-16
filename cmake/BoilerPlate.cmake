@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.9)
 
 ### setup options
 ## Include guard
@@ -15,6 +15,8 @@ endif()
 
 if(EMSCRIPTEN)
     list(APPEND CMAKE_FIND_LIBRARY_SUFFIXES ".bc")
+    set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS} -Wno-warn-absolute-paths")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-warn-absolute-paths")
     set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -g4 -s DEMANGLE_SUPPORT=1 -s ASSERTIONS=2")
 endif()
 
@@ -38,23 +40,13 @@ if(NOT WIN32 AND NOT EMSCRIPTEN)
 endif()
 
 if(APPLE)
-    option(USE_LIBCPP "Use the LLVM libc++ instead of GCC libstdc++ on OS X" ON)
-    if(USE_LIBCPP)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
-        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -stdlib=libc++")
-        set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -stdlib=libc++")
-    endif()
     if (NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-        set(CMAKE_OSX_DEPLOYMENT_TARGET "10.7")
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
     endif()
 endif()
 
 if(EMSCRIPTEN)
-    set(PLATFORM_PREFIX             "emscripten")
-    set(CMAKE_EXECUTABLE_SUFFIX     ".js")
 elseif(LINUX)
-    set(PLATFORM_PREFIX             "linux")
     if(CMAKE_SIZEOF_VOID_P MATCHES "8" AND NOT(FORCE32) )
         set(LIB_RPATH_DIR           "lib64")
         set_property(GLOBAL PROPERTY FIND_LIBRARY_USE_LIB64_PATHS ON)
@@ -65,8 +57,8 @@ elseif(LINUX)
         set_property(GLOBAL PROPERTY FIND_LIBRARY_USE_LIB64_PATHS OFF)
 
         ### Ensure LargeFileSupport on 32bit linux
-        set(CMAKE_C_FLAGS           "${CMAKE_C_FLAGS} -D_FILE_OFFSET_BITS=64")
-        set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} -D_FILE_OFFSET_BITS=64")
+        set(CMAKE_C_FLAGS           "${CMAKE_C_FLAGS} -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE")
+        set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE")
 
         ### Enable SSE instructions
         set(CMAKE_C_FLAGS           "${CMAKE_C_FLAGS} -msse -msse2 -msse3")
@@ -80,26 +72,15 @@ elseif(LINUX)
 
     set_property(GLOBAL PROPERTY LIBRARY_RPATH_DIRECTORY ${LIB_RPATH_DIR})
 
-    set(CMAKE_SKIP_BUILD_RPATH              TRUE)
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH      TRUE)
+    set(CMAKE_INSTALL_NAME_DIR              "")
     set(CMAKE_INSTALL_RPATH                 "\$ORIGIN/${LIB_RPATH_DIR}")
-    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH   FALSE)
+    set(CMAKE_BUILD_RPATH                   "\$ORIGIN/${LIB_RPATH_DIR}")
 elseif(APPLE)
-    set(PLATFORM_PREFIX             "macosx")
-
     set(BIN_RPATH "@executable_path/../Frameworks")
 
-    if (POLICY CMP0068)
-        cmake_policy(SET CMP0068 NEW)
-        set(CMAKE_INSTALL_NAME_DIR "")
-        set(CMAKE_INSTALL_RPATH ${BIN_RPATH})
-        set(CMAKE_BUILD_RPATH ${BIN_RPATH})
-    else()
-        set(CMAKE_SKIP_BUILD_RPATH              TRUE)
-        set(CMAKE_BUILD_WITH_INSTALL_RPATH      TRUE)
-        set(CMAKE_INSTALL_RPATH                 ${BIN_RPATH})
-        set(CMAKE_INSTALL_RPATH_USE_LINK_PATH   FALSE)
-    endif()
+    set(CMAKE_INSTALL_NAME_DIR              "")
+    set(CMAKE_INSTALL_RPATH                 ${BIN_RPATH})
+    set(CMAKE_BUILD_RPATH                   ${BIN_RPATH})
 
     ### Enable SSE4 instructions
     if(ENABLE_SSE4)
@@ -107,7 +88,10 @@ elseif(APPLE)
         set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} -msse4")
     endif()
 elseif(WIN32)
-    set(PLATFORM_PREFIX             "win32")
+    if(CMAKE_CL_64)
+        set_property(GLOBAL PROPERTY FIND_LIBRARY_USE_LIB64_PATHS ON)
+    endif()
+elseif(ANDROID)
 else()
     MESSAGE(FATAL_ERROR "Unhandled Platform")
 endif()
@@ -116,27 +100,25 @@ endif()
 if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     message(STATUS "Exporting variables to parent scope")
 
-    set(LINUX                               ${LINUX} PARENT_SCOPE)
-    set(LINUX_X86                           ${LINUX_X86} PARENT_SCOPE)
-    set(LINUX_X86_64                        ${LINUX_X86_64} PARENT_SCOPE)
-    set(FORCE32                             ${FORCE32} PARENT_SCOPE)
-    set(PLATFORM_PREFIX                     ${PLATFORM_PREFIX} PARENT_SCOPE)
+    set(_exposed
+        LINUX LINUX_X86 LINUX_X86_64 FORCE32
 
-    set(CMAKE_INCLUDE_CURRENT_DIR           ${CMAKE_INCLUDE_CURRENT_DIR} PARENT_SCOPE)
+        CMAKE_C_FLAGS CMAKE_CXX_FLAGS
+        CMAKE_EXE_LINKER_FLAGS_DEBUG CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS
+
+        CMAKE_FIND_LIBRARY_SUFFIXES
+
+        CMAKE_SKIP_BUILD_RPATH CMAKE_BUILD_WITH_INSTALL_RPATH
+        CMAKE_INSTALL_RPATH CMAKE_INSTALL_RPATH_USE_LINK_PATH
+    )
 
 if(APPLE)
-    set(CMAKE_OSX_ARCHITECTURES             ${CMAKE_OSX_ARCHITECTURES} PARENT_SCOPE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET         ${CMAKE_OSX_DEPLOYMENT_TARGET} PARENT_SCOPE)
+    list(APPEND _exposed CMAKE_OSX_ARCHITECTURES CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 
-    set(CMAKE_C_FLAGS                       ${CMAKE_C_FLAGS} PARENT_SCOPE)
-    set(CMAKE_CXX_FLAGS                     ${CMAKE_CXX_FLAGS} PARENT_SCOPE)
-
-    set(CMAKE_SKIP_BUILD_RPATH              ${CMAKE_SKIP_BUILD_RPATH} PARENT_SCOPE)
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH      ${CMAKE_BUILD_WITH_INSTALL_RPATH} PARENT_SCOPE)
-    set(CMAKE_INSTALL_RPATH                 ${CMAKE_INSTALL_RPATH} PARENT_SCOPE)
-    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH   ${CMAKE_INSTALL_RPATH_USE_LINK_PATH} PARENT_SCOPE)
-    set(CMAKE_EXECUTABLE_SUFFIX             ${CMAKE_EXECUTABLE_SUFFIX} PARENT_SCOPE)
+    foreach(_var ${_exposed})
+        set(${_var} "${${_var}}" PARENT_SCOPE)
+    endforeach()
 endif()
 
 ## include guard
