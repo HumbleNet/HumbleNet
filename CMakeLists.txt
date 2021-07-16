@@ -47,10 +47,8 @@ endif()
 if(HUMBLENET_NATIVE)
 	include(ExternalProject)
 	include(SelectLibraryConfigurations)
-	if(APPLE OR WIN32 OR LINUX)
-		set(DEFAULT_USE_BORING_SSL ON)
-	endif()
-	option(USE_BORINGSSL "Use BoringSSL instead of OpenSSL" ${DEFAULT_USE_BORING_SSL})
+
+	option(USE_MBEDTLS "Use mbedTLS" ON)
 
 	if(LINUX_X86)
 		set(LINUX_ARCH_CONFIG
@@ -67,67 +65,56 @@ if(HUMBLENET_NATIVE)
 	endif()
 
 	# region SSL External project
-	if(USE_BORINGSSL)
-		find_program(GO_EXECUTABLE go)
-		if(WIN32)
-			find_program(CMAKE_ASM_NASM_COMPILER
-				NAMES yasm vsyasm
-				HINTS ENV YASMPATH
-			)
-		endif()
-		ExternalProject_Add(BoringSSL-build
-			SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/boringssl
+	if(USE_MBEDTLS)
+		ExternalProject_Add(mbedtls
+			SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/mbedtls
 			CMAKE_CACHE_ARGS
 				-DCMAKE_OSX_ARCHITECTURES:STRING=${CMAKE_OSX_ARCHITECTURES}
 				-DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=${CMAKE_OSX_DEPLOYMENT_TARGET}
 				-DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
-				-DGO_EXECUTABLE:FILEPATH=${GO_EXECUTABLE}
 				-DCMAKE_C_COMPILER:FILEPATH=${CMAKE_C_COMPILER}
 				-DCMAKE_CXX_COMPILER:FILEPATH=${CMAKE_CXX_COMPILER}
-				-DCMAKE_ASM_NASM_COMPILER:FILEPATH=${CMAKE_ASM_NASM_COMPILER}
 				-DCMAKE_USER_MAKE_RULES_OVERRIDE:FILEPATH=${CMAKE_USER_MAKE_RULES_OVERRIDE}
 				-DCMAKE_USER_MAKE_RULES_OVERRIDE_CXX:FILEPATH=${CMAKE_USER_MAKE_RULES_OVERRIDE_CXX}
 				-DOPENSSL_NO_ASM:BOOL=ON
-				-DBUILD_TESTS:BOOL=OFF
-				-DBUILD_TOOLS:BOOL=OFF
+				-DENABLE_TESTING:BOOL=OFF
+				-DENABLE_PROGRAMS:BOOL=OFF
 				${LINUX_ARCH_CONFIG}
 		)
 
-		ExternalProject_Get_Property(BoringSSL-build INSTALL_DIR BINARY_DIR)
+		ExternalProject_Get_Property(mbedtls INSTALL_DIR BINARY_DIR)
 
 		if (CMAKE_CONFIGURATION_TYPES)
-			SET(BoringSSL_crypto_LIBRARY_DEBUG ${BINARY_DIR}/crypto/Debug/${CMAKE_STATIC_LIBRARY_PREFIX}crypto${CMAKE_STATIC_LIBRARY_SUFFIX})
-			SET(BoringSSL_crypto_LIBRARY_RELEASE ${BINARY_DIR}/crypto/Release/${CMAKE_STATIC_LIBRARY_PREFIX}crypto${CMAKE_STATIC_LIBRARY_SUFFIX})
-			select_library_configurations(BoringSSL_crypto)
-			SET(BoringSSL_ssl_LIBRARY_DEBUG ${BINARY_DIR}/ssl/Debug/${CMAKE_STATIC_LIBRARY_PREFIX}ssl${CMAKE_STATIC_LIBRARY_SUFFIX})
-			SET(BoringSSL_ssl_LIBRARY_RELEASE ${BINARY_DIR}/ssl/Release/${CMAKE_STATIC_LIBRARY_PREFIX}ssl${CMAKE_STATIC_LIBRARY_SUFFIX})
-			select_library_configurations(BoringSSL_ssl)
-			set(LWS_BORING_LIBS ${BoringSSL_ssl_LIBRARY} ${BoringSSL_crypto_LIBRARY})
-			set(LWS_BORING_INTERFACE
-				$<$<CONFIG:Debug>:${BoringSSL_ssl_LIBRARY_DEBUG}>
-				$<$<NOT:$<CONFIG:Debug>>:${BoringSSL_ssl_LIBRARY_RELEASE}>
-				$<$<CONFIG:Debug>:${BoringSSL_crypto_LIBRARY_DEBUG}>
-				$<$<NOT:$<CONFIG:Debug>>:${BoringSSL_crypto_LIBRARY_RELEASE}>
+			foreach(mbedtls_lib crypto tls x509)
+				SET(MBEDTLS_${mbedtls_lib}_LIBRARY_DEBUG ${BINARY_DIR}/library/Debug/${CMAKE_STATIC_LIBRARY_PREFIX}mbed${mbedtls_lib}${CMAKE_STATIC_LIBRARY_SUFFIX})
+				SET(MBEDTLS_${mbedtls_lib}_LIBRARY_RELEASE ${BINARY_DIR}/library/Release/${CMAKE_STATIC_LIBRARY_PREFIX}mbed${mbedtls_lib}${CMAKE_STATIC_LIBRARY_SUFFIX})
+				select_library_configurations(mbedtls_${mbedtls_lib})
+			endforeach()
+			set(LWS_MBEDTLS_LIBS ${MBEDTLS_ssl_LIBRARY} ${MBEDTLS_crypto_LIBRARY})
+			set(LWS_MBEDTLS_INTERFACE
+				$<$<CONFIG:Debug>:${MBEDTLS_tls_LIBRARY_DEBUG}>
+				$<$<NOT:$<CONFIG:Debug>>:${MBEDTLS_tls_LIBRARY_RELEASE}>
+				$<$<CONFIG:Debug>:${MBEDTLS_crypto_LIBRARY_DEBUG}>
+				$<$<NOT:$<CONFIG:Debug>>:${MBEDTLS_crypto_LIBRARY_RELEASE}>
 			)
 		else()
-			set(BoringSSL_crypto_LIBRARY
-				"${INSTALL_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}crypto${CMAKE_STATIC_LIBRARY_SUFFIX}"
-			)
-			set(BoringSSL_ssl_LIBRARY
-				"${INSTALL_DIR}/lib/${EP_BUILD_SUFFIX}${CMAKE_STATIC_LIBRARY_PREFIX}ssl${CMAKE_STATIC_LIBRARY_SUFFIX}"
-			)
-			set(LWS_BORING_LIBS ${BoringSSL_ssl_LIBRARY} ${BoringSSL_crypto_LIBRARY})
-			set(LWS_BORING_INTERFACE ${LWS_BORING_LIBS})
+			foreach(mbedtls_lib crypto tls x509)
+				set(MBEDTLS_${mbedtls_lib}_LIBRARY
+					"${BINARY_DIR}/library/${CMAKE_STATIC_LIBRARY_PREFIX}mbed${mbedtls_lib}${CMAKE_STATIC_LIBRARY_SUFFIX}"
+				)
+			endforeach()
+			set(LWS_MBEDTLS_LIBS ${MBEDTLS_tls_LIBRARY} ${MBEDTLS_crypto_LIBRARY})
+			set(LWS_MBEDTLS_INTERFACE ${LWS_MBEDTLS_LIBS})
 		endif()
 
-		set(BoringSSL_INCLUDE_DIR
-			${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/boringssl/include
+		set(MBEDTLS_INCLUDE_DIR
+			${INSTALL_DIR}/include
 		)
 
-		set(LWS_BORING_CONFIG
-			-DLWS_USE_BORINGSSL:BOOL=ON
-			-DLWS_BORINGSSL_LIB:STRING=${LWS_BORING_LIBS}
-			-DLWS_BORINGSSL_INCLUDE_DIRS:STRING=${BoringSSL_INCLUDE_DIR}
+		set(LWS_MBEDTLS_CONFIG
+			-DLWS_USE_MBEDTLS:BOOL=ON
+			-DLWS_MBEDTLS_LIB:STRING=${LWS_MBEDTLS_LIBS}
+			-DLWS_MBEDTLS_INCLUDE_DIRS:STRING=${MBEDTLS_INCLUDE_DIR}
 		)
 	endif()
 	# endregion
@@ -158,11 +145,11 @@ if(HUMBLENET_NATIVE)
 			-DCMAKE_USER_MAKE_RULES_OVERRIDE_CXX:FILEPATH=${CMAKE_USER_MAKE_RULES_OVERRIDE_CXX}
 			-DLWS_WITHOUT_TESTAPPS:BOOL=ON
 			${LWS_ZLIB_CONFIG}
-			${LWS_BORING_CONFIG}
+			${LWS_MBEDTLS_CONFIG}
 			${LINUX_ARCH_CONFIG}
 	)
-	if(USE_BORINGSSL)
-		ExternalProject_Add_StepDependencies(websockets-build configure BoringSSL-build)
+	if(USE_MBEDTLS)
+		ExternalProject_Add_StepDependencies(websockets-build configure mbedtls)
 	endif()
 
 	ExternalProject_Get_Property(websockets-build INSTALL_DIR BINARY_DIR)
@@ -203,7 +190,7 @@ if(HUMBLENET_NATIVE)
 
 	set_target_properties(websockets
 		PROPERTIES
-			INTERFACE_LINK_LIBRARIES "${ZLIB_LIBRARY};${LWS_BORING_INTERFACE}"
+			INTERFACE_LINK_LIBRARIES "${ZLIB_LIBRARY};${LWS_MBEDTLS_INTERFACE}"
 	)
 
 	add_dependencies(websockets websockets-build)

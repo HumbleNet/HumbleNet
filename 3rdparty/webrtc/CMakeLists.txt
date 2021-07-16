@@ -1,9 +1,9 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 2.8.12)
 PROJECT(webrtc_microstack)
 
-if(USE_BORINGSSL)
-	set(OPENSSL_INCLUDE_DIR ${BoringSSL_INCLUDE_DIR})
-	set(OPENSSL_LIBRARIES ${BoringSSL_ssl_LIBRARY} ${BoringSSL_crypto_LIBRARY})
+if(USE_MBEDTLS)
+#	set(OPENSSL_INCLUDE_DIR ${BoringSSL_INCLUDE_DIR})
+#	set(OPENSSL_LIBRARIES ${BoringSSL_ssl_LIBRARY} ${BoringSSL_crypto_LIBRARY})
 else()
 	find_package(OpenSSL)
 endif()
@@ -35,6 +35,6 @@ PROPERTIES
 	FOLDER 3rdParty/Library
 )
 
-if(USE_BORINGSSL)
-	add_dependencies(webrtc_microstack BoringSSL-build)
+if(USE_MBEDTLS)
+	add_dependencies(webrtc_microstack mbedtls)
 endif()
