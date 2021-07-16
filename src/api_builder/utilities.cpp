@@ -33,38 +33,3 @@ std::string loadFile(const std::string& file)
 	}
 	return ret;
 }
-
-json_value* get_object_key(json_value *root, const std::string& key)
-{
-	assert(root->type == json_object);
-
-	for (auto& it : jsonObjectIterator(root))
-	{
-		if (key == it.name) {
-			return it.value;
-		}
-	}
-	return nullptr;
-}
-
-std::string get_object_string_key(json_value *root, const std::string& key)
-{
-	json_value *val = get_object_key(root, key);
-
-	if (!val) return "";
-
-	if (val->type == json_string) {
-		return val->u.string.ptr;
-	}
-	return "";
-}
-
-std::string get_object_string(json_value *val)
-{
-	if (!val) return "";
-
-	if (val->type == json_string) {
-		return val->u.string.ptr;
-	}
-	return "";
-}

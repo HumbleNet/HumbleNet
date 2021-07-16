@@ -11,22 +11,22 @@ void buildLoader(const std::string& input, const std::string& output)
 
 	std::string jsBuff = loadFile(input);
 
-	json_value *root = json_parse(jsBuff.c_str(), jsBuff.size());
-	if (root) {
-		json_value *function_root = get_object_key(root, "functions");
+	try {
+		auto root = json::parse(jsBuff);
+		auto function_root = json_optional<json>(root, "functions");
 
-		assert(function_root->type == json_array);
+		assert(function_root.is_array());
 
-		for (auto& it: jsonArrayIterator(function_root))
+		for (auto& it: function_root)
 		{
-			std::string comment = get_object_string_key(it, "_comment");
+			std::string comment = json_optional<std::string>(it, "_comment");
 			if (!comment.empty()) {
 				outfile << "// Comment " << comment << "\n";
 			}
-			std::string funcname = get_object_string_key(it, "functionname");
-			std::string returntype = get_object_string_key(it, "returntype");
+			std::string funcname = json_optional<std::string>(it, "functionname");
+			std::string returntype = json_optional<std::string>(it, "returntype");
 			if (!funcname.empty() && !returntype.empty()) {
-				json_value* params = get_object_key(it, "params");
+				auto params = json_optional<json>(it, "params");
 				outfile << "#ifndef HUMBLENET_SKIP_" << funcname << "\n";
 				std::stringstream ss;
 				ss << "LOADER_PROC(";
@@ -34,13 +34,13 @@ void buildLoader(const std::string& input, const std::string& output)
 				ss << ",";
 				ss << funcname;
 				ss << ",";
-				if (params) {
+				if (params.is_array()) {
 					ss << "(";
 					std::stringstream argss;
-					for (auto& pit : jsonArrayIterator(params))
+					for (auto& pit : params)
 					{
-						std::string paramtype = get_object_string_key(pit, "paramtype");
-						std::string paramname = get_object_string_key(pit, "paramname");
+						std::string paramtype = json_optional<std::string>(pit, "paramtype");
+						std::string paramname = json_optional<std::string>(pit, "paramname");
 						ss << paramtype << " " << paramname << ",";
 						argss << paramname << ",";
 					}
@@ -60,8 +60,7 @@ void buildLoader(const std::string& input, const std::string& output)
 				outfile << ss.str() << "#endif\n";
 			}
 		}
-		json_value_free(root);
-	} else {
+	} catch( json::parse_error& _ex ) {
 		die("Unable to parse JSON file");
 	}
 }
