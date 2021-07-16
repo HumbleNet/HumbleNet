@@ -1,5 +1,3 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.1)
-
 if(HUMBLENET_DESKTOP)
 	list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/Catch2/lib/cmake)
 	find_package(Catch2 REQUIRED)
@@ -96,4 +94,3 @@ if(HUMBLENET_DESKTOP)
 
 	catch_discover_tests(test_client_p2p_connection)
 endif()
-

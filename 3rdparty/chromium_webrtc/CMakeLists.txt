@@ -1,4 +1,3 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.0.2)
 PROJECT(chromium_webrtc)
 
 set(WEBRTC_ROOT "" CACHE PATH "Location of the chromium WebRTC source directory")

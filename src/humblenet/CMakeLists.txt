@@ -1,6 +1,3 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.1)
-
-
 if(HUMBLENET_NATIVE)
 	list(APPEND PLATFORM_LIBRARIES
 		webrtc_microstack websockets

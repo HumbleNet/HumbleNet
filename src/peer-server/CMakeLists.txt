@@ -1,5 +1,3 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.1)
-
 CreateTool(peer-server
 DIRS
 	.
