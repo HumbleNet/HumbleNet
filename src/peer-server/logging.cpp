@@ -34,7 +34,7 @@ std::string logTime()
 	gmtime_r(&t.tv_sec, &tparts);
 	char buff[100], buff2[40];
 	strftime(buff2, sizeof(buff2), "%y-%m-%d %H:%M:%S", &tparts);
-	snprintf(buff, sizeof(buff), "%s.%03d", buff2, t.tv_usec / 1000);
+	snprintf(buff, sizeof(buff), "%s.%03d", buff2, (int)(t.tv_usec / 1000));
 	return std::string(buff);
 #endif
 }
@@ -67,4 +67,3 @@ void logFileOpen(const std::string& logFile)
 	}
 	lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE, &log_func);
 }
-
