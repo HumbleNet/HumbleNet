@@ -9,8 +9,9 @@
 #include <vector>
 #include <map>
 
-#include "humblenet.h"
+#include "humblenet_p2p.h"
 #include "humblepeer_generated.h"
+#include "lobby.h"
 
 #ifdef __GNUC__
 #define WARN_UNUSED_RESULT __attribute__ ((warn_unused_result))
@@ -19,6 +20,7 @@
 #endif
 
 namespace humblenet {
+	typedef std::unordered_map<std::string, std::string> AttributeMap;
 
 	// Ice Server definition
 	struct ICEServer {
@@ -118,6 +120,33 @@ namespace humblenet {
 	ha_requestId sendAliasLookup(P2PSignalConnection *conn, const std::string& alias);
 	ha_bool sendAliasResolved(P2PSignalConnection *conn, const std::string& alias, PeerId peer, ha_requestId requestId);
 
+	// Lobby messages
+	ha_requestId sendLobbyCreate(P2PSignalConnection *conn, humblenet_LobbyType type, uint16_t maxMembers);
+	ha_bool sendLobbyDidCreate(P2PSignalConnection* conn, ha_requestId requestId, const Lobby& lobby);
+	ha_requestId sendLobbyJoin(P2PSignalConnection *conn, LobbyId lobbyId);
+	ha_bool sendLobbyDidJoinSelf(P2PSignalConnection* conn, ha_requestId requestId, const Lobby& lobby, PeerId peerId,
+								 const AttributeMap& memberAttributes = {});
+	ha_bool sendLobbyDidJoin(P2PSignalConnection* conn, LobbyId lobbyId, PeerId peerId,
+							 const AttributeMap& memberAttributes);
+	ha_requestId sendLobbyLeave(P2PSignalConnection * conn, LobbyId lobbyId);
+	ha_bool sendLobbyDidLeave(P2PSignalConnection* conn, ha_requestId requestId, LobbyId lobbyId, PeerId peerId);
+
+	ha_requestId sendLobbyUpdate(P2PSignalConnection* conn, LobbyId lobbyId,
+								 humblenet_LobbyType type, uint16_t maxMembers,
+								 HumblePeer::AttributeMode mode, const AttributeMap& attributes);
+
+	ha_requestId sendLobbyMemberUpdate(P2PSignalConnection* conn,
+									   LobbyId lobbyId, PeerId peerId,
+									   HumblePeer::AttributeMode mode, const AttributeMap& attributes);
+
+	ha_bool sendLobbyDidUpdate(P2PSignalConnection* conn, ha_requestId requestId,
+							   LobbyId lobbyId,
+							   humblenet_LobbyType type, uint16_t maxMembers,
+							   HumblePeer::AttributeMode mode, const AttributeMap& attributes);
+
+	ha_bool sendLobbyMemberDidUpdate(P2PSignalConnection* conn, ha_requestId requestId,
+									 LobbyId lobbyId, PeerId peerId,
+									 HumblePeer::AttributeMode mode, const AttributeMap& attributes);
 }  // namespace humblenet
 
 

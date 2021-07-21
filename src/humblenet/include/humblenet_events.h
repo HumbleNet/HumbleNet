@@ -20,6 +20,20 @@ typedef enum {
 	HUMBLENET_EVENT_ALIAS_REGISTER_ERROR,           /**< Sent when alias registration fails */
 	HUMBLENET_EVENT_ALIAS_RESOLVED,                 /**< Sent when an alias is resolved */
 	HUMBLENET_EVENT_ALIAS_NOT_FOUND,                /**< Sent when an alias fails to resolve */
+
+	/* Lobby events */
+	HUMBLENET_EVENT_LOBBY_CREATE_SUCCESS = 0x200,   /**< Sent when a lobby is created */
+	HUMBLENET_EVENT_LOBBY_CREATE_ERROR,             /**< Sent when a lobby created fails */
+	HUMBLENET_EVENT_LOBBY_JOIN,                     /**< Sent when you join a lobby */
+	HUMBLENET_EVENT_LOBBY_JOIN_ERROR,               /**< Sent when a lobby join fails */
+	HUMBLENET_EVENT_LOBBY_LEAVE,                    /**< Sent when you leave a lobby */
+	HUMBLENET_EVENT_LOBBY_LEAVE_ERROR,              /**< Sent when a lobby leave fails */
+	HUMBLENET_EVENT_LOBBY_UPDATE,                   /**< Sent when a lobby is updated */
+	HUMBLENET_EVENT_LOBBY_UPDATE_ERROR,             /**< Sent when a lobby updated fails */
+	HUMBLENET_EVENT_LOBBY_MEMBER_JOIN,              /**< Sent when another member joins a lobby you are in */
+	HUMBLENET_EVENT_LOBBY_MEMBER_LEAVE,             /**< Sent when another member leaves a lobby you are in */
+	HUMBLENET_EVENT_LOBBY_MEMBER_UPDATE,            /**< Sent when a member is updated */
+	HUMBLENET_EVENT_LOBBY_MEMBER_UPDATE_ERROR,      /**< Send when a member update fails */
 } HumbleNet_EventType;
 
 typedef struct {
@@ -39,11 +53,19 @@ typedef struct {
 	PeerId peer_id;           /**< A peer ID. */
 } HumbleNet_Event_Peer;
 
+typedef struct {
+	HumbleNet_EventType type; /**< LOBBY_* events */
+	uint32_t request_id;      /**< The original request ID for this event response */
+	LobbyId lobby_id;         /**< A lobby ID. */
+	PeerId peer_id;           /**< A peer ID. Could be 0 if no peer relevant to the event */
+} HumbleNet_Event_Lobby;
+
 union HumbleNet_Event {
 	HumbleNet_EventType type;
 	HumbleNet_Event_Common common;
 	HumbleNet_Event_Error error;
 	HumbleNet_Event_Peer peer;
+	HumbleNet_Event_Lobby lobby;
 
 	uint8_t padding[64];
 };

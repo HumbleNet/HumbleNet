@@ -353,3 +353,701 @@ SCENARIO( "sendAliasResolved", "[server][alias]" )
 }
 
 // endregion
+
+// region Lobby
+
+SCENARIO( "sendLobbyCreate", "[client][lobby]" )
+{
+	GIVEN( "a request for private with unlimited members" ) {
+		humblenet::sendLobbyCreate( &conn, HUMBLENET_LOBBY_TYPE_PRIVATE, 0 );
+
+		THEN( "it creates a LobbyCreate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyCreate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyCreate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( msg->lobbyType() == static_cast<uint8_t>(HUMBLENET_LOBBY_TYPE_PRIVATE));
+			CHECK( msg->maxMembers() == 0 );
+
+			CHECK( conn.message->requestId() != 0 );
+		}
+	}
+
+	GIVEN( "a request for public with max members" ) {
+		humblenet::sendLobbyCreate( &conn, HUMBLENET_LOBBY_TYPE_PUBLIC, 8 );
+
+		THEN( "it creates a LobbyCreate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyCreate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyCreate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( msg->lobbyType() == static_cast<uint8_t>(HUMBLENET_LOBBY_TYPE_PUBLIC));
+			CHECK( msg->maxMembers() == 8 );
+
+			CHECK( conn.message->requestId() != 0 );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyDidCreate", "[server][lobby]" )
+{
+	humblenet::Lobby lobby( 0xbeefdead, 0xd00d, HUMBLENET_LOBBY_TYPE_PUBLIC, 4 );
+	lobby.attributes.insert( {"key", "value"} );
+
+	GIVEN( "a created lobby response" ) {
+		humblenet::sendLobbyDidCreate( &conn, 0xdeadbeef, lobby );
+
+		THEN( "it creates a LobbyDidCreate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidCreate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidCreate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( msg->lobbyId() == 0xbeefdead );
+
+			CHECK( conn.message->requestId() == 0xdeadbeef );
+
+			REQUIRE( msg->lobby() != nullptr );
+
+			CHECK( msg->lobby()->ownerPeer() == lobby.ownerPeerId );
+
+			CHECK( msg->lobby()->lobbyType() == lobby.type );
+
+			CHECK( msg->lobby()->maxMembers() == lobby.maxMembers );
+
+			REQUIRE( msg->lobby()->attributeSet() != nullptr );
+
+			auto attribSet = msg->lobby()->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Replace );
+
+			REQUIRE( attribSet->attributes() != nullptr );
+
+			auto attribs = attribSet->attributes();
+
+			CHECK( attribs->size() == 1 );
+
+			auto v = attribs->LookupByKey( "key" );
+
+			CHECK( v->value()->str() == "value" );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyJoin", "[client][lobby]" )
+{
+	GIVEN( "a join lobby request" ) {
+		humblenet::sendLobbyJoin( &conn, 0xbeefdead );
+
+		THEN( "it creates a LobbyJoin message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyJoin );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyJoin*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( msg->lobbyId() == 0xbeefdead );
+
+			CHECK( conn.message->requestId() != 0 );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyDidJoinSelf", "[server][lobby]" )
+{
+	humblenet::Lobby lobby( 0xbeefdead, 0xd00d1, HUMBLENET_LOBBY_TYPE_PUBLIC, 4 );
+	lobby.attributes.insert( {"key", "value"} );
+
+	GIVEN( "a did join lobby response with lobby details" ) {
+		humblenet::sendLobbyDidJoinSelf( &conn, 0xdeadbeef, lobby, 0xd00d );
+
+		THEN( "it creates a LobbyDidJoin message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidJoin );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidJoin*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( msg->lobbyId() == lobby.lobbyId );
+
+			CHECK( conn.message->requestId() == 0xdeadbeef );
+
+			CHECK( msg->peerId() == 0xd00d );
+
+			REQUIRE( msg->lobby() != nullptr );
+
+			CHECK( msg->lobby()->ownerPeer() == lobby.ownerPeerId );
+
+			CHECK( msg->lobby()->lobbyType() == lobby.type );
+
+			CHECK( msg->lobby()->maxMembers() == lobby.maxMembers );
+
+			REQUIRE( msg->lobby()->attributeSet() != nullptr );
+
+			auto attribSet = msg->lobby()->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Replace );
+
+			REQUIRE( attribSet->attributes() != nullptr );
+
+			auto attribs = attribSet->attributes();
+
+			CHECK( attribs->size() == 1 );
+
+			auto v = attribs->LookupByKey( "key" );
+
+			CHECK( v->value()->str() == "value" );
+
+			CHECK( msg->memberDetails() == nullptr );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyDidJoin", "[server][lobby]" )
+{
+	GIVEN( "a did join lobby response with member attribute details" ) {
+		humblenet::sendLobbyDidJoin( &conn, 0xbeefdead, 0xd00d, {{"skill", "1"}} );
+
+		THEN( "it creates a LobbyDidJoin message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidJoin );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidJoin*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( msg->lobbyId() == 0xbeefdead );
+
+			CHECK( conn.message->requestId() == 0 );
+
+			CHECK( msg->peerId() == 0xd00d );
+
+			CHECK( msg->lobby() == nullptr );
+
+			REQUIRE( msg->memberDetails() != nullptr );
+
+			auto attribSet = msg->memberDetails()->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Replace );
+
+			REQUIRE( attribSet->attributes() != nullptr );
+
+			auto attribs = attribSet->attributes();
+
+			CHECK( attribs->size() == 1 );
+
+			auto v = attribs->LookupByKey( "skill" );
+
+			CHECK( v->value()->str() == "1" );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyLeave", "[client][lobby]" )
+{
+	GIVEN( "a lave lobby request" ) {
+		humblenet::sendLobbyLeave( &conn, 0xbeefdead );
+
+		THEN( "it creates a LobbyLeave message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyLeave );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyLeave*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( msg->lobbyId() == 0xbeefdead );
+
+			CHECK( conn.message->requestId() != 0 );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyDidLeave", "[server][lobby]" )
+{
+	GIVEN( "a did leave lobby response" ) {
+		humblenet::sendLobbyDidLeave( &conn, 0xdeadbeef, 0xbeefdead, 0xd00d );
+
+		THEN( "it creates a LobbyDidJoin message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidLeave );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidLeave*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( msg->lobbyId() == 0xbeefdead );
+
+			CHECK( conn.message->requestId() == 0xdeadbeef );
+
+			CHECK( msg->peerId() == 0xd00d );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyUpdate", "[client][lobby]" )
+{
+	humblenet::AttributeMap attributes = {{"key", "value"}};
+
+	LobbyId lobbyId = 0xbeefdead;
+
+	GIVEN( "only updating attributes " ) {
+		auto reqId = humblenet::sendLobbyUpdate( &conn, lobbyId,
+												 HUMBLENET_LOBBY_TYPE_UNKNOWN, 0,
+												 HumblePeer::AttributeMode::Merge, attributes );
+
+		THEN( "it creates a LobbyUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->lobbyType() == 0 );
+
+			CHECK( msg->maxMembers() == 0 );
+
+			REQUIRE( msg->attributeSet() != nullptr );
+
+			auto attribSet = msg->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Merge );
+
+			auto attribs = attribSet->attributes();
+
+			REQUIRE( attribs->size() == 1 );
+
+			auto v = attribs->LookupByKey( "key" );
+
+			CHECK( v->value()->str() == "value" );
+		}
+	}
+
+	GIVEN( "only updating lobby type" ) {
+		auto reqId = humblenet::sendLobbyUpdate( &conn, lobbyId,
+												 HUMBLENET_LOBBY_TYPE_PRIVATE, 0,
+												 HumblePeer::AttributeMode::Merge, {} );
+
+		THEN( "it creates a LobbyUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->lobbyType() == HUMBLENET_LOBBY_TYPE_PRIVATE );
+
+			CHECK( msg->maxMembers() == 0 );
+
+			CHECK( msg->attributeSet() == nullptr );
+		}
+	}
+
+	GIVEN( "only updating max members" ) {
+		auto reqId = humblenet::sendLobbyUpdate( &conn, lobbyId,
+												 HUMBLENET_LOBBY_TYPE_UNKNOWN, 8,
+												 HumblePeer::AttributeMode::Merge, {} );
+
+		THEN( "it creates a LobbyUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->lobbyType() == 0 );
+
+			CHECK( msg->maxMembers() == 8 );
+
+			CHECK( msg->attributeSet() == nullptr );
+		}
+	}
+
+	GIVEN( "only updating empty attributes as a replace" ) {
+		auto reqId = humblenet::sendLobbyUpdate( &conn, lobbyId,
+												 HUMBLENET_LOBBY_TYPE_UNKNOWN, 0,
+												 HumblePeer::AttributeMode::Replace, {} );
+
+		THEN( "it creates a LobbyUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->lobbyType() == 0 );
+
+			CHECK( msg->maxMembers() == 0 );
+
+			REQUIRE( msg->attributeSet() != nullptr );
+
+			auto attribSet = msg->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Replace );
+
+			REQUIRE( attribSet->attributes() == nullptr );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyMemberUpdate", "[client][lobby]" )
+{
+	humblenet::AttributeMap attributes = {{"key", "value"}};
+	LobbyId lobbyId = 0xbeefdead;
+	PeerId peerId = 0xd00d;
+
+	GIVEN( "a setting attributes" ) {
+		ha_requestId reqId = humblenet::sendLobbyMemberUpdate( &conn, lobbyId, peerId,
+															   HumblePeer::AttributeMode::Merge, attributes );
+
+		THEN( "it creates a LobbyMemberUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyMemberUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyMemberUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->peerId() == peerId );
+
+			REQUIRE( msg->attributeSet() != nullptr );
+
+			auto attribSet = msg->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Merge );
+
+			auto attribs = attribSet->attributes();
+
+			REQUIRE( attribs->size() == 1 );
+
+			auto v = attribs->LookupByKey( "key" );
+
+			CHECK( v->value()->str() == "value" );
+		}
+	}
+
+	GIVEN( "no attributes as a replace" ) {
+		ha_requestId reqId = humblenet::sendLobbyMemberUpdate( &conn, lobbyId, peerId,
+															   HumblePeer::AttributeMode::Replace, {} );
+
+		THEN( "it creates a LobbyMemberUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyMemberUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyMemberUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->peerId() == peerId );
+
+			REQUIRE( msg->attributeSet() != nullptr );
+
+			auto attribSet = msg->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Replace );
+
+			CHECK( attribSet->attributes() == nullptr );
+		}
+	}
+
+	GIVEN( "no attributes as a merge" ) {
+		ha_requestId reqId = humblenet::sendLobbyMemberUpdate( &conn, lobbyId, peerId,
+															   HumblePeer::AttributeMode::Merge, {} );
+
+		THEN( "it creates a LobbyMemberUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyMemberUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyMemberUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->peerId() == peerId );
+
+			CHECK( msg->attributeSet() == nullptr );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyDidUpdate", "[server][lobby]" )
+{
+	humblenet::AttributeMap attributes = {{"key", "value"}};
+
+	ha_requestId reqId = 0xbeef;
+	LobbyId lobbyId = 0xbeefdead;
+
+	GIVEN( "a updating attributes only" ) {
+		humblenet::sendLobbyDidUpdate( &conn, reqId, lobbyId,
+									   HUMBLENET_LOBBY_TYPE_UNKNOWN, 0,
+									   HumblePeer::AttributeMode::Merge, attributes );
+
+		THEN( "it creates a LobbyDidUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->revision() == 0);
+
+			CHECK( msg->lobbyType() == 0 );
+
+			CHECK( msg->maxMembers() == 0 );
+
+			REQUIRE( msg->attributeSet() != nullptr );
+
+			auto attribSet = msg->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Merge );
+
+			auto attribs = attribSet->attributes();
+
+			REQUIRE( attribs->size() == 1 );
+
+			auto v = attribs->LookupByKey( "key" );
+
+			CHECK( v->value()->str() == "value" );
+		}
+	}
+
+	GIVEN( "updating only lobby type" ) {
+		humblenet::sendLobbyDidUpdate( &conn, reqId, lobbyId,
+									   HUMBLENET_LOBBY_TYPE_PRIVATE, 0,
+									   HumblePeer::AttributeMode::Merge, {} );
+
+		THEN( "it creates a LobbyDidUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->revision() == 0);
+
+			CHECK( msg->lobbyType() == HUMBLENET_LOBBY_TYPE_PRIVATE );
+
+			CHECK( msg->maxMembers() == 0 );
+
+			CHECK( msg->attributeSet() == nullptr );
+		}
+	}
+
+	GIVEN( "updating only max members" ) {
+		humblenet::sendLobbyDidUpdate( &conn, reqId, lobbyId,
+									   HUMBLENET_LOBBY_TYPE_UNKNOWN, 8,
+									   HumblePeer::AttributeMode::Merge, {} );
+
+		THEN( "it creates a LobbyDidUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->revision() == 0);
+
+			CHECK( msg->lobbyType() == 0 );
+
+			CHECK( msg->maxMembers() == 8 );
+
+			CHECK( msg->attributeSet() == nullptr );
+		}
+	}
+
+	GIVEN( "blank attributes as replace" ) {
+		humblenet::sendLobbyDidUpdate( &conn, reqId, lobbyId,
+									   HUMBLENET_LOBBY_TYPE_UNKNOWN, 0,
+									   HumblePeer::AttributeMode::Replace, {} );
+
+		THEN( "it creates a LobbyDidUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->revision() == 0);
+
+			CHECK( msg->lobbyType() == 0 );
+
+			CHECK( msg->maxMembers() == 0 );
+
+			REQUIRE( msg->attributeSet() != nullptr );
+
+			auto attribSet = msg->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Replace );
+
+			CHECK( attribSet->attributes() == nullptr );
+		}
+	}
+
+	GIVEN( "blank attributes as merge" ) {
+		humblenet::sendLobbyDidUpdate( &conn, reqId, lobbyId,
+									   HUMBLENET_LOBBY_TYPE_UNKNOWN, 0,
+									   HumblePeer::AttributeMode::Merge, {} );
+
+		THEN( "it creates a LobbyDidUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyDidUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyDidUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->revision() == 0);
+
+			CHECK( msg->lobbyType() == 0 );
+
+			CHECK( msg->maxMembers() == 0 );
+
+			CHECK( msg->attributeSet() == nullptr );
+		}
+	}
+}
+
+SCENARIO( "sendLobbyDidUpdateMember", "[server][lobby]" )
+{
+	humblenet::AttributeMap attributes = {{"key", "value"}};
+
+	ha_requestId reqId = 0xbeef;
+	LobbyId lobbyId = 0xbeefdead;
+	PeerId peerId = 0xd00d;
+
+	GIVEN( "a attribute update" ) {
+		humblenet::sendLobbyMemberDidUpdate( &conn, reqId, lobbyId, peerId,
+											 HumblePeer::AttributeMode::Merge, attributes );
+
+		THEN( "it creates a LobbyMemberDidUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyMemberDidUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyMemberDidUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->peerId() == peerId );
+
+			CHECK( msg->revision() == 0);
+
+			REQUIRE( msg->attributeSet() != nullptr );
+
+			auto attribSet = msg->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Merge );
+
+			auto attribs = attribSet->attributes();
+
+			REQUIRE( attribs->size() == 1 );
+
+			auto v = attribs->LookupByKey( "key" );
+
+			CHECK( v->value()->str() == "value" );
+		}
+	}
+
+	GIVEN( "no attributes as a replace" ) {
+		humblenet::sendLobbyMemberDidUpdate( &conn, reqId, lobbyId, peerId,
+											 HumblePeer::AttributeMode::Replace, {} );
+
+		THEN( "it creates a LobbyMemberDidUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyMemberDidUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyMemberDidUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->peerId() == peerId );
+
+			CHECK( msg->revision() == 0);
+
+			REQUIRE( msg->attributeSet() != nullptr );
+
+			auto attribSet = msg->attributeSet();
+
+			CHECK( attribSet->mode() == HumblePeer::AttributeMode::Replace );
+
+			auto attribs = attribSet->attributes();
+
+			CHECK( attribSet->attributes() == nullptr );
+		}
+	}
+
+	GIVEN( "no attributes as a merge" ) {
+		humblenet::sendLobbyMemberDidUpdate( &conn, reqId, lobbyId, peerId,
+											 HumblePeer::AttributeMode::Merge, {} );
+
+		THEN( "it creates a LobbyMemberDidUpdate message" ) {
+			REQUIRE( conn.message->message_type() == HumblePeer::MessageType::LobbyMemberDidUpdate );
+		}
+
+		auto msg = reinterpret_cast<const HumblePeer::LobbyMemberDidUpdate*>(conn.message->message());
+
+		THEN( "it has the correct properties" ) {
+			CHECK( conn.message->requestId() == reqId );
+
+			CHECK( msg->lobbyId() == lobbyId );
+
+			CHECK( msg->peerId() == peerId );
+
+			CHECK( msg->revision() == 0);
+
+			CHECK( msg->attributeSet() == nullptr );
+		}
+	}
+}
+
+// endregion

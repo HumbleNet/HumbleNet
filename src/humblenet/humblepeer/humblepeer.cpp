@@ -4,7 +4,6 @@
 
 #include <limits>
 
-#include "humblenet.h"
 #include "humblepeer.h"
 
 #include "crc.h"
@@ -62,8 +61,28 @@ namespace humblenet {
 		}
 	}
 
+	flatbuffers::Offset<HumblePeer::AttributeSet> buildAttributeSet(flatbuffers::FlatBufferBuilder& fbb,
+																	HumblePeer::AttributeMode mode,
+																	const AttributeMap& attributes)
+	{
+		if (mode == HumblePeer::AttributeMode::Merge && attributes.empty()) {
+			// result is nothing so don't bother creating an attribute set
+			return 0;
+		}
+
+		std::vector<flatbuffers::Offset<HumblePeer::Attribute>> tempAttribs;
+		tempAttribs.reserve( attributes.size());
+
+		for (auto& it : attributes) {
+			tempAttribs.emplace_back( HumblePeer::CreateAttributeDirect(fbb, it.first.c_str(), it.second.c_str()) );
+		}
+
+		return HumblePeer::CreateAttributeSetDirect( fbb, mode, tempAttribs.empty() ? nullptr : &tempAttribs );
+	}
+
 	enum class RequestType : uint8_t {
 		Alias = 0x1,
+		Lobby = 0x2,
 	};
 
 	ha_requestId generateRequestId(RequestType type) {
@@ -390,4 +409,182 @@ namespace humblenet {
 		return sendP2PMessage(conn, fbb);
 	}
 
+	// region Lobby messages
+
+	flatbuffers::Offset<HumblePeer::LobbyDetails> buildLobbyDetails(flatbuffers::FlatBufferBuilder& fbb,
+																	PeerId ownerPeerId,
+																	humblenet_LobbyType lobbyType, uint16_t maxMembers,
+																	const AttributeMap& attributes)
+	{
+		auto attribSet = buildAttributeSet(fbb, HumblePeer::AttributeMode::Replace, attributes );
+
+		return HumblePeer::CreateLobbyDetails(fbb, ownerPeerId, lobbyType, maxMembers, attribSet);
+
+	}
+
+	ha_requestId sendLobbyCreate(P2PSignalConnection *conn, humblenet_LobbyType type, uint16_t maxMembers)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto requestId = generateRequestId(RequestType::Lobby);
+		auto packet = HumblePeer::CreateLobbyCreate(fbb, static_cast<uint8_t>(type), maxMembers);
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::LobbyCreate, packet.Union(), requestId);
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb) ? requestId : 0;
+	}
+
+	ha_bool sendLobbyDidCreate(P2PSignalConnection* conn, ha_requestId requestId, const Lobby& lobby)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+
+		auto lobbyDetails = buildLobbyDetails(fbb, lobby.ownerPeerId, lobby.type, lobby.maxMembers, lobby.attributes);
+
+		auto packet = HumblePeer::CreateLobbyDidCreate(fbb, lobby.lobbyId, lobbyDetails);
+
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::LobbyDidCreate, packet.Union(), requestId);
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+	}
+
+	ha_requestId sendLobbyJoin(P2PSignalConnection *conn, LobbyId lobbyId)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto requestId = generateRequestId(RequestType::Lobby);
+		auto packet = HumblePeer::CreateLobbyJoin(fbb, lobbyId);
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::LobbyJoin, packet.Union(), requestId);
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb) ? requestId : 0;
+	}
+
+	ha_bool sendLobbyDidJoinSelf(P2PSignalConnection* conn, ha_requestId requestId, const Lobby& lobby, PeerId peerId,
+							 const AttributeMap& memberAttributes)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+
+		auto lobbyDetails = buildLobbyDetails(fbb, lobby.ownerPeerId, lobby.type, lobby.maxMembers, lobby.attributes);
+
+		flatbuffers::Offset<HumblePeer::LobbyMemberDetails> memberDetails;
+		if (!memberAttributes.empty()) {
+			auto attribSet = buildAttributeSet(fbb, HumblePeer::AttributeMode::Replace, memberAttributes);
+
+			memberDetails = HumblePeer::CreateLobbyMemberDetails(fbb, attribSet);
+		}
+
+		auto packet = HumblePeer::CreateLobbyDidJoin(fbb, lobby.lobbyId, peerId, lobbyDetails, memberDetails);
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::LobbyDidJoin, packet.Union(), requestId);
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+	}
+
+	ha_bool sendLobbyDidJoin(P2PSignalConnection* conn, LobbyId lobbyId, PeerId peerId,
+							 const AttributeMap& memberAttributes)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+
+		auto attribSet = buildAttributeSet(fbb, HumblePeer::AttributeMode::Replace, memberAttributes);
+
+		auto memberDetails = HumblePeer::CreateLobbyMemberDetails(fbb, attribSet);
+
+		auto packet = HumblePeer::CreateLobbyDidJoin(fbb, lobbyId, peerId, 0, memberDetails);
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::LobbyDidJoin, packet.Union());
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+	}
+
+	ha_requestId sendLobbyLeave(P2PSignalConnection *conn, LobbyId lobbyId)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto requestId = generateRequestId(RequestType::Lobby);
+		auto packet = HumblePeer::CreateLobbyLeave(fbb, lobbyId);
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::LobbyLeave, packet.Union(), requestId);
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb) ? requestId : 0;
+	}
+
+	ha_bool sendLobbyDidLeave(P2PSignalConnection *conn, ha_requestId requestId, LobbyId lobbyId, PeerId peerId)
+	{
+		flatbuffers::FlatBufferBuilder fbb(DEFAULT_FBB_SIZE, &peer_fbb_allocator);
+		auto packet = HumblePeer::CreateLobbyDidLeave(fbb, lobbyId, peerId);
+		auto msg = HumblePeer::CreateMessage(fbb, HumblePeer::MessageType::LobbyDidLeave, packet.Union(), requestId);
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+	}
+
+	ha_requestId sendLobbyUpdate(P2PSignalConnection* conn,
+								 LobbyId lobbyId,
+								 humblenet_LobbyType type, uint16_t maxMembers,
+								 HumblePeer::AttributeMode mode, const AttributeMap& attributes)
+	{
+		flatbuffers::FlatBufferBuilder fbb( DEFAULT_FBB_SIZE, &peer_fbb_allocator );
+
+		auto requestId = generateRequestId( RequestType::Lobby );
+
+		auto attribSet = buildAttributeSet(fbb, mode, attributes );
+
+		auto packet = HumblePeer::CreateLobbyUpdate( fbb, lobbyId, static_cast<uint8_t>(type), maxMembers, attribSet );
+		auto msg = HumblePeer::CreateMessage( fbb, HumblePeer::MessageType::LobbyUpdate, packet.Union(), requestId );
+
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb) ? requestId : 0;
+	}
+
+	ha_requestId sendLobbyMemberUpdate(P2PSignalConnection* conn,
+									   LobbyId lobbyId, PeerId peerId,
+									   HumblePeer::AttributeMode mode, const AttributeMap& attributes)
+	{
+		flatbuffers::FlatBufferBuilder fbb( DEFAULT_FBB_SIZE, &peer_fbb_allocator );
+
+		auto requestId = generateRequestId( RequestType::Lobby );
+
+		auto attribSet = buildAttributeSet(fbb, mode, attributes );
+
+		auto packet = HumblePeer::CreateLobbyMemberUpdate( fbb, lobbyId, peerId, attribSet );
+		auto msg = HumblePeer::CreateMessage( fbb, HumblePeer::MessageType::LobbyMemberUpdate, packet.Union(), requestId);
+		fbb.Finish( msg );
+
+		return sendP2PMessage( conn, fbb ) ? requestId : 0;
+	}
+
+	ha_bool sendLobbyDidUpdate(P2PSignalConnection* conn, ha_requestId requestId,
+							   LobbyId lobbyId,
+							   humblenet_LobbyType type, uint16_t maxMembers,
+							   HumblePeer::AttributeMode mode, const AttributeMap& attributes)
+	{
+		flatbuffers::FlatBufferBuilder fbb( DEFAULT_FBB_SIZE, &peer_fbb_allocator );
+
+		auto attribSet = buildAttributeSet(fbb, mode, attributes );
+
+		auto packet = HumblePeer::CreateLobbyDidUpdate( fbb, lobbyId, 0, static_cast<uint8_t>(type), maxMembers, attribSet );
+		auto msg = HumblePeer::CreateMessage( fbb, HumblePeer::MessageType::LobbyDidUpdate, packet.Union(), requestId );
+
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+	}
+
+	ha_bool sendLobbyMemberDidUpdate(P2PSignalConnection* conn, ha_requestId requestId,
+								  LobbyId lobbyId, PeerId peerId,
+								  HumblePeer::AttributeMode mode,
+								  const AttributeMap& attributes)
+	{
+		flatbuffers::FlatBufferBuilder fbb( DEFAULT_FBB_SIZE, &peer_fbb_allocator );
+
+		auto attribSet = buildAttributeSet(fbb, mode, attributes );
+
+		auto packet = HumblePeer::CreateLobbyMemberDidUpdate( fbb, lobbyId, peerId, 0, attribSet );
+		auto msg = HumblePeer::CreateMessage( fbb, HumblePeer::MessageType::LobbyMemberDidUpdate, packet.Union(), requestId );
+
+		fbb.Finish(msg);
+
+		return sendP2PMessage(conn, fbb);
+	}
+
+	// endregion
 }  // namespace humblenet
