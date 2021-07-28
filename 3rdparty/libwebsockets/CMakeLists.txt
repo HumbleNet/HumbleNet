@@ -43,6 +43,7 @@ endif()
 option(LWS_USE_EXTERNAL_ZLIB "Search the system for ZLib instead of using the included one (on Windows)" ${LWS_DEFAULT_EXTERNAL_ZLIB})
 option(LWS_USE_CYASSL "Use CyaSSL replacement for OpenSSL. When settings this, you also need to specify LWS_CYASSL_LIB and LWS_CYASSL_INCLUDE_DIRS" OFF)
 option(LWS_USE_BORINGSSL "Use BoringSSL replacement for OpenSSL. When settings this, you also need to specify LWS_BORINGSSL_LIB and LWS_BORINGSSL_INCLUDE_DIRS" OFF)
+option(LWS_USE_MBEDTLS "Use Mbed TLS replacement for OpenSSL. When settings this, you also need to specify LWS_MBEDTLS_LIB and LWS_MBEDTLS_INCLUDE_DIRS" OFF)
 option(LWS_WITHOUT_BUILTIN_GETIFADDRS "Don't use BSD getifaddrs implementation from libwebsockets if it is missing (this will result in a compilation error) ... Default is your libc provides it. On some systems such as uclibc it doesn't exist." OFF)
 option(LWS_WITHOUT_CLIENT "Don't build the client part of the library" OFF)
 option(LWS_WITHOUT_SERVER "Don't build the server part of the library" OFF)
@@ -108,6 +109,22 @@ if (LWS_USE_BORINGSSL)
 		message(FATAL_ERROR "You must set LWS_BORINGSSL_LIB and LWS_BORINGSSL_INCLUDE_DIRS when LWS_USE_BORINGSSL is turned on")
 	endif()
 	set(USE_BORINGSSL 1)
+endif()
+
+if (LWS_USE_MBEDTLS)
+	find_package(MbedTLS CONFIG QUIET)
+
+	set(LWS_MBEDTLS_LIB CACHE STRING "Path to the Mbed TLS library")
+	set(LWS_MBEDTLS_INCLUDE_DIRS CACHE PATH "Path to the Mbed TLS include directory")
+	if (MbedTLS_FOUND)
+		set(LWS_MBEDTLS_LIB ${MbedTLS_LIBRARIES} CACHE STRING "" FORCE)
+		set(LWS_MBEDTLS_INCLUDE_DIRS ${MbedTLS_INCLUDE_DIR} CACHE STRING "" FORCE)
+	endif()
+
+	if ("${LWS_MBEDTLS_LIB}" STREQUAL "" OR "${LWS_MBEDTLS_INCLUDE_DIRS}" STREQUAL "")
+		message(FATAL_ERROR "You must set LWS_MBEDTLS_LIB and LWS_MBEDTLS_INCLUDE_DIRS when LWS_USE_MBEDTLS is turned on")
+	endif()
+	set(USE_MBEDTLS 1)
 endif()
 
 if (LWS_WITHOUT_EXTENSIONS)
@@ -299,7 +316,7 @@ set(SOURCES
 	lib/parsers.c
 	lib/context.c
 	)
-if (FALSE) #NOT LWS_USE_BORINGSSL)
+if (NOT LWS_USE_BORINGSSL)
 	list(APPEND SOURCES
 	lib/sha-1.c
 	)
@@ -539,6 +556,17 @@ if (LWS_WITH_SSL)
 		endforeach()
 
 		list(APPEND LIB_LIST "${LWS_BORINGSSL_LIB}")
+	elseif (LWS_USE_MBEDTLS)
+		# Use Mbed TLS as OpenSSL replacement.
+		# TODO: Add a find_package command for this also.
+		message(STATUS "Mbed TLS include dir: ${LWS_MBEDTLS_INCLUDE_DIRS}")
+		message(STATUS "Mbed TLS libraries: ${LWS_MBEDTLS_LIB}")
+
+		foreach(inc ${LWS_MBEDTLS_INCLUDE_DIRS})
+			include_directories("${inc}")
+		endforeach()
+
+		list(APPEND LIB_LIST "${LWS_MBEDTLS_LIB}")
 	else()
 		# TODO: Add support for STATIC also.
 		find_package(OpenSSL REQUIRED)
@@ -630,7 +658,7 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 		list(APPEND TEST_APP_LIST ${TEST_NAME})
 	endmacro()
 
-	if (LWS_WITH_SSL AND NOT LWS_USE_CYASSL AND NOT LWS_USE_BORINGSSL)
+	if (LWS_WITH_SSL AND NOT LWS_USE_CYASSL AND NOT LWS_USE_BORINGSSL AND NOT LWS_USE_MBEDTLS)
 		message(STATUS "Searching for OpenSSL executable and dlls")
 		find_package(OpenSSLbins)
 		message(STATUS "OpenSSL executable: ${OPENSSL_EXECUTABLE}")
@@ -773,7 +801,7 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 	# Copy OpenSSL dlls to the output directory on Windows.
 	# (Otherwise we'll get an error when trying to run)
 	#
-	if (WIN32 AND LWS_WITH_SSL AND NOT LWS_USE_CYASSL AND NOT LWS_USE_BORINGSSL)
+	if (WIN32 AND LWS_WITH_SSL AND NOT LWS_USE_CYASSL AND NOT LWS_USE_BORINGSSL AND NOT LWS_USE_MBEDTLS)
 		if(OPENSSL_BIN_FOUND)
 			message(STATUS "OpenSSL dlls found:")
 			message(STATUS "  Libeay: ${LIBEAY_BIN}")
@@ -939,6 +967,11 @@ message(STATUS " LWS_USE_BORINGSSL = ${LWS_USE_BORINGSSL} (BoringSSL replacement
 if (LWS_USE_BORINGSSL)
 message(STATUS "   LWS_BORINGSSL_LIB = ${LWS_BORINGSSL_LIB}")
 message(STATUS "   LWS_BORINGSSL_INCLUDE_DIRS = ${LWS_BORINGSSL_INCLUDE_DIRS}")
+endif()
+message(STATUS " LWS_USE_MBEDTLS = ${LWS_USE_MBEDTLS} (Mbed TLS replacement for OpenSSL)")
+if (LWS_USE_MBEDTLS)
+message(STATUS "   LWS_MBEDTLS_LIB = ${LWS_MBEDTLS_LIB}")
+message(STATUS "   LWS_MBEDTLS_INCLUDE_DIRS = ${LWS_MBEDTLS_INCLUDE_DIRS}")
 endif()
 message(STATUS " LWS_WITHOUT_BUILTIN_GETIFADDRS = ${LWS_WITHOUT_BUILTIN_GETIFADDRS}")
 message(STATUS " LWS_WITHOUT_CLIENT = ${LWS_WITHOUT_CLIENT}")

@@ -12,6 +12,10 @@
  * LWS_OPENSSL_SUPPORT needs to be set also for this to work. */
 #cmakedefine USE_BORINGSSL
 
+/* Define to 1 to use Mbed TLS as a replacement for OpenSSL.
+ * LWS_OPENSSL_SUPPORT needs to be set also for this to work. */
+#cmakedefine USE_MBEDTLS
+
 /* The Libwebsocket version */
 #cmakedefine LWS_LIBRARY_VERSION "${LWS_LIBRARY_VERSION}"
 

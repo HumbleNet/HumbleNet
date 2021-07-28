@@ -158,6 +158,10 @@
 #include <cyassl/error.h>
 unsigned char *
 SHA1(const unsigned char *d, size_t n, unsigned char *md);
+#elif defined(USE_MBEDTLS)
+#include <mbedtls/ssl.h>
+unsigned char *
+SHA1(const unsigned char *d, size_t n, unsigned char *md);
 #else
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
@@ -424,8 +428,11 @@ struct libwebsocket_context {
 #ifdef LWS_OPENSSL_SUPPORT
 	int use_ssl;
 	int allow_non_ssl_on_ssl_port;
+#ifdef USE_MBEDTLS
+#else
 	SSL_CTX *ssl_ctx;
 	SSL_CTX *ssl_client_ctx;
+#endif
 #endif
 	struct libwebsocket_protocols *protocols;
 	int count_protocols;
@@ -610,8 +617,11 @@ struct libwebsocket {
 	} u;
 
 #ifdef LWS_OPENSSL_SUPPORT
+#ifdef USE_MBEDTLS
+#else
 	SSL *ssl;
 	BIO *client_bio;
+#endif
 	unsigned int use_ssl:2;
 #endif
 

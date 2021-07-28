@@ -64,6 +64,8 @@ lws_context_init_server_ssl(struct lws_context_creation_info *info,
 		lwsl_notice(" Compiled with CYASSL support\n");
 #elif defined(USE_BORINGSSL)
 		lwsl_notice(" Compiled with BoringSSL support\n");
+#elif defined(USE_MBEDTLS)
+		lwsl_notice(" Compiled with Mbed TLS support\n");
 #else
 		lwsl_notice(" Compiled with OpenSSL support\n");
 #endif

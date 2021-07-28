@@ -1,3 +1,6 @@
 [submodule "3rdparty/flatbuffers"]
 	path = 3rdparty/flatbuffers
 	url = https://github.com/google/flatbuffers.git
+[submodule "3rdparty/mbedtls"]
+	path = 3rdparty/mbedtls
+	url = https://github.com/ARMmbed/mbedtls.git
