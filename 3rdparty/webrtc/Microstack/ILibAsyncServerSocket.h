@@ -1,5 +1,5 @@
 /*   
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -110,20 +110,28 @@ typedef void (*ILibAsyncServerSocket_OnDisconnect)(ILibAsyncServerSocket_ServerM
 */
 typedef void (*ILibAsyncServerSocket_OnSendOK)(ILibAsyncServerSocket_ServerModule AsyncServerSocketModule, ILibAsyncServerSocket_ConnectionToken ConnectionToken, void *user);
 
-// loopbackFlag: 0 to bind to ANY, 1 to bind to IPv6 loopback first, 2 to bind to IPv4 loopback first.
-ILibAsyncServerSocket_ServerModule ILibCreateAsyncServerSocketModule(void *Chain, int MaxConnections, unsigned short PortNumber, int initialBufferSize, int loopbackFlag, ILibAsyncServerSocket_OnConnect OnConnect,ILibAsyncServerSocket_OnDisconnect OnDisconnect,ILibAsyncServerSocket_OnReceive OnReceive,ILibAsyncServerSocket_OnInterrupt OnInterrupt,ILibAsyncServerSocket_OnSendOK OnSendOK);
+extern const int ILibMemory_ASYNCSERVERSOCKET_CONTAINERSIZE;
+
+#define ILibCreateAsyncServerSocketModule(Chain, MaxConnections, PortNumber, initialBufferSize, loopbackFlag, OnConnect, OnDisconnect, OnReceive, OnInterrupt, OnSendOK) ILibCreateAsyncServerSocketModuleWithMemory(Chain, MaxConnections, PortNumber, initialBufferSize, loopbackFlag, OnConnect, OnDisconnect, OnReceive, OnInterrupt, OnSendOK, 0, 0)
+ILibAsyncServerSocket_ServerModule ILibCreateAsyncServerSocketModuleWithMemory(void *Chain, int MaxConnections, unsigned short PortNumber, int initialBufferSize, int loopbackFlag, ILibAsyncServerSocket_OnConnect OnConnect, ILibAsyncServerSocket_OnDisconnect OnDisconnect, ILibAsyncServerSocket_OnReceive OnReceive, ILibAsyncServerSocket_OnInterrupt OnInterrupt, ILibAsyncServerSocket_OnSendOK OnSendOK, int ServerUserMappedMemorySize, int SessionUserMappedMemorySize);
 
 void *ILibAsyncServerSocket_GetTag(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule);
 void ILibAsyncServerSocket_SetTag(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule, void *user);
 int ILibAsyncServerSocket_GetTag2(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule);
 void ILibAsyncServerSocket_SetTag2(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule, int user);
 #ifndef MICROSTACK_NOTLS
+	typedef void(*ILibAsyncServerSocket_OnSSL)(ILibAsyncServerSocket_ServerModule AsyncServerSocketModule, void* ConnectionToken, SSL* ctx, void **user);
+	void ILibAsyncServerSocket_SSL_SetSink(ILibAsyncServerSocket_ServerModule AsyncServerSocketModule, ILibAsyncServerSocket_OnSSL handler);
+	void* ILibAsyncServerSocket_GetSSL_CTX(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule);
 	#ifdef MICROSTACK_TLS_DETECT
 		void ILibAsyncServerSocket_SetSSL_CTX(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule, void *ssl_ctx, int enableTLSDetect);
 	#else
 		void ILibAsyncServerSocket_SetSSL_CTX(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule, void *ssl_ctx);
 	#endif
 #endif
+
+void ILibAsyncServerSocket_StopListening(ILibAsyncServerSocket_ServerModule module);
+void ILibAsyncServerSocket_ResumeListening(ILibAsyncServerSocket_ServerModule module);
 
 unsigned short ILibAsyncServerSocket_GetPortNumber(ILibAsyncServerSocket_ServerModule ServerSocketModule);
 

@@ -1,11 +1,11 @@
 /*
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -29,6 +29,7 @@ limitations under the License.
 #include <sys/statfs.h>
 #endif
 #include <pthread.h>
+#include <execinfo.h>
 #endif
 #endif 
 
@@ -41,22 +42,21 @@ limitations under the License.
 #include <crtdbg.h>
 #endif
 
-#if defined(WINSOCK2)
-#ifndef _WINSOCK_DEPRECATED_NO_WARNINGS
-//silence warnings about inet_addr and WSASocketA
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
-#ifndef _MINCORE
-#include <Wspiapi.h>
-#endif
+#ifdef WIN32
+	#ifndef _WINSOCK_DEPRECATED_NO_WARNINGS
+	//silence warnings about inet_addr and WSASocketA
+	#define _WINSOCK_DEPRECATED_NO_WARNINGS
+	#endif
 
-//Ws2tcpip.h and Wspiapi.h
-#elif defined(WINSOCK1)
-#include <winsock.h>
-#include <wininet.h>
+	#include <winsock2.h>
+	#include <ws2tcpip.h>
+	#include <iphlpapi.h>
+
+	#ifndef _MINCORE
+	#include <Wspiapi.h>
+	#endif
+
+	#include <Dbghelp.h>
 #endif
 
 #include <time.h>
@@ -67,28 +67,20 @@ limitations under the License.
 #include <sys/sysctl.h>
 #endif
 
-#if defined(WIN32) && !defined(snprintf) && (_MSC_PLATFORM_TOOLSET <= 120)
-#define snprintf(dst, len, frm, ...) _snprintf_s(dst, len, _TRUNCATE, frm, __VA_ARGS__)
+#if defined(WIN32) && !defined(WSA_FLAG_NO_HANDLE_INHERIT)
+#define WSA_FLAG_NO_HANDLE_INHERIT 0x80
 #endif
 
 #include "ILibParsers.h"
+#include "ILibRemoteLogging.h"
+#include "ILibCrypto.h"
+
 #define MINPORTNUMBER 50000
 #define PORTNUMBERRANGE 15000
-#define UPNP_MAX_WAIT 86400	// 24 Hours
+#define UPNP_MAX_WAIT 86400			// 24 Hours
 
 #ifdef _REMOTELOGGINGSERVER
 #include "ILibWebServer.h"
-#endif
-
-#ifndef MICROSTACK_NOTLS
-#include "../core/utils.h"
-#else
-#include "md5.h"
-#endif
-
-#if defined(MICROSTACK_NOTLS)
-char utils_HexTable[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
-char utils_HexTable2[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 #endif
 
 // This is to compile on Windows XP, not needed at runtime
@@ -150,6 +142,11 @@ unsigned long long ILibNTOHLL(unsigned long long v)
 	{ union { unsigned long lv[2]; unsigned long long llv; } u; u.llv = v; return ((unsigned long long)ntohl(u.lv[0]) << 32) | (unsigned long long)ntohl(u.lv[1]); }
 }
 
+//! Returns X where 2^X = Specified Integer
+/*!
+	\param number Integer value to use to solve equation
+	\return X where 2^X = Specified Integer
+*/
 int ILibWhichPowerOfTwo(int number)
 {
 	int retVal = 0;
@@ -173,7 +170,9 @@ typedef struct ILibSparseArray_Root
 	int bucketSize;
 	ILibSparseArray_Bucketizer bucketizer;
 	sem_t LOCK;
+	int userMemorySize;
 }ILibSparseArray_Root;
+const int ILibMemory_SparseArray_CONTAINERSIZE = sizeof(ILibSparseArray_Root);
 
 typedef enum ILibHashtable_Flags
 {
@@ -230,21 +229,22 @@ struct HashNodeEnumerator
 {
 	struct HashNode *node;
 };
-struct ILibLinkedListNode
+typedef struct ILibLinkedListNode
 {
 	void *Data;
 	struct ILibLinkedListNode_Root *Root;
 	struct ILibLinkedListNode *Next;
 	struct ILibLinkedListNode *Previous;
-};
-struct ILibLinkedListNode_Root
+}ILibLinkedListNode;
+typedef struct ILibLinkedListNode_Root
 {
 	sem_t LOCK;
 	long count;
 	void* Tag;
 	struct ILibLinkedListNode *Head;
 	struct ILibLinkedListNode *Tail;
-};
+	void *ExtraMemory;
+}ILibLinkedListNode_Root;
 
 struct ILibReaderWriterLock_Data
 {
@@ -261,93 +261,38 @@ struct ILibReaderWriterLock_Data
 	int PendingWriters;
 	int Exit;
 };
-
+//! Get the amount of pending data in the send buffer of the ILibTransport Abstraction
+/*!
+	\param transport ILibTransport Abstraction to query
+	\return Number of pending bytes
+*/
 unsigned int ILibTransport_PendingBytesToSend(void *transport)
 {
-	return(((ILibTransport*)transport)->PendingBytes(transport));
+	return(((ILibTransport*)transport)->PendingBytesPtr(transport));
 }
+//! Send data on an ILibTransport Abstraction
+/*!
+	\param transport ILibTransport Abstraction
+	\param buffer Data to send
+	\param bufferLength Data Length to send
+	\param ownership Who will free the data to send?
+	\param done Data complete?
+	\return Send Status
+*/
 ILibTransport_DoneState ILibTransport_Send(void *transport, char* buffer, int bufferLength, ILibTransport_MemoryOwnership ownership, ILibTransport_DoneState done)
 {
-	return(((ILibTransport*)transport)->Send(transport, buffer, bufferLength, ownership, done));
+	return(((ILibTransport*)transport)->SendPtr(transport, buffer, bufferLength, ownership, done));
 }
+//! Close an ILibTransport Abstraction
+/*!
+	\param transport ILibTransport Abstraction to close
+*/
 void ILibTransport_Close(void *transport)
 {
-	((ILibTransport*)transport)->Close(transport);
+	if (transport != NULL) { ((ILibTransport*)transport)->ClosePtr(transport); }
 }
 
-
-#if defined(MICROSTACK_NOTLS)
-char* __fastcall util_tohex(char* data, int len, char* out)
-{
-	int i;
-	char *p = out;
-	if (data == NULL || len == 0) { *p = 0; return NULL; }
-	for (i = 0; i < len; i++)
-	{
-		*(p++) = utils_HexTable[((unsigned char)data[i]) >> 4];
-		*(p++) = utils_HexTable[((unsigned char)data[i]) & 0x0F];
-	}
-	*p = 0;
-	return out;
-}
-int __fastcall util_hexToint(char *hexString, int hexStringLength)
-{
-	int i, res = 0;
-
-	// Ignore the leading zeroes
-	while (*hexString == '0' && hexStringLength > 0) { hexString++; hexStringLength--; }
-
-	// Process the rest of the string
-	for (i = 0; i < hexStringLength; i++)
-	{
-		if (hexString[i] >= '0' && hexString[i] <= '9') { res = (res << 4) + (hexString[i] - '0'); }
-		else if (hexString[i] >= 'a' && hexString[i] <= 'f') { res = (res << 4) + (hexString[i] - 'a' + 10); }
-		else if (hexString[i] >= 'A' && hexString[i] <= 'F') { res = (res << 4) + (hexString[i] - 'A' + 10); }
-	}
-	return res;
-}
-
-// Convert hex string to int 
-int __fastcall util_hexToBuf(char *hexString, int hexStringLength, char* output)
-{
-	int i, x = hexStringLength / 2;
-	for (i = 0; i < x; i++) { output[i] = (char)util_hexToint(hexString + (i * 2), 2); }
-	return i;
-}
-// Perform a MD5 hash on the data
-void __fastcall util_md5(char* data, int datalen, char* result)
-{
-	MD5_CTX c;
-	MD5_Init(&c);
-	MD5_Update(&c, data, datalen);
-	MD5_Final((unsigned char*)result, &c);
-}
-
-// Perform a MD5 hash on the data and convert result to HEX and store in output
-// This is useful for HTTP Digest
-void __fastcall util_md5hex(char* data, int datalen, char *out)
-{
-	int i = 0;
-	unsigned char *temp = (unsigned char*)out;
-	MD5_CTX mdContext;
-	unsigned char digest[16];
-
-	MD5_Init(&mdContext);
-	MD5_Update(&mdContext, (unsigned char *)data, datalen);
-	MD5_Final(digest, &mdContext);
-
-	for (i = 0; i < HALF_NONCE_SIZE; i++)
-	{
-		*(temp++) = utils_HexTable2[(unsigned char)digest[i] >> 4];
-		*(temp++) = utils_HexTable2[(unsigned char)digest[i] & 0x0F];
-	}
-
-	*temp = '\0';
-}
-#endif
-
-
-#ifdef WINSOCK2
+#ifdef WIN32
 int ILibGetLocalIPAddressNetMask(unsigned int address)
 {
 	SOCKET s;
@@ -357,7 +302,7 @@ int ILibGetLocalIPAddressNetMask(unsigned int address)
 	int numLocalAddr; 
 	int i;
 
-	if ((s = WSASocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, 0)) == INVALID_SOCKET)
+	if ((s = WSASocketW(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, 0)) == INVALID_SOCKET)
 	{
 		fprintf(stderr, "Socket creation failed\n");
 		return(0);
@@ -493,10 +438,15 @@ int GetMacIPv4Addresses(void** pp, FN_GETMEM fnGetMem, FN_STOREVAL fnStoreVal)
 #endif
 */
 
-// Fetch the list of valid IPv4 adapters, keep the loopback.
+//! Fetches the list of valid IPv4 adapters
+/*!
+	\param[out] addresslist sockaddr_in array of adapters
+	\param includeloopback [0 = Include Loopback, 1 = Exclude Loopback]
+	\return number of adapters
+*/
 int ILibGetLocalIPv4AddressList(struct sockaddr_in** addresslist, int includeloopback)
 {
-#ifdef WINSOCK2
+#ifdef WIN32
 	DWORD i, j = 0;
 	SOCKET sock;
 	DWORD interfaces_count;
@@ -510,7 +460,7 @@ int ILibGetLocalIPv4AddressList(struct sockaddr_in** addresslist, int includeloo
 	if (interfaces_count > 0)
 	{
 		interfaces_count = interfaces_count / sizeof(INTERFACE_INFO);
-		for (i = 0; i < interfaces_count; i++) { if (includeloopback != 0 || interfaces[i].iiAddress.AddressIn.sin_addr.S_un.S_addr != 0x0100007F) j++; }
+		for (i = 0; i < interfaces_count; i++) { if (includeloopback != 0 || interfaces[i].iiAddress.AddressIn.sin_addr.S_un.S_addr != 0x0100007F) j++; } // M S Static Analysis says this could read outside readable range, but that is only true if WSAioct returns the wrong value in interfaces_count
 
 		// Allocate the IPv4 list and copy the elements into it
 		if ((*addresslist = (struct sockaddr_in*)malloc(sizeof(struct sockaddr_in) * j)) == NULL) ILIBCRITICALEXIT(254);
@@ -519,7 +469,7 @@ int ILibGetLocalIPv4AddressList(struct sockaddr_in** addresslist, int includeloo
 		{
 			if (includeloopback != 0 || interfaces[i].iiAddress.AddressIn.sin_addr.S_un.S_addr != 0x0100007F)
 			{
-				memcpy(&((*addresslist)[j++]), &(interfaces[i].iiAddress.AddressIn), sizeof(struct sockaddr_in));
+				memcpy_s(&((*addresslist)[j++]), sizeof(struct sockaddr_in), &(interfaces[i].iiAddress.AddressIn), sizeof(struct sockaddr_in));
 			}
 		}
 	}
@@ -548,7 +498,7 @@ int ILibGetLocalIPv4AddressList(struct sockaddr_in** addresslist, int includeloo
 	{
 		if (ifa->ifa_addr != NULL && ifa->ifa_addr->sa_family == AF_INET && (includeloopback != 0 || ((struct sockaddr_in*)ifa->ifa_addr)->sin_addr.s_addr != htonl(INADDR_LOOPBACK)))
 		{
-			memcpy(&((*addresslist)[ctr]), ifa->ifa_addr, sizeof(struct sockaddr_in));
+			memcpy_s(&((*addresslist)[ctr]), sizeof(struct sockaddr_in), ifa->ifa_addr, sizeof(struct sockaddr_in));
 			ctr++;
 		}
 	}
@@ -579,7 +529,7 @@ int ILibGetLocalIPv4AddressList(struct sockaddr_in** addresslist, int includeloo
 	{
 		if (includeloopback != 0 || ((struct sockaddr_in)addressesNacl[i]).sin_addr.s_addr != htonl(INADDR_LOOPBACK))
 		{
-			memcpy(&((*addresslist)[ctr]), &((addressesNacl)[i]), sizeof(struct sockaddr_in));
+			memcpy_s(&((*addresslist)[ctr]), sizeof(struct sockaddr_in), &((addressesNacl)[i]), sizeof(struct sockaddr_in));
 			//printf("saddr = %d, %s: %d\n", ((*addresslist)[ctr]).sin_family, inet_ntoa(((*addresslist)[ctr]).sin_addr), ((*addresslist)[ctr]).sin_port); fflush(stdout);
 			ctr++;
 		}
@@ -641,11 +591,11 @@ int ILibGetLocalIPv4AddressList(struct sockaddr_in** addresslist, int includeloo
 		if (pifReq->ifr_addr.sa_family == AF_INET)
 		{
 			// Get a pointer to the address.
-			memcpy (&LocalAddr, &pifReq -> ifr_addr, sizeof pifReq -> ifr_addr);
+			memcpy_s(&LocalAddr, sizeof(LocalAddr), &pifReq -> ifr_addr, sizeof pifReq -> ifr_addr);
 			if (includeloopback != 0 || LocalAddr.sin_addr.s_addr != htonl(INADDR_LOOPBACK))
 			{
 				//tempresults[ctr] = LocalAddr.sin_addr.s_addr;
-				memcpy(&((*addresslist)[ctr]), &LocalAddr, sizeof(struct sockaddr_in));
+				memcpy_s(&((*addresslist)[ctr]), sizeof(struct sockaddr_in), &LocalAddr, sizeof(struct sockaddr_in));
 				++ctr;
 			}
 		}
@@ -731,13 +681,17 @@ return AddrCount;
 }
 */
 
-// Get the list of valid IPv6 adapters, skip loopback and other junk adapters.
+//! Get the list of valid IPv6 adapter indexes, skip loopback and other junk adapters.
+/*!
+	\param[out] indexlist List of valid IPv6 Adapter indexes
+	\return number of adapters
+*/
 int ILibGetLocalIPv6IndexList(int** indexlist)
 {
 #ifdef _MINCORE
 	return 0;
 #else
-#if defined(WINSOCK2)
+#if defined(WIN32)
 	PIP_ADAPTER_ADDRESSES pAddresses = NULL;
 	PIP_ADAPTER_ADDRESSES pAddressesPtr = NULL;
 	ULONG outBufLen = sizeof(IP_ADAPTER_ADDRESSES);
@@ -798,13 +752,17 @@ int ILibGetLocalIPv6IndexList(int** indexlist)
 #endif
 }
 
-// Get the list of valid IPv6 adapters, skip loopback and other junk adapters.
+//! Get the list of valid IPv6 adapters, skip loopback and other junk adapters.
+/*!
+	\param[out] list sockaddr_in6 array of valid IPv6 adapters
+	\return number of adapters
+*/
 int ILibGetLocalIPv6List(struct sockaddr_in6** list)
 {
 #ifdef _MINCORE
 	return 0;
 #else
-#if defined(WINSOCK2)
+#if defined(WIN32)
 	PIP_ADAPTER_ADDRESSES pAddresses = NULL;
 	PIP_ADAPTER_ADDRESSES pAddressesPtr = NULL;
 	ULONG outBufLen = sizeof(IP_ADAPTER_ADDRESSES);
@@ -852,7 +810,7 @@ int ILibGetLocalIPv6List(struct sockaddr_in6** list)
 			// Skip any loopback adapters
 			if (pAddressesPtr->PhysicalAddressLength != 0 && pAddressesPtr->ReceiveOnly != 1 && pAddressesPtr->NoMulticast != 1 && pAddressesPtr->OperStatus == IfOperStatusUp)
 			{
-				memcpy(ptr, pAddressesPtr->FirstUnicastAddress->Address.lpSockaddr, pAddressesPtr->FirstUnicastAddress->Address.iSockaddrLength);
+				memcpy_s(ptr, sizeof(struct sockaddr_in6), pAddressesPtr->FirstUnicastAddress->Address.lpSockaddr, pAddressesPtr->FirstUnicastAddress->Address.iSockaddrLength);
 				ptr++;
 			}
 			pAddressesPtr = pAddressesPtr->Next;
@@ -877,7 +835,7 @@ int ILibGetLocalIPv6List(struct sockaddr_in6** list)
 \par
 \b NOTE: \a pp_int must be freed
 \param[out] pp_int Array of IP Addresses
-\returns Number of IP Addresses returned
+\return Number of IP Addresses returned
 */
 int ILibGetLocalIPAddressList(int** pp_int)
 {
@@ -886,7 +844,7 @@ int ILibGetLocalIPAddressList(int** pp_int)
 	//
 	// Winsock2 will use an Ioctl call to fetch the IPAddress list
 	//
-#elif defined(WINSOCK2)
+#elif defined(WIN32)
 	int i;
 	char buffer[16 * sizeof(SOCKET_ADDRESS_LIST)];
 	DWORD bufferSize;
@@ -911,24 +869,6 @@ int ILibGetLocalIPAddressList(int** pp_int)
 	(*pp_int)[i] = inet_addr("127.0.0.1");
 	closesocket(sock);
 	return(1 + ((SOCKET_ADDRESS_LIST*)buffer)->iAddressCount);
-#elif defined(WINSOCK1)
-	//
-	// Winsock1 will use gethostbyname to fetch the IPAddress List
-	//
-	char name[256];
-	int i = 0;
-	int num = 0;
-	struct hostent *entry;
-	gethostname(name,256);
-	entry = (struct hostent*)gethostbyname(name);
-	if (entry->h_length != 4) return 0;
-	while (entry->h_addr_list[num]!=0) ++num;
-	if ((*pp_int = (int*)malloc(sizeof(int)*num)) == NULL) ILIBCRITICALEXIT(254);
-	for (i = 0;i < num;++i)
-	{
-		(*pp_int)[i] = *((u_long*)entry->h_addr_list[i]);
-	}
-	return num;
 #elif defined(__APPLE__)
 	//
 	// Enumerate local interfaces
@@ -1010,7 +950,7 @@ int ILibGetLocalIPAddressList(int** pp_int)
 		if (pifReq -> ifr_addr.sa_family == AF_INET)
 		{
 			/* Get a pointer to the address... */
-			memcpy (&LocalAddr, &pifReq -> ifr_addr, sizeof pifReq -> ifr_addr);
+			memcpy_s (&LocalAddr, sizeof(LocalAddr), &pifReq -> ifr_addr, sizeof pifReq -> ifr_addr);
 			if (LocalAddr.sin_addr.s_addr != htonl (INADDR_LOOPBACK))
 			{
 				tempresults[ctr] = LocalAddr.sin_addr.s_addr;
@@ -1020,18 +960,12 @@ int ILibGetLocalIPAddressList(int** pp_int)
 	}
 	close(LocalSock);
 	if ((*pp_int = (int*)malloc(sizeof(int)*(ctr))) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(*pp_int,tempresults,sizeof(int)*ctr);
+	memcpy_s(*pp_int, sizeof(int)*ctr, tempresults, sizeof(int)*ctr);
 	return(ctr);
 #endif
 }
 
 
-typedef struct ILibChain
-{
-	void (*PreSelect)(void* object,void* readset, void *writeset, void *errorset, int* blocktime);
-	void (*PostSelect)(void* object,int slct, void *readset, void *writeset, void *errorset);
-	void (*Destroy)(void* object);
-}ILibChain;
 
 struct ILibChain_SubChain
 {
@@ -1042,20 +976,17 @@ struct ILibChain_SubChain
 	void *subChain;
 };
 
-struct LifeTimeMonitorData
+typedef struct LifeTimeMonitorData
 {
 	long long ExpirationTick;
 	void *data;
 	ILibLifeTime_OnCallback CallbackPtr;
 	ILibLifeTime_OnCallback DestroyPtr;
-};
+}LifeTimeMonitorData;
 struct ILibLifeTime
 {
-	ILibChain_PreSelect PreSelect;
-	ILibChain_PostSelect PostSelect;
-	ILibChain_Destroy Destroy;
+	ILibChain_Link ChainLink;
 	struct LifeTimeMonitorData *LM;
-	void *Chain;
 	long long NextTriggerTick;
 
 	void *Reserved;
@@ -1064,11 +995,23 @@ struct ILibLifeTime
 	int ObjectCount;
 };
 
+typedef struct ILibChain_Link_Hook
+{
+	ILibChain_EventHookHandler Handler;
+	int MaxTimeout;
+}ILibChain_Link_Hook;
 struct ILibBaseChain_SafeData
 {
 	void *Chain;
 	void *Object;
 };
+
+typedef enum ILibChain_ContinuationStates
+{
+	ILibChain_ContinuationState_INACTIVE	= 0,
+	ILibChain_ContinuationState_CONTINUE	= 1,
+	ILibChain_ContinuationState_END_CONTINUE= 2
+}ILibChain_ContinuationStates;
 
 typedef struct ILibBaseChain
 {
@@ -1078,6 +1021,7 @@ typedef struct ILibBaseChain
 	ILibRemoteLogging ChainLogger;
 #ifdef _REMOTELOGGINGSERVER
 	void* LoggingWebServer;
+	ILibTransport* LoggingWebServerFileTransport;
 #endif
 #endif
 	/*
@@ -1089,11 +1033,14 @@ typedef struct ILibBaseChain
 
 #if defined(WIN32)
 	DWORD ChainThreadID;
+	HANDLE ChainProcessHandle;
+	HANDLE MicrostackThreadHandle;
+	CONTEXT MicrostackThreadContext;
 #else
 	pthread_t ChainThreadID;
 #endif
-#if defined(WIN32) || defined(_WIN32_WCE)
-	SOCKET Terminate;
+#if defined(WIN32)
+	SOCKET TerminateSock;
 #else
 	FILE *TerminateReadPipe;
 	FILE *TerminateWritePipe;
@@ -1104,8 +1051,66 @@ typedef struct ILibBaseChain
 	ILibLinkedList Links;
 	ILibLinkedList LinksPendingDelete;
 	ILibHashtable ChainStash;
+	ILibChain_ContinuationStates continuationState;
+	unsigned int PreSelectCount;
+	unsigned int PostSelectCount;
+	void *WatchDogThread;
+#ifdef WIN32
+	HANDLE WatchDogTerminator;
+#else
+	int WatchDogTerminator[2];
+#endif
+	void *node;
 }ILibBaseChain;
 
+const int ILibMemory_CHAIN_CONTAINERSIZE = sizeof(ILibBaseChain);
+
+void* ILibMemory_Allocate(int containerSize, int extraMemorySize, void** allocatedContainer, void **extraMemory)
+{
+	char* retVal = (char*)malloc(containerSize + extraMemorySize + (extraMemorySize > 0 ? 4 : 0));
+	if (retVal == NULL) { ILIBCRITICALEXIT(254); }
+	memset(retVal, 0, containerSize + extraMemorySize + (extraMemorySize > 0 ? 4 : 0));
+	if (extraMemorySize > 0)
+	{
+		((int*)(retVal + containerSize))[0] = extraMemorySize;
+		if (extraMemory != NULL) { *extraMemory = (retVal + containerSize + 4); }
+	}
+	else
+	{
+		if (extraMemory != NULL) { *extraMemory = NULL; }
+	}
+	if (allocatedContainer != NULL) { *allocatedContainer = retVal; }
+	return(retVal);
+}
+ILibExportMethod void* ILibMemory_GetExtraMemory(void *container, int containerSize)
+{
+	return((char*)container + 4 + containerSize);
+}
+int ILibMemory_GetExtraMemorySize(void* extraMemory)
+{
+	if (extraMemory == NULL) { return(0); }
+	return(((int*)((char*)extraMemory - 4))[0]);
+}
+
+ILibChain_Link* ILibChain_Link_Allocate(int structSize, int extraMemorySize)
+{
+	ILibChain_Link *retVal;
+	void* extraMemory;
+	ILibMemory_Allocate(structSize, extraMemorySize, (void**)&retVal, &extraMemory);
+	retVal->ExtraMemoryPtr = extraMemory;
+	return(retVal);
+}
+int ILibChain_Link_GetExtraMemorySize(ILibChain_Link* link)
+{
+	return(ILibMemory_GetExtraMemorySize(link->ExtraMemoryPtr));
+}
+//! Get the base Hashtable for this chain
+
+/*!
+	\b Note: Hashtable is created upon first use
+	\param chain Microstack Chain to fetch the hashtable from
+	\return Associated Hashtable
+*/
 ILibHashtable ILibChain_GetBaseHashtable(void* chain)
 {
 	struct ILibBaseChain *b = (struct ILibBaseChain*)chain;
@@ -1115,174 +1120,234 @@ ILibHashtable ILibChain_GetBaseHashtable(void* chain)
 
 void ILibChain_OnDestroyEvent_Sink(void *object)
 {
-	void **ptr = (void**)object;
-	if (ptr[4] != NULL)
+	ILibChain_Link *link = (ILibChain_Link*)object;
+	ILibChain_DestroyEvent e = (ILibChain_DestroyEvent)((void**)link->ExtraMemoryPtr)[0];
+
+	if (e != NULL)
 	{
-		((ILibChain_DestroyEvent)ptr[4])(ptr[3], ptr[5]);
+		e(link->ParentChain, ((void**)link->ExtraMemoryPtr)[1]);
 	}
 }
+//! Add an event handler to be dispatched when the Microstack Chain is shutdown
+/*! 
+	\param chain Microstack Chain to add an event handler to
+	\param sink	Event Handler to dispatch on shutdown
+	\param user Custom user state data to dispatch
+*/
 void ILibChain_OnDestroyEvent_AddHandler(void *chain, ILibChain_DestroyEvent sink, void *user)
 {
-	void **ptr = (void**)malloc(6 * sizeof(void*));
-	memset(ptr, 0, 6 * sizeof(void*));
+	ILibChain_Link *link = ILibChain_Link_Allocate(sizeof(ILibChain_Link), 2 * sizeof(void*));
+	link->ParentChain = chain;
+	link->DestroyHandler = (ILibChain_Destroy)&ILibChain_OnDestroyEvent_Sink;
+	((void**)link->ExtraMemoryPtr)[0] = sink;
+	((void**)link->ExtraMemoryPtr)[1] = user;
 
-	ptr[2] = (ILibChain_Destroy)&ILibChain_OnDestroyEvent_Sink;
-	ptr[3] = chain;
-	ptr[4] = sink;
-	ptr[5] = user;
-	ILibAddToChain(chain, ptr);
-}
-void ILibChain_OnStartEvent_Sink(void *object)
-{
-	void **ptr = (void**)object;
-	void *chain = ptr[3];
-
-	if (ptr[4] != NULL)
+	if (ILibIsChainRunning(chain) == 0)
 	{
-		((ILibChain_StartEvent)ptr[4])(ptr[3], ptr[5]);
+		ILibAddToChain(chain, link);
+	}
+	else
+	{
+		ILibChain_SafeAdd(chain, link);
+	}
+}
+void ILibChain_OnStartEvent_Sink(void* object, fd_set *readset, fd_set *writeset, fd_set *errorset, int* blocktime)
+{
+	ILibChain_Link* link = (ILibChain_Link*)object;
+	ILibChain_StartEvent e;
+
+	UNREFERENCED_PARAMETER(readset);
+	UNREFERENCED_PARAMETER(writeset);
+	UNREFERENCED_PARAMETER(errorset);
+	UNREFERENCED_PARAMETER(blocktime);
+
+	e = (ILibChain_StartEvent)((void**)link->ExtraMemoryPtr)[0];
+	if (e != NULL)
+	{
+		e(link->ParentChain, ((void**)link->ExtraMemoryPtr)[1]);
 	}
 
 	// Adding ourselves to be deleted, since we don't need to be called again.
 	// Don't need to lock anything, because we're on the Microstack Thread
-	ILibLinkedList_AddTail(((ILibBaseChain*)chain)->LinksPendingDelete, object); 
+	ILibLinkedList_AddTail(((ILibBaseChain*)link->ParentChain)->LinksPendingDelete, object); 
 }
+//! Add an event handler to the Microstack Chain to be dispatched on startup of the chain
+/*!
+	\param chain Microstack Chain to add the event handler to
+	\param sink Event Handler to be dispatched on startup
+	\param user Custom user state data to dispatch
+*/
 void ILibChain_OnStartEvent_AddHandler(void *chain, ILibChain_StartEvent sink, void *user)
 {
-	void **ptr = (void**)malloc(6 * sizeof(void*));
-	memset(ptr, 0, 6 * sizeof(void*));
+	ILibChain_Link *link = ILibChain_Link_Allocate(sizeof(ILibChain_Link), 2 * sizeof(void*));
+	link->ParentChain = chain;
+	((void**)link->ExtraMemoryPtr)[0] = sink;
+	((void**)link->ExtraMemoryPtr)[1] = user;
+	link->PreSelectHandler = ILibChain_OnStartEvent_Sink;
 
-	ptr[0] = (ILibChain_Destroy)&ILibChain_OnStartEvent_Sink;
-	ptr[3] = chain;
-	ptr[4] = sink;
-	ptr[5] = user;
-	ILibAddToChain(chain, ptr);
+	if (ILibIsChainRunning(chain) == 0)
+	{
+		ILibAddToChain(chain, link);
+	}
+	else
+	{
+		ILibChain_SafeAdd(chain, link);
+	}
 }
 
 #if defined(_REMOTELOGGING) && defined(_REMOTELOGGINGSERVER)
-unsigned char ILibDefaultLogger_HTML[3902] =
+unsigned char ILibDefaultLogger_HTML[4783] =
 {
-	0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0xC5, 0x5A, 0x7B, 0x93, 0xDA, 0x38, 0x12, 0xFF, 0x2A, 0x8E, 0x52, 0xD9, 0xB1, 0x17, 0x63, 0x30, 0xAF, 0x01, 0x83, 0x27, 0x35, 0x03,
-	0x6C, 0x32, 0xB5, 0x93, 0xC9, 0x64, 0x20, 0x8F, 0xAD, 0xAD, 0x5C, 0x4A, 0xB6, 0x05, 0xF8, 0x62, 0x6C, 0xCE, 0x36, 0xC3, 0xCC, 0x52, 0x7C, 0xB2, 0xFB, 0xE3, 0x3E, 0xD2, 0x7D, 0x85, 0x6B, 0x49,
-	0x7E, 0xC8, 0xE6, 0x91, 0x4D, 0x65, 0xEF, 0x2E, 0xA4, 0x06, 0x5B, 0x6A, 0xB5, 0xBA, 0x5B, 0xDD, 0xAD, 0x5F, 0x4B, 0xFC, 0xFB, 0x9F, 0xFF, 0x1A, 0x3C, 0x1B, 0xBD, 0x1D, 0x4E, 0x7F, 0xBB, 0x1B,
-	0x4B, 0x8B, 0x78, 0xE9, 0x49, 0x77, 0xEF, 0xAF, 0x6E, 0xAE, 0x87, 0x12, 0xAA, 0xD6, 0x6A, 0x1F, 0x9B, 0xC3, 0x5A, 0x6D, 0x34, 0x1D, 0x49, 0x9F, 0x5E, 0x4F, 0xDF, 0xDC, 0x48, 0xBA, 0x56, 0x97,
-	0xA6, 0x21, 0xF6, 0x23, 0x37, 0x76, 0x03, 0x1F, 0x7B, 0xB5, 0xDA, 0xF8, 0x16, 0x49, 0x68, 0x11, 0xC7, 0x2B, 0xA3, 0x56, 0xDB, 0x6C, 0x36, 0xDA, 0xA6, 0xA9, 0x05, 0xE1, 0xBC, 0x36, 0xBD, 0xAF,
-	0x3D, 0x52, 0x5E, 0x3A, 0x1D, 0x9C, 0x3C, 0x56, 0x63, 0x61, 0xA4, 0xE6, 0xC4, 0x0E, 0xBA, 0x90, 0x06, 0xB4, 0x87, 0x7E, 0x11, 0xEC, 0xC0, 0xD7, 0x92, 0xC4, 0x58, 0xB2, 0x03, 0x3F, 0x26, 0x7E,
-	0x6C, 0xA2, 0x98, 0x3C, 0xC6, 0x35, 0x4A, 0xD0, 0x97, 0xEC, 0x05, 0x0E, 0x23, 0x12, 0x9B, 0xEB, 0x78, 0x56, 0xED, 0x22, 0x89, 0x4E, 0x58, 0x25, 0xFF, 0x58, 0xBB, 0x0F, 0x26, 0x1A, 0x72, 0xF2,
-	0xEA, 0xF4, 0x69, 0x45, 0x50, 0xCA, 0x43, 0x24, 0xF8, 0x54, 0x7D, 0x7F, 0x59, 0x1D, 0x06, 0xCB, 0x15, 0x8E, 0x5D, 0xCB, 0x23, 0x28, 0x9F, 0xE0, 0x7A, 0x6C, 0x8E, 0x47, 0xAF, 0xC6, 0xD9, 0x28,
-	0x1F, 0x2F, 0x89, 0x89, 0x66, 0x41, 0xB8, 0xC4, 0x71, 0xD5, 0x21, 0x31, 0xB1, 0xA9, 0xB0, 0x48, 0x94, 0xC8, 0x23, 0xAB, 0x45, 0xE0, 0x13, 0xD3, 0x0F, 0xE8, 0xA8, 0xD8, 0x8D, 0x3D, 0x72, 0xF1,
-	0x91, 0x58, 0xF7, 0xD3, 0xA1, 0x34, 0x22, 0xD6, 0x7A, 0x3E, 0xA8, 0xF1, 0x36, 0x69, 0x10, 0xC5, 0x4F, 0xF4, 0xDB, 0x0A, 0x9C, 0xA7, 0xED, 0x12, 0x87, 0x73, 0xD7, 0x37, 0xEA, 0xFD, 0x15, 0x76,
-	0x1C, 0xD7, 0x9F, 0xC3, 0x93, 0x15, 0x84, 0x0E, 0x09, 0xE1, 0xC1, 0x0E, 0xBC, 0x20, 0x34, 0x2C, 0x0F, 0xDB, 0x5F, 0xFB, 0x33, 0x98, 0xA8, 0x1A, 0xB9, 0x7F, 0x10, 0x43, 0x6F, 0xAE, 0x1E, 0xF9,
-	0xEB, 0x0C, 0x2F, 0x5D, 0xEF, 0xC9, 0x40, 0xD3, 0x10, 0xF8, 0xDB, 0x0B, 0x12, 0x4B, 0x6F, 0x26, 0x48, 0x95, 0x2E, 0x43, 0x17, 0x7B, 0xAA, 0xF4, 0x9A, 0x78, 0x0F, 0x24, 0x76, 0x6D, 0xAC, 0x4A,
-	0x11, 0x58, 0xB7, 0x1A, 0x91, 0xD0, 0x9D, 0xF5, 0x2D, 0x60, 0x36, 0x0F, 0x83, 0xB5, 0xEF, 0x54, 0x39, 0xFB, 0xE7, 0x4E, 0xD3, 0xE9, 0x39, 0x9D, 0xFE, 0xEE, 0x39, 0xD5, 0x05, 0xBB, 0x3E, 0x09,
-	0xB7, 0xFB, 0x44, 0xB3, 0xD9, 0xAC, 0xBF, 0x71, 0x9D, 0x78, 0x61, 0xE8, 0xF5, 0x7A, 0x1D, 0x04, 0x48, 0xE5, 0x96, 0xF0, 0x3A, 0x0E, 0x12, 0x91, 0xAB, 0x71, 0xB0, 0xCA, 0xE4, 0xAF, 0x86, 0xEE,
-	0x7C, 0x11, 0x1B, 0xFA, 0xEA, 0x51, 0x8A, 0x02, 0xCF, 0x75, 0xA4, 0xE7, 0xD6, 0x39, 0xFD, 0xA4, 0xDD, 0x56, 0x10, 0xC7, 0xC1, 0x32, 0x27, 0xF7, 0xC8, 0xEC, 0x10, 0x75, 0x6E, 0x96, 0xDD, 0xF3,
-	0x25, 0x8E, 0x62, 0xEA, 0x0E, 0x5B, 0x2E, 0x09, 0x9B, 0xF9, 0x80, 0xFD, 0x82, 0x07, 0x12, 0xCE, 0xBC, 0x60, 0xC3, 0x09, 0xA8, 0xAB, 0x54, 0xB1, 0xE7, 0xCE, 0x7D, 0x83, 0x49, 0x74, 0xC0, 0x02,
-	0xF5, 0x66, 0x27, 0x51, 0xAE, 0xD7, 0xA1, 0xBA, 0xE5, 0x14, 0x46, 0x38, 0xB7, 0xE4, 0x56, 0x5B, 0xED, 0x76, 0x54, 0xBD, 0x79, 0xAE, 0xF4, 0x25, 0xA1, 0xAB, 0xBA, 0x0C, 0xFE, 0xA8, 0x7A, 0x60,
-	0x2F, 0x1C, 0x56, 0xE7, 0x21, 0x76, 0x5C, 0xF0, 0x03, 0x99, 0x6A, 0xA1, 0x4A, 0x30, 0x0A, 0xE7, 0xC3, 0x54, 0x5D, 0x91, 0xEA, 0x2F, 0x92, 0xD6, 0xBA, 0xDA, 0xD6, 0x55, 0xBD, 0xDE, 0xA0, 0x8D,
-	0x8D, 0xDE, 0x8B, 0x12, 0xCB, 0x0D, 0xB1, 0xBE, 0xBA, 0xB1, 0xC0, 0x8E, 0xB1, 0x57, 0x25, 0xCA, 0x56, 0x02, 0xEB, 0x02, 0x13, 0xAA, 0x03, 0x7F, 0x64, 0xD2, 0x57, 0x23, 0x78, 0x96, 0x81, 0xFD,
-	0xDE, 0x9C, 0x4A, 0x81, 0x02, 0xE6, 0x52, 0xCB, 0x02, 0x28, 0x87, 0x67, 0xFF, 0x0E, 0x9D, 0xFE, 0x84, 0x4A, 0xC1, 0x5F, 0xCC, 0x6F, 0x19, 0xFD, 0xB5, 0x0C, 0xCB, 0xCC, 0xE2, 0x80, 0xDB, 0xF8,
-	0xFB, 0x18, 0xCE, 0x5C, 0x2F, 0x86, 0x98, 0x5D, 0x85, 0xC1, 0xDC, 0x75, 0x8C, 0xD1, 0xA7, 0xEB, 0x25, 0x9E, 0x13, 0x96, 0x0F, 0x69, 0xCE, 0xD0, 0xDE, 0xB8, 0x76, 0x18, 0x44, 0xC1, 0x2C, 0xD6,
-	0xB2, 0x79, 0xA4, 0x28, 0xC6, 0x61, 0x3C, 0xA4, 0x2B, 0x14, 0xC5, 0xA1, 0x79, 0xF6, 0xBC, 0xE1, 0xB4, 0x3B, 0xDD, 0xDE, 0x99, 0x2A, 0x11, 0xDF, 0x11, 0x9A, 0xEB, 0xF5, 0x66, 0xB3, 0xD3, 0x39,
-	0x53, 0x5F, 0x25, 0x03, 0x69, 0x32, 0x33, 0x75, 0x09, 0xE6, 0xA4, 0x11, 0xEB, 0xAD, 0x97, 0xFE, 0x17, 0x6F, 0xBB, 0x0A, 0x78, 0xF6, 0x34, 0x42, 0xE2, 0x41, 0x2E, 0x7B, 0x20, 0x7D, 0x08, 0x00,
-	0x1C, 0x1B, 0xD4, 0x32, 0xA9, 0x6B, 0x37, 0xC5, 0xB0, 0xCD, 0xC3, 0x45, 0xD2, 0xDB, 0x05, 0x97, 0x17, 0x23, 0x7E, 0xF7, 0x7C, 0x16, 0x04, 0xA0, 0xD7, 0xD6, 0xF6, 0xC0, 0x46, 0x06, 0x84, 0xEC,
-	0xA2, 0x14, 0x5D, 0x62, 0xD8, 0x08, 0x91, 0x66, 0x83, 0xA0, 0x24, 0x3C, 0xC0, 0x55, 0xD7, 0x9B, 0xBD, 0x4E, 0x23, 0x9D, 0x9D, 0x25, 0x0C, 0x3A, 0x7D, 0xFA, 0x9E, 0x24, 0x05, 0xDA, 0x94, 0xCE,
-	0x2D, 0xE1, 0xAD, 0x20, 0x11, 0x9B, 0xC3, 0x21, 0x76, 0x10, 0x62, 0xA6, 0x2F, 0xB0, 0x26, 0x21, 0x5D, 0x42, 0x81, 0xDE, 0x58, 0x50, 0x19, 0x4F, 0x8D, 0xF2, 0x03, 0x3A, 0x20, 0x63, 0x4C, 0xE3,
-	0xFF, 0x04, 0x63, 0x8D, 0xE5, 0xEB, 0xE6, 0x76, 0x5F, 0x3F, 0x3E, 0x7E, 0xB3, 0x70, 0x63, 0x72, 0x40, 0xD7, 0x6E, 0x9D, 0x7E, 0x78, 0xAA, 0xDE, 0x10, 0x96, 0x0D, 0xAD, 0xC0, 0x73, 0x52, 0x86,
-	0x9D, 0xAD, 0x68, 0x85, 0xC6, 0xBE, 0x15, 0x1A, 0x07, 0xD7, 0x65, 0x58, 0xA7, 0x1F, 0x60, 0x02, 0x2E, 0x47, 0xA6, 0x41, 0xE0, 0x59, 0x38, 0x14, 0x45, 0x63, 0x4B, 0xBE, 0x3F, 0x6C, 0xDC, 0x1A,
-	0xF7, 0xC6, 0xE7, 0x42, 0xA2, 0xAE, 0x32, 0x21, 0x0C, 0x96, 0x6D, 0xC5, 0x66, 0xBE, 0xA2, 0x74, 0xEE, 0x9D, 0xF6, 0x18, 0xF1, 0x7D, 0xEE, 0xC0, 0x86, 0x30, 0xAE, 0xD3, 0x4F, 0xE6, 0x46, 0xB0,
-	0x62, 0x52, 0xA3, 0x4E, 0xFF, 0xA4, 0x4F, 0xD9, 0x36, 0x00, 0x6E, 0xBB, 0x8E, 0x60, 0xDB, 0x60, 0x1C, 0x67, 0xEE, 0x23, 0x71, 0xA8, 0x45, 0xB6, 0xE2, 0x0E, 0x66, 0x07, 0xEB, 0xD0, 0x25, 0x90,
-	0xE7, 0x50, 0xF2, 0x24, 0xF9, 0x64, 0x03, 0x3B, 0xD9, 0x32, 0xF0, 0x83, 0x68, 0x85, 0x6D, 0xBA, 0x08, 0xAE, 0x3F, 0x0B, 0xC0, 0xEA, 0xE1, 0x53, 0xC1, 0x6C, 0x3A, 0xE3, 0x7A, 0x73, 0x79, 0x35,
-	0xBE, 0x99, 0x7E, 0x9A, 0x6E, 0x25, 0x71, 0xCB, 0xDC, 0x69, 0x93, 0xE9, 0xFB, 0xDB, 0x2F, 0xD7, 0xC3, 0xF1, 0x97, 0x37, 0x6F, 0x47, 0xEF, 0x6F, 0xC6, 0x79, 0xF7, 0x9A, 0x72, 0x1C, 0x4D, 0x6F,
-	0x26, 0xA5, 0x1E, 0x07, 0x87, 0xA0, 0x27, 0x21, 0x3E, 0x1D, 0x3C, 0x9C, 0xDE, 0x1D, 0xE8, 0x7E, 0x70, 0x03, 0x0F, 0x76, 0xDA, 0x9D, 0x76, 0x39, 0xF9, 0xED, 0x76, 0x38, 0x79, 0x3B, 0xFC, 0x75,
-	0x3C, 0x2D, 0x91, 0x41, 0xA8, 0x3F, 0x59, 0x61, 0xB0, 0xF1, 0x81, 0xEA, 0xE3, 0xF8, 0xAA, 0x3C, 0x7B, 0xD2, 0x73, 0x77, 0x7D, 0x57, 0x16, 0xCC, 0x21, 0x64, 0xB5, 0x72, 0xFD, 0xAF, 0xD0, 0xFB,
-	0x6A, 0x7C, 0x3B, 0xBE, 0xBF, 0x1E, 0x1E, 0x27, 0x78, 0x7F, 0xFB, 0xEB, 0xED, 0xDB, 0x8F, 0xB7, 0xE5, 0xA9, 0x09, 0xF5, 0xAF, 0x9B, 0xB7, 0xAF, 0xBE, 0xDC, 0x8C, 0x3F, 0x8C, 0x6F, 0xBE, 0xE8,
-	0x5B, 0x49, 0x7C, 0x6D, 0x14, 0x5F, 0x9B, 0xC5, 0xD7, 0x56, 0xF1, 0xB5, 0x5D, 0x7C, 0xED, 0xA4, 0xAF, 0x1F, 0xAE, 0x27, 0xD7, 0x57, 0x74, 0x4A, 0xC7, 0x8D, 0x56, 0x1E, 0x7E, 0x32, 0x5C, 0x3F,
-	0x09, 0x14, 0xDA, 0xFB, 0xFA, 0x7A, 0x34, 0x1A, 0xDF, 0xE6, 0x9D, 0x3C, 0xD6, 0x34, 0x06, 0x94, 0x1E, 0xE3, 0x37, 0xC4, 0x5F, 0x0B, 0xDE, 0x64, 0x3C, 0xFF, 0xA5, 0x47, 0x3F, 0xE0, 0x2C, 0x8F,
-	0xD5, 0x68, 0x81, 0x1D, 0xC8, 0x2B, 0x75, 0x09, 0x72, 0x12, 0xF8, 0x1F, 0xCF, 0xBF, 0x52, 0x5D, 0x4D, 0xFE, 0x6B, 0x4D, 0x48, 0x7A, 0x09, 0x36, 0x12, 0x70, 0x82, 0x6D, 0xDB, 0xFD, 0xE2, 0x64,
-	0x59, 0x32, 0xC4, 0x16, 0xD0, 0xAC, 0x21, 0x36, 0x39, 0x2E, 0x61, 0x08, 0x03, 0xBE, 0xDC, 0x28, 0x4E, 0x9C, 0x9F, 0x91, 0xEF, 0xA5, 0x44, 0x9A, 0x7D, 0x96, 0xAE, 0x9F, 0x44, 0x42, 0x9B, 0xA7,
-	0xCD, 0xC7, 0x34, 0x30, 0xD8, 0xFB, 0x1F, 0x55, 0x17, 0xF2, 0xC3, 0x23, 0x74, 0xD6, 0x45, 0x64, 0xD6, 0x05, 0xB1, 0x40, 0xD5, 0x25, 0xD5, 0x34, 0x4D, 0x2E, 0xAD, 0x56, 0xAB, 0x5F, 0x34, 0x54,
-	0xD5, 0xF2, 0x02, 0x70, 0xCF, 0xD4, 0x8D, 0x99, 0x58, 0x5D, 0x21, 0xFC, 0x39, 0x70, 0x12, 0x5B, 0x4E, 0xA4, 0xC9, 0x83, 0xA9, 0x2D, 0xC9, 0xCA, 0xED, 0x17, 0x7D, 0x7B, 0x1D, 0x46, 0xCC, 0x6F,
-	0x66, 0x78, 0xED, 0xC5, 0x79, 0xF2, 0x5E, 0xB8, 0x8E, 0x03, 0x5E, 0xBE, 0xBF, 0x6F, 0xA4, 0xE2, 0x97, 0x92, 0x68, 0x8F, 0x7E, 0x44, 0x60, 0xC4, 0xF4, 0xDA, 0x69, 0x4B, 0x58, 0xCF, 0x52, 0x02,
-	0xFA, 0xA1, 0xDC, 0x28, 0x1A, 0x79, 0xC1, 0xDB, 0x9B, 0x1D, 0x78, 0x4E, 0xF4, 0x58, 0x05, 0x2E, 0x63, 0x5E, 0xB4, 0xB9, 0xB8, 0xD9, 0x89, 0x26, 0xE3, 0xCB, 0x91, 0x88, 0x98, 0x28, 0x74, 0x00,
-	0xFD, 0x8D, 0xBA, 0xED, 0xD1, 0x2F, 0xB9, 0x2E, 0x8D, 0xEF, 0x56, 0xA6, 0x6E, 0xB5, 0x49, 0xCF, 0xFE, 0x5F, 0x2A, 0xD3, 0xF8, 0xA6, 0x36, 0x83, 0x5A, 0x52, 0x65, 0x0C, 0x6A, 0x49, 0x05, 0x45,
-	0xCB, 0x0D, 0x29, 0xF0, 0x81, 0xBB, 0x63, 0x22, 0x77, 0x26, 0xC9, 0x31, 0x20, 0x89, 0x60, 0x26, 0x33, 0x1C, 0xB2, 0x5E, 0x29, 0xD2, 0x33, 0xD3, 0x94, 0xCE, 0xE8, 0xBE, 0x37, 0x03, 0x27, 0x75,
-	0xCE, 0x14, 0x29, 0xE9, 0x91, 0x95, 0x3E, 0xAD, 0x68, 0x1C, 0xF7, 0x41, 0x72, 0x61, 0x68, 0x56, 0x26, 0x88, 0x8D, 0x29, 0x34, 0x47, 0x12, 0x9B, 0xD6, 0x44, 0x89, 0xBE, 0x1D, 0xAA, 0x6F, 0x56,
-	0x38, 0xBC, 0x28, 0x3B, 0x60, 0xCA, 0x22, 0x19, 0x24, 0xA8, 0x2E, 0x8E, 0x4F, 0x54, 0xB3, 0xBB, 0xF4, 0x53, 0x8C, 0x1B, 0xB6, 0xD3, 0x94, 0xCC, 0x84, 0x2E, 0xA0, 0xC2, 0x0A, 0x03, 0x7F, 0x7E,
-	0x31, 0xA0, 0xA6, 0xCD, 0x98, 0x67, 0x66, 0x6E, 0x75, 0x4A, 0x15, 0xD4, 0xC9, 0x8A, 0x09, 0x5D, 0x70, 0xF4, 0x16, 0x83, 0xAD, 0xA5, 0x7B, 0x82, 0xBD, 0xD8, 0x5D, 0x12, 0xE9, 0x26, 0x98, 0x43,
-	0xD6, 0x80, 0xA2, 0x8E, 0xF2, 0xB9, 0xA0, 0xD6, 0xE6, 0x33, 0xD6, 0x40, 0x9D, 0x1F, 0x55, 0xAA, 0x5D, 0xD2, 0x49, 0x6F, 0xFD, 0x09, 0xA5, 0x28, 0xD1, 0xF7, 0x28, 0x35, 0x80, 0x8D, 0xD5, 0x67,
-	0x6B, 0xC7, 0xCA, 0xD2, 0x05, 0x28, 0x88, 0xA8, 0x1E, 0xD0, 0x7A, 0x71, 0x4C, 0x2B, 0x41, 0x39, 0x36, 0x30, 0x58, 0x81, 0x2F, 0xB2, 0x6A, 0x17, 0x43, 0xF9, 0x9C, 0xCA, 0x24, 0x2C, 0x77, 0xA2,
-	0x70, 0x83, 0xC2, 0x09, 0x28, 0x96, 0x89, 0xE7, 0x25, 0x7A, 0x99, 0xA8, 0xCE, 0xDF, 0xE9, 0xF6, 0x9E, 0xBD, 0x7B, 0x38, 0x8A, 0x40, 0xA7, 0x1C, 0xD8, 0x30, 0xDE, 0x21, 0xFD, 0xE3, 0xB0, 0x19,
-	0x27, 0x50, 0x65, 0xDB, 0x31, 0x71, 0xDE, 0x04, 0xCE, 0xDA, 0x23, 0x51, 0x36, 0x24, 0x09, 0x0B, 0x74, 0x91, 0x12, 0x48, 0x09, 0x05, 0x14, 0xDD, 0x4E, 0x3E, 0xFC, 0x03, 0x09, 0x2D, 0x9A, 0xF1,
-	0x9E, 0x38, 0xD9, 0xFE, 0xF0, 0x8C, 0xC0, 0x90, 0xF4, 0xE2, 0xD0, 0x21, 0x45, 0xC0, 0xC7, 0x86, 0xB1, 0x4E, 0xEA, 0x12, 0xA5, 0xF9, 0xEE, 0xF0, 0x3A, 0x22, 0xC7, 0x06, 0xB1, 0xCE, 0x84, 0xBE,
-	0xC6, 0x94, 0xAC, 0x31, 0x33, 0xEE, 0xDB, 0x79, 0x05, 0xB5, 0xC4, 0x97, 0xE4, 0xA4, 0xA1, 0x18, 0x89, 0x1C, 0xFE, 0x0B, 0x6D, 0x67, 0x21, 0x99, 0x85, 0x24, 0x5A, 0x5C, 0xAD, 0x61, 0x87, 0xF0,
-	0x47, 0xEE, 0xC3, 0x59, 0xD1, 0x0D, 0x79, 0x09, 0xCC, 0xB7, 0x3C, 0x8E, 0x3B, 0x69, 0x00, 0x89, 0xDB, 0x27, 0x38, 0x81, 0xEB, 0xAF, 0xD6, 0x50, 0x63, 0xD2, 0x42, 0x03, 0x59, 0x8C, 0x11, 0x92,
-	0x1E, 0x30, 0x80, 0x26, 0x13, 0xDD, 0x73, 0xF6, 0x08, 0x12, 0x89, 0xED, 0xB9, 0xF6, 0x57, 0x13, 0x25, 0x13, 0xB2, 0x24, 0x21, 0x08, 0x7E, 0x31, 0x58, 0xE8, 0xB9, 0x77, 0xD1, 0xAE, 0x85, 0x9E,
-	0xF5, 0xAF, 0x92, 0x9C, 0xE1, 0xFA, 0xA2, 0x3A, 0x10, 0x61, 0xF1, 0x3A, 0x82, 0xB7, 0x72, 0x12, 0x69, 0xD5, 0xF7, 0x85, 0xE4, 0xC3, 0x58, 0x92, 0x06, 0x43, 0xB0, 0x2C, 0x9D, 0x0D, 0x4B, 0x77,
-	0xF4, 0x72, 0x18, 0xB1, 0x2A, 0x25, 0x8F, 0x18, 0xAA, 0x3A, 0x65, 0x94, 0x05, 0x02, 0x17, 0x80, 0x66, 0xFF, 0x2C, 0x12, 0xA4, 0x92, 0xEB, 0x1F, 0x0E, 0x04, 0x58, 0xF9, 0x8F, 0x00, 0x08, 0x82,
-	0x0D, 0x3A, 0x1E, 0x03, 0x1D, 0xA6, 0x44, 0x9A, 0xFF, 0xAA, 0x4F, 0x46, 0x04, 0x49, 0xC5, 0x63, 0x6B, 0x57, 0xE2, 0xC6, 0xEB, 0x98, 0x3C, 0xAC, 0x4E, 0x86, 0x8D, 0x5E, 0x3F, 0x30, 0x67, 0x29,
-	0x6C, 0xCE, 0x1E, 0x39, 0xCB, 0xCC, 0x17, 0xCA, 0xE5, 0x42, 0x69, 0xFD, 0x33, 0x1F, 0xDE, 0x27, 0xE7, 0xFE, 0xC3, 0x73, 0x97, 0x47, 0x9F, 0xA1, 0x9E, 0x7D, 0x42, 0x17, 0xD7, 0x3E, 0x3F, 0x1A,
-	0x03, 0x28, 0x21, 0xE1, 0x58, 0x1A, 0xE0, 0x74, 0x68, 0x99, 0x52, 0x5A, 0x80, 0xBF, 0x98, 0xEC, 0x58, 0x30, 0x32, 0x6A, 0x35, 0x0A, 0xEA, 0x61, 0x4F, 0x8B, 0x16, 0x74, 0x05, 0x43, 0xEC, 0x01,
-	0x4C, 0x5C, 0xA2, 0x8B, 0x43, 0xAD, 0x83, 0x1A, 0xBE, 0x38, 0x19, 0x2C, 0x25, 0x23, 0x0A, 0x78, 0x33, 0x0B, 0x3D, 0xB1, 0x2D, 0x21, 0x4D, 0x7B, 0x18, 0xE6, 0x11, 0xBC, 0x3A, 0x86, 0xF4, 0xEE,
-	0x11, 0x76, 0x6E, 0xC7, 0x33, 0x89, 0x7C, 0x36, 0x89, 0xD7, 0xFE, 0xB5, 0x4D, 0x86, 0x0B, 0x62, 0x7F, 0x05, 0xB8, 0x4A, 0x0B, 0xF5, 0x07, 0x90, 0x4F, 0xC9, 0x02, 0x86, 0x25, 0xA8, 0x22, 0x11,
-	0x4A, 0xA2, 0xC8, 0xCE, 0xDE, 0x1D, 0x1C, 0xE3, 0xAA, 0xBD, 0x04, 0xD2, 0xFA, 0x63, 0xBD, 0x81, 0x92, 0x13, 0x42, 0x43, 0xA2, 0xA5, 0x4A, 0x0D, 0x4A, 0x95, 0x81, 0x15, 0x16, 0x36, 0x91, 0xEF,
-	0x10, 0x70, 0x14, 0x7B, 0xD1, 0x69, 0xE9, 0x44, 0x8A, 0x6F, 0x88, 0xD6, 0xCA, 0x45, 0xA3, 0x75, 0xD2, 0x0F, 0x88, 0x35, 0xB1, 0xE3, 0xD5, 0x37, 0x8C, 0x26, 0x50, 0x7C, 0x43, 0xAC, 0xAE, 0x60,
-	0x31, 0xA8, 0xCF, 0x7E, 0x40, 0xAC, 0xCB, 0xE8, 0xC9, 0xB7, 0x27, 0x00, 0xC4, 0x49, 0x7C, 0x5A, 0xBA, 0x03, 0x84, 0xA7, 0x85, 0x6C, 0xD5, 0x45, 0xC8, 0x60, 0x48, 0x02, 0x83, 0x1F, 0x90, 0x17,
-	0xD4, 0x9E, 0x90, 0x10, 0xD2, 0xC7, 0x69, 0x69, 0xF7, 0xC8, 0x4E, 0xCB, 0xDA, 0x2D, 0xC9, 0x9A, 0x0D, 0xFF, 0x01, 0x49, 0x6F, 0xF1, 0x92, 0x38, 0x77, 0xEE, 0xEA, 0x1B, 0xA1, 0xB2, 0x47, 0xF6,
-	0x2D, 0xAB, 0x96, 0x44, 0xCD, 0xC6, 0xFF, 0x80, 0xA8, 0xAF, 0x08, 0xE0, 0x58, 0xD7, 0x3E, 0x2D, 0x68, 0x89, 0xE8, 0xB4, 0x98, 0x7A, 0x59, 0xCC, 0x64, 0xB4, 0x28, 0x64, 0x29, 0x55, 0x3D, 0xA4,
-	0xA0, 0xE3, 0x68, 0xB2, 0x4A, 0xB3, 0xE9, 0xA1, 0x2D, 0xF0, 0x98, 0xB6, 0xB0, 0x27, 0xDD, 0x80, 0x32, 0x9E, 0xAC, 0xE7, 0x4A, 0x15, 0xE0, 0xCD, 0x9F, 0xB4, 0x5A, 0xC6, 0xA7, 0x71, 0x90, 0x4F,
-	0xE3, 0xBB, 0xF9, 0x34, 0x0F, 0xF2, 0x69, 0x7E, 0x37, 0x9F, 0xD6, 0x41, 0x3E, 0xAD, 0xEF, 0xE6, 0xD3, 0x3E, 0xC8, 0xA7, 0x7D, 0x60, 0xC1, 0x60, 0xC7, 0x76, 0x57, 0x29, 0x30, 0x62, 0x57, 0x50,
-	0x7F, 0xC7, 0x0F, 0x98, 0xB7, 0xA2, 0x8B, 0x07, 0x80, 0x80, 0x77, 0x97, 0xEF, 0x27, 0xE3, 0x91, 0x39, 0xC3, 0x5E, 0x44, 0xFA, 0xB4, 0x61, 0x13, 0xB1, 0xB8, 0x67, 0xCF, 0xB0, 0xA2, 0x3E, 0x03,
-	0xA7, 0x42, 0xFF, 0xF0, 0xCD, 0xC8, 0xDC, 0xDE, 0xBE, 0xBD, 0x1D, 0x1B, 0x75, 0x35, 0x3D, 0xAD, 0x32, 0x1A, 0x2A, 0x4D, 0xB9, 0x46, 0x4B, 0xA5, 0x29, 0xCE, 0xE8, 0xAA, 0xC2, 0x49, 0x93, 0xD1,
-	0x69, 0xA9, 0x1F, 0xC7, 0x57, 0x93, 0xF1, 0xFD, 0x87, 0xF1, 0xBD, 0xA1, 0x37, 0xBA, 0x6A, 0x72, 0x50, 0x04, 0x65, 0x66, 0x47, 0xBD, 0xBD, 0x7C, 0x33, 0x1E, 0xD1, 0x73, 0x25, 0x40, 0x01, 0x8D,
-	0xD6, 0x8E, 0xCD, 0x90, 0xE9, 0x64, 0xEA, 0xFD, 0xD9, 0xDA, 0x67, 0xE7, 0x79, 0xD2, 0x3B, 0x19, 0x2B, 0xDB, 0x90, 0xC4, 0xEB, 0xD0, 0x97, 0x9C, 0xC0, 0x5E, 0x03, 0x28, 0x8D, 0xB5, 0x39, 0x89,
-	0xC7, 0x1E, 0xA1, 0x8F, 0x57, 0x4F, 0xD7, 0x0E, 0x50, 0xEC, 0x72, 0xFA, 0x89, 0x30, 0x80, 0x0E, 0xE6, 0x47, 0x98, 0x02, 0xC1, 0x58, 0xC6, 0xAA, 0xA5, 0x6C, 0x59, 0x1F, 0xB8, 0x29, 0xDD, 0x9B,
-	0x1D, 0xF3, 0x99, 0x25, 0x50, 0x7C, 0xE0, 0x14, 0xEE, 0x4C, 0xB6, 0x4C, 0x33, 0x2B, 0x33, 0x53, 0xAE, 0x32, 0x9B, 0x42, 0x4B, 0x3C, 0xDC, 0x34, 0x11, 0xF3, 0xF1, 0x97, 0xCC, 0x52, 0x46, 0x1C,
-	0xAE, 0x89, 0xB2, 0x23, 0xF0, 0xB8, 0x2D, 0x92, 0xC9, 0xD6, 0x4B, 0x84, 0x0C, 0x4E, 0xAB, 0xEC, 0x84, 0xC9, 0x2E, 0x05, 0x71, 0x5C, 0x30, 0x7B, 0x48, 0x2F, 0x29, 0x2B, 0xA6, 0x28, 0xCF, 0xEB,
-	0x43, 0x24, 0x05, 0x8A, 0xE1, 0x69, 0x2B, 0x45, 0x57, 0x4F, 0x43, 0xEA, 0x5C, 0x34, 0x11, 0x15, 0xAD, 0x35, 0xFC, 0x20, 0xDB, 0x2A, 0xA8, 0x46, 0xED, 0x8F, 0x4D, 0xE0, 0x63, 0x2B, 0x80, 0x3B,
-	0x43, 0x99, 0xBE, 0x5B, 0x66, 0xBD, 0x6F, 0x0D, 0xB0, 0xE6, 0x11, 0x7F, 0x1E, 0x2F, 0xFA, 0x56, 0xA5, 0xA2, 0x6C, 0xF1, 0xEF, 0xD6, 0x67, 0x6E, 0xD1, 0x4C, 0x33, 0x47, 0xD0, 0xE6, 0xDA, 0x8F,
-	0x9B, 0x8D, 0x69, 0x30, 0x89, 0x43, 0x41, 0x20, 0x78, 0x03, 0x00, 0xA8, 0xCD, 0xC2, 0x60, 0x39, 0x5C, 0xE0, 0x70, 0x18, 0x38, 0x44, 0x96, 0xF1, 0xC5, 0x45, 0xA3, 0xA5, 0xFC, 0xD4, 0x68, 0xB7,
-	0x55, 0xFA, 0xAC, 0x77, 0xF2, 0xE7, 0x2E, 0x7F, 0xC4, 0xF4, 0xAF, 0x52, 0xE0, 0xAD, 0x77, 0xFE, 0x2C, 0xEF, 0x23, 0x3C, 0xA0, 0x28, 0x76, 0x26, 0x8B, 0x20, 0x8C, 0xB9, 0x45, 0x93, 0x05, 0xC5,
-	0x9A, 0x9D, 0x8C, 0xBD, 0x8C, 0x65, 0x4B, 0x19, 0x0C, 0xBA, 0x4A, 0xA5, 0xD8, 0x56, 0xD1, 0x4B, 0x4C, 0x40, 0x98, 0x53, 0x2C, 0x7E, 0xD6, 0x3B, 0xE7, 0xE7, 0xE7, 0x0D, 0xD0, 0xAA, 0x22, 0xEF,
-	0x71, 0xFA, 0xB9, 0xD3, 0x6E, 0x37, 0x0F, 0xF4, 0x34, 0x94, 0x9F, 0x21, 0x34, 0xF6, 0xA6, 0x6E, 0x96, 0xA6, 0xBE, 0x81, 0x3A, 0xB7, 0x30, 0xF7, 0xDE, 0xE4, 0xE7, 0x5A, 0xA3, 0xDE, 0x3E, 0x6F,
-	0xF7, 0x5A, 0xF5, 0xE6, 0x79, 0xAF, 0x71, 0xDE, 0x6B, 0x91, 0xCA, 0x11, 0x49, 0x1A, 0x5D, 0xBD, 0x75, 0xDE, 0xEA, 0x9D, 0x77, 0xCE, 0xF5, 0x7A, 0xA7, 0x7D, 0x58, 0x26, 0xBD, 0xDE, 0xEB, 0xB5,
-	0x75, 0xBD, 0xD3, 0x00, 0x8D, 0x0E, 0x50, 0x34, 0x95, 0x9F, 0x5B, 0x8D, 0x5E, 0xAB, 0xD7, 0x39, 0x6F, 0xF4, 0xF6, 0x85, 0x6F, 0x9D, 0x32, 0x45, 0xFB, 0xA8, 0x29, 0x3A, 0x87, 0x4D, 0x71, 0x2E,
-	0x98, 0x62, 0xC2, 0x2E, 0x9F, 0x96, 0x4B, 0xEC, 0x3B, 0xB2, 0xA5, 0xDA, 0xDC, 0x85, 0x89, 0x29, 0x78, 0x89, 0xA5, 0x54, 0xEC, 0x3E, 0x77, 0x6C, 0x9F, 0x6C, 0xA8, 0xFF, 0x74, 0x2F, 0x43, 0x80,
-	0xF6, 0x32, 0x49, 0x5C, 0x3A, 0x77, 0x75, 0x07, 0x5C, 0xDD, 0x19, 0xA4, 0xED, 0x7D, 0x87, 0xBB, 0xBA, 0xF3, 0xD9, 0x24, 0xA2, 0x00, 0x8E, 0xB2, 0x4B, 0xB2, 0xA4, 0x16, 0xC1, 0xEC, 0x85, 0x48,
-	0x62, 0x85, 0x35, 0xAD, 0xAB, 0x65, 0x08, 0xD4, 0xD7, 0xB2, 0x50, 0x68, 0xA9, 0x08, 0x29, 0xFD, 0x4B, 0x07, 0xD6, 0x6D, 0x2E, 0xA3, 0xDF, 0x87, 0x37, 0xE3, 0xCB, 0xFB, 0xF1, 0xE8, 0x33, 0x12,
-	0xC6, 0xBE, 0x76, 0x1D, 0xF2, 0xDE, 0xE7, 0x9B, 0xBE, 0x23, 0xB3, 0xC4, 0xF3, 0x4E, 0xDE, 0x03, 0xE8, 0x8A, 0xC6, 0xF6, 0x71, 0x48, 0x56, 0x3C, 0x2B, 0xC3, 0x3C, 0x10, 0xBD, 0xA8, 0x74, 0x73,
-	0x00, 0xD3, 0x25, 0x39, 0x86, 0x73, 0x29, 0x00, 0xE9, 0x23, 0x2C, 0x84, 0xEB, 0x85, 0xF2, 0xF0, 0x02, 0xE0, 0x3D, 0x26, 0x41, 0x7E, 0xFD, 0x50, 0x1E, 0x7E, 0x08, 0x91, 0x1E, 0xE1, 0xB2, 0x7F,
-	0x49, 0x51, 0x66, 0xB6, 0x0F, 0x18, 0x8F, 0xB0, 0xCA, 0x6F, 0x32, 0xCA, 0x2C, 0xF6, 0x91, 0xDC, 0x11, 0x16, 0xC2, 0x95, 0x47, 0xCE, 0x23, 0x5F, 0xB1, 0x29, 0x5B, 0x2B, 0x76, 0x2E, 0x72, 0x4F,
-	0x22, 0x48, 0xB7, 0xB0, 0x6A, 0xC9, 0x8E, 0xFA, 0x8C, 0x7F, 0xF7, 0xA9, 0x13, 0x88, 0xA7, 0x2A, 0xAA, 0xCC, 0x3B, 0x5E, 0x22, 0x3E, 0x02, 0x36, 0x03, 0xD6, 0x8D, 0x14, 0xA5, 0xFF, 0xAE, 0x48,
-	0x0A, 0x32, 0xA5, 0xD9, 0xDA, 0x4C, 0x07, 0xA5, 0xC7, 0xA9, 0x30, 0x2C, 0x3D, 0x97, 0xC9, 0xC5, 0xD9, 0xC7, 0x8B, 0xB6, 0x8A, 0x79, 0x44, 0x38, 0xE6, 0x3B, 0xC8, 0xE9, 0x1A, 0x05, 0x7E, 0x11,
-	0xF8, 0x2D, 0x60, 0xBF, 0x3E, 0x6B, 0x48, 0xB5, 0x7E, 0x26, 0x8B, 0xAF, 0x4A, 0x9F, 0x27, 0x7E, 0xB1, 0xED, 0xA5, 0xAC, 0x0F, 0x06, 0xD9, 0xDE, 0xAC, 0x18, 0x7A, 0x5F, 0x0C, 0x3D, 0x47, 0x2D,
-	0x44, 0x1C, 0xE8, 0x02, 0xD6, 0x13, 0x11, 0xA1, 0xCA, 0xCD, 0xDA, 0xCF, 0x50, 0x4C, 0xC6, 0x0A, 0x44, 0xEC, 0xC3, 0xB2, 0x60, 0x6D, 0x15, 0x32, 0x58, 0x33, 0xE2, 0x47, 0xFF, 0x10, 0x79, 0xA5,
-	0x16, 0x99, 0x2D, 0x1F, 0xD6, 0xE8, 0xCF, 0x03, 0xEE, 0xC2, 0x60, 0x85, 0xE7, 0xAC, 0x7E, 0xA7, 0x84, 0xA5, 0x26, 0x59, 0x5C, 0xA4, 0x6C, 0x46, 0x66, 0x8C, 0x1C, 0x5D, 0xD8, 0x6C, 0x6D, 0xCA,
-	0x27, 0x6C, 0x2A, 0x12, 0x30, 0x15, 0xAA, 0xD8, 0x5C, 0x93, 0x22, 0xE2, 0x4D, 0x75, 0x49, 0x77, 0x47, 0x9A, 0x3E, 0x2C, 0x40, 0x2B, 0xD6, 0xC0, 0xEC, 0xF4, 0x2B, 0x15, 0x2B, 0x71, 0x9E, 0xFC,
-	0x26, 0x0A, 0x55, 0x2C, 0x15, 0x3A, 0xED, 0x97, 0x88, 0x5F, 0xA8, 0xE4, 0x08, 0xA0, 0x14, 0xF3, 0x05, 0x9B, 0x02, 0xD4, 0xD2, 0x28, 0xD2, 0x12, 0x4D, 0x5B, 0x58, 0x83, 0xFF, 0xAE, 0xDD, 0x92,
-	0x5C, 0x85, 0xD5, 0x59, 0x9A, 0x56, 0x2D, 0x13, 0x21, 0x3A, 0xE5, 0xAC, 0x00, 0x87, 0x00, 0xBA, 0x14, 0xD2, 0x9C, 0x00, 0x62, 0xCF, 0xD2, 0x7B, 0xCE, 0x33, 0xE9, 0x02, 0x8C, 0x89, 0x2B, 0x68,
-	0x50, 0xCB, 0x50, 0x2A, 0xA4, 0x43, 0xBE, 0x73, 0x51, 0xE9, 0xB8, 0x7F, 0xA7, 0x7B, 0xD9, 0x8E, 0x27, 0x71, 0x24, 0x09, 0xF7, 0x82, 0xA8, 0xCF, 0xFD, 0x58, 0xB6, 0x07, 0x66, 0xD1, 0x0C, 0x2F,
-	0x39, 0x1D, 0xBB, 0xE5, 0xBB, 0x86, 0x40, 0x35, 0xF8, 0x3B, 0xBF, 0xD7, 0x83, 0x59, 0xA2, 0x8D, 0x1B, 0xDB, 0x0B, 0x70, 0xE5, 0xAD, 0x0D, 0xCE, 0x2F, 0x35, 0x8C, 0x3D, 0xCE, 0x56, 0x48, 0xF0,
-	0xD7, 0x3E, 0xEB, 0x6D, 0x95, 0x7A, 0x1B, 0x85, 0xDE, 0x6E, 0xA9, 0xB7, 0x59, 0xE8, 0xD5, 0x3B, 0xA5, 0xEE, 0x56, 0xA1, 0xBB, 0x59, 0x9E, 0xB9, 0x9D, 0x76, 0x27, 0xB7, 0x5D, 0x47, 0x04, 0xDB,
-	0x25, 0x0A, 0xE0, 0xBF, 0x35, 0x1B, 0xE7, 0x9D, 0x6E, 0xA2, 0x06, 0xF5, 0x8E, 0x0C, 0x80, 0xC3, 0xCA, 0x94, 0x37, 0x00, 0x71, 0x66, 0x4A, 0xCB, 0x10, 0x3A, 0xD0, 0x89, 0x59, 0xBE, 0x4C, 0xC3,
-	0xE0, 0x3B, 0xE5, 0x25, 0xA4, 0xF2, 0x32, 0x8D, 0x88, 0xED, 0x81, 0xF4, 0x40, 0xBE, 0x2E, 0x8F, 0xC8, 0xE1, 0x3F, 0xD0, 0x0B, 0x49, 0xB9, 0x4C, 0x97, 0x16, 0x06, 0x40, 0x55, 0xBC, 0x4C, 0xDE,
-	0xA3, 0xCC, 0xCB, 0x06, 0xA0, 0x15, 0x73, 0x74, 0xC9, 0x9E, 0xD0, 0x5B, 0xBC, 0x75, 0x4E, 0x2D, 0x7A, 0xCA, 0x67, 0x21, 0x58, 0x2B, 0xA4, 0xE2, 0x54, 0x10, 0x77, 0x5A, 0x99, 0x82, 0x86, 0x11,
-	0x8E, 0x21, 0xB7, 0x6B, 0x71, 0x70, 0x13, 0xD8, 0xD8, 0x23, 0x53, 0x77, 0x49, 0x38, 0xE4, 0x94, 0x15, 0xA5, 0x82, 0x68, 0xA2, 0x98, 0x95, 0x7C, 0x3B, 0x8F, 0xA3, 0xEC, 0x52, 0x6A, 0x9B, 0x41,
-	0xF2, 0xB4, 0xA6, 0x5B, 0x40, 0x98, 0x7B, 0x64, 0x98, 0xA7, 0xC9, 0x0C, 0x20, 0x8C, 0x23, 0x7A, 0x5A, 0xE8, 0x46, 0x0B, 0x98, 0x23, 0xAD, 0xC3, 0x80, 0x99, 0xA6, 0x69, 0xE0, 0xD0, 0x09, 0xFA,
-	0x60, 0x70, 0x86, 0xEE, 0x86, 0xEC, 0x4D, 0x46, 0x1B, 0x7A, 0x40, 0x89, 0x2A, 0x1B, 0xA6, 0x94, 0xE6, 0x81, 0xA4, 0x6C, 0x08, 0xBD, 0x28, 0xA9, 0xA0, 0x5A, 0x3E, 0x4E, 0xB3, 0x5C, 0x1F, 0x87,
-	0x4F, 0xEC, 0x77, 0x39, 0x08, 0x53, 0x28, 0x64, 0xAD, 0x67, 0x33, 0x12, 0xA2, 0x8C, 0x20, 0xF0, 0x83, 0x15, 0xF1, 0xCD, 0x54, 0x05, 0x0A, 0xB4, 0xF3, 0x5A, 0x90, 0xD6, 0x36, 0x99, 0x9C, 0x59,
-	0x33, 0x97, 0x2C, 0x24, 0xB0, 0xBB, 0xF0, 0x4C, 0x0A, 0xE3, 0x00, 0x04, 0xED, 0x04, 0x9E, 0xB6, 0x17, 0x44, 0xE4, 0x08, 0x53, 0x5E, 0x60, 0xA6, 0x5C, 0x87, 0x99, 0xC2, 0x12, 0x8C, 0x89, 0x19,
-	0x6F, 0x91, 0xD3, 0x92, 0x44, 0x11, 0x9E, 0x17, 0x79, 0xF1, 0x04, 0x45, 0x4D, 0xF2, 0x8B, 0xEB, 0x11, 0x8A, 0x90, 0x49, 0x08, 0x09, 0xD5, 0xD2, 0x92, 0x1B, 0xC4, 0x8C, 0x36, 0x29, 0x73, 0xE6,
-	0xA6, 0xA3, 0xC1, 0xCA, 0x40, 0x75, 0xA4, 0x81, 0xD4, 0xF4, 0xAE, 0x99, 0x95, 0xBC, 0x66, 0x5E, 0x1B, 0xCC, 0xD5, 0x3A, 0xCF, 0xF1, 0xB3, 0x42, 0x63, 0x83, 0xA5, 0x5D, 0xD9, 0xFE, 0x89, 0x47,
-	0xA3, 0x69, 0x26, 0x51, 0x99, 0x08, 0x6F, 0xAB, 0x73, 0x2D, 0x5A, 0x5B, 0x11, 0x77, 0x8F, 0x96, 0xA2, 0xCE, 0x20, 0xA9, 0x82, 0x18, 0xE0, 0x77, 0xCE, 0x65, 0x74, 0xC5, 0x4C, 0x9F, 0xF8, 0x0E,
-	0x15, 0xF6, 0xCA, 0x0B, 0x2C, 0xF9, 0x77, 0xCC, 0x76, 0xE6, 0xCF, 0x8A, 0x98, 0x7F, 0xF7, 0x6C, 0xB9, 0x3D, 0x89, 0x06, 0xB9, 0x05, 0x8F, 0x43, 0xBD, 0xAC, 0xFF, 0x08, 0x96, 0xCB, 0xFA, 0x4F,
-	0x83, 0xB5, 0x8C, 0xEC, 0x14, 0x0C, 0xCB, 0x88, 0x4E, 0x01, 0x2D, 0x46, 0x94, 0xAB, 0xBB, 0x17, 0x0B, 0x34, 0x61, 0x1F, 0xDF, 0x7B, 0x8F, 0xE1, 0x0B, 0xEE, 0x06, 0x59, 0xA4, 0x11, 0x5E, 0xF9,
-	0xFE, 0x02, 0x85, 0xE1, 0x1D, 0xBD, 0xBD, 0x96, 0x6D, 0x8D, 0x5E, 0x4E, 0x7D, 0xAA, 0x66, 0x14, 0xF4, 0x96, 0x59, 0xE3, 0x57, 0x1B, 0x37, 0xF4, 0x67, 0x79, 0x9C, 0xE0, 0xB7, 0x83, 0x04, 0xD3,
-	0x60, 0xC5, 0x16, 0xDF, 0xFA, 0xE9, 0x27, 0xEB, 0x99, 0xE9, 0xAF, 0x3D, 0x0F, 0x1E, 0x34, 0x17, 0x40, 0xE3, 0xDE, 0x45, 0x5F, 0x56, 0x4B, 0x17, 0xC5, 0x54, 0xFA, 0x29, 0x1A, 0xDB, 0x1F, 0x41,
-	0x2B, 0xF5, 0x2B, 0x7A, 0x35, 0x0E, 0xBE, 0x31, 0xF4, 0xE8, 0x4F, 0xE7, 0xEE, 0x81, 0x00, 0x7C, 0x18, 0x27, 0xA5, 0x36, 0xBD, 0xFA, 0x00, 0xAF, 0xA5, 0x5F, 0x15, 0xB4, 0x7A, 0x44, 0x59, 0x07,
-	0xEC, 0xE2, 0xD4, 0x9B, 0x83, 0x55, 0xB1, 0x39, 0x2D, 0xCD, 0x11, 0xFB, 0xFD, 0x06, 0xE2, 0xE7, 0x11, 0x87, 0xC5, 0x2F, 0xC3, 0x20, 0x41, 0xFC, 0xA2, 0xFD, 0x05, 0x05, 0xF6, 0xC6, 0xFC, 0x3F,
-	0x15, 0x10, 0xAF, 0x3B, 0x95, 0xAD, 0x50, 0x86, 0x9D, 0x1A, 0x54, 0x40, 0xDB, 0xDB, 0x03, 0x68, 0x7E, 0x07, 0xFF, 0x60, 0xA8, 0xBD, 0x87, 0xB1, 0xCA, 0x2D, 0x1C, 0x63, 0xD9, 0xFB, 0x18, 0x6B,
-	0xAF, 0x09, 0x28, 0x93, 0x82, 0x9D, 0x7B, 0x6C, 0x19, 0xBE, 0xB3, 0x5F, 0x52, 0xF2, 0xC2, 0x1E, 0xFF, 0x8E, 0xCA, 0xBF, 0x97, 0x40, 0x9F, 0x4D, 0xEB, 0x25, 0xA2, 0xBF, 0x07, 0x03, 0x98, 0x33,
-	0x0F, 0xC9, 0x13, 0xDA, 0xF5, 0x07, 0x35, 0x7E, 0xA2, 0x47, 0xCF, 0xFD, 0xA8, 0xB3, 0xB2, 0x9F, 0x50, 0xD0, 0xDF, 0xA2, 0xFF, 0x07, 0x36, 0xEF, 0xCE, 0xC3, 0x0F, 0x2F, 0x00, 0x00
+	0x1F,0x8B,0x08,0x00,0x00,0x00,0x00,0x00,0x04,0x00,0xED,0x3C,0xEB,0x72,0xDB,0x3A,0x73,0xFF,0x3B,0xD3,0x77,0x40,0x98,0x39,0xC7,0x52,0xA3,0xFB,0xCD,0xB6,0x64,0x39,
+	0x63,0x4B,0x4A,0xE2,0xF9,0x1C,0x27,0xB1,0x9C,0xE4,0x9C,0x39,0x73,0x9A,0xA1,0x44,0x48,0xE2,0x17,0x8A,0x54,0x49,0xCA,0xB6,0x8E,0xEB,0x27,0xEB,0x8F,0x3E,0x52,0x5F,
+	0xA1,0xBB,0x00,0x48,0x82,0x24,0x48,0x5A,0x4E,0x7A,0x99,0x69,0xE5,0x4C,0x4C,0x82,0x8B,0xBD,0x61,0x77,0xB1,0xBB,0x84,0xFC,0x1F,0xFF,0xF6,0xEF,0x27,0x2F,0xC6,0x1F,
+	0x46,0x37,0xBF,0x7F,0x9C,0x90,0x95,0xBF,0xB6,0xC8,0xC7,0xCF,0xE7,0x97,0x17,0x23,0xA2,0x55,0xEB,0xF5,0xAF,0xED,0x51,0xBD,0x3E,0xBE,0x19,0x93,0xDF,0xDE,0xDD,0xBC,
+	0xBF,0x24,0xCD,0x5A,0x83,0xDC,0xB8,0xBA,0xED,0x99,0xBE,0xE9,0xD8,0xBA,0x55,0xAF,0x4F,0xAE,0x34,0xA2,0xAD,0x7C,0x7F,0xD3,0xAF,0xD7,0xEF,0xEE,0xEE,0x6A,0x77,0xED,
+	0x9A,0xE3,0x2E,0xEB,0x37,0xD7,0xF5,0x7B,0xC4,0xD5,0xC4,0xC9,0xE2,0xB2,0xEA,0x4B,0x33,0x6B,0x86,0x6F,0x68,0xA7,0xE4,0x04,0x9F,0xE0,0x2F,0xAA,0x1B,0xF0,0x6B,0x4D,
+	0x7D,0x9D,0xCC,0x1D,0xDB,0xA7,0xB6,0x3F,0xD4,0x7C,0x7A,0xEF,0xD7,0x11,0x60,0x40,0xE6,0x2B,0xDD,0xF5,0xA8,0x3F,0xDC,0xFA,0x8B,0xEA,0x91,0x46,0x90,0x60,0x95,0xFE,
+	0xCB,0xD6,0xBC,0x1D,0x6A,0x23,0x0E,0x5E,0xBD,0xD9,0x6D,0xA8,0x16,0xE0,0x90,0x01,0x7E,0xAB,0x7E,0x3E,0xAB,0x8E,0x9C,0xF5,0x46,0xF7,0xCD,0x99,0x45,0xB5,0x88,0xC0,
+	0xC5,0x64,0x38,0x19,0xBF,0x9D,0x84,0xB3,0x6C,0x7D,0x4D,0x87,0xDA,0xC2,0x71,0xD7,0xBA,0x5F,0x35,0xA8,0x4F,0xE7,0xC8,0xAC,0x26,0x73,0x64,0xD1,0xCD,0xCA,0xB1,0xE9,
+	0xD0,0x76,0x70,0x96,0x6F,0xFA,0x16,0x3D,0xFD,0x4A,0x67,0xD7,0x37,0x23,0x32,0xA6,0xB3,0xED,0xF2,0xA4,0xCE,0xC7,0xC8,0x89,0xE7,0xEF,0xF0,0xF7,0xCC,0x31,0x76,0x0F,
+	0x6B,0xDD,0x5D,0x9A,0x76,0xBF,0x31,0xD8,0xE8,0x86,0x61,0xDA,0x4B,0xB8,0x9A,0x39,0xAE,0x41,0x5D,0xB8,0x98,0x3B,0x96,0xE3,0xF6,0x67,0x96,0x3E,0xFF,0x3E,0x58,0x00,
+	0xA1,0xAA,0x67,0xFE,0x45,0xFB,0xCD,0xF6,0xE6,0x9E,0xDF,0x2E,0xF4,0xB5,0x69,0xED,0xFA,0xDA,0x8D,0x0B,0xF8,0xE7,0x2B,0xEA,0x93,0xF7,0x53,0xAD,0x42,0xCE,0x5C,0x53,
+	0xB7,0x2A,0xE4,0x1D,0xB5,0x6E,0xA9,0x6F,0xCE,0xF5,0x0A,0xF1,0x40,0xBB,0x55,0x8F,0xBA,0xE6,0x62,0x30,0x03,0x64,0x4B,0xD7,0xD9,0xDA,0x46,0x95,0xA3,0x7F,0x69,0xB4,
+	0x8D,0x63,0xA3,0x37,0x78,0x7C,0x89,0xB2,0xE8,0xA6,0x4D,0xDD,0x87,0x34,0xD0,0x62,0xB1,0x18,0xDC,0x99,0x86,0xBF,0xEA,0x37,0x1B,0x8D,0x06,0x30,0x10,0xF0,0x4D,0xF4,
+	0xAD,0xEF,0x08,0x96,0xAB,0xBE,0xB3,0x09,0xF9,0xAF,0xBA,0xE6,0x72,0xE5,0xF7,0x9B,0x9B,0x7B,0xE2,0x39,0x96,0x69,0x90,0x97,0xB3,0x43,0xFC,0x09,0x1E,0xCF,0x1C,0xDF,
+	0x77,0xD6,0x11,0xB8,0x45,0x17,0x2A,0xE8,0x48,0x2D,0x8F,0x2F,0xD7,0xBA,0xE7,0xA3,0x39,0x3C,0x70,0x4E,0x18,0x65,0x85,0xFE,0x9C,0x5B,0xEA,0x2E,0x2C,0xE7,0x8E,0x03,
+	0xA0,0xA9,0x54,0x75,0xCB,0x5C,0xDA,0x7D,0xC6,0x91,0x42,0x03,0x8D,0x76,0x4F,0x08,0x77,0xDC,0x43,0xD9,0x22,0x88,0xBE,0xBB,0x9C,0x95,0x3A,0xDD,0xCA,0x51,0xAF,0xD2,
+	0x6C,0x1F,0x96,0x07,0x44,0x7A,0x54,0x5D,0x3B,0x7F,0x55,0x2D,0xD0,0x97,0xEE,0x56,0x97,0xAE,0x6E,0x98,0x60,0x07,0x25,0x94,0xA2,0x42,0x60,0x96,0x1E,0x4D,0xAB,0x34,
+	0xCB,0xA4,0xF1,0x8B,0x18,0x6D,0x54,0xBA,0xCD,0x4A,0xB3,0xD1,0xC2,0xC1,0xD6,0xF1,0x2F,0x09,0x94,0x77,0x74,0xF6,0xDD,0xF4,0x25,0x74,0x0C,0x7D,0x85,0x20,0x5A,0x02,
+	0xDA,0x05,0x24,0x28,0x03,0xBF,0x64,0xDC,0x57,0x3D,0xB8,0x2E,0x01,0xFA,0x14,0xCD,0x72,0x0C,0x02,0x68,0x55,0x92,0x0C,0x94,0xD5,0xD4,0xF7,0x90,0xE9,0x09,0x22,0x39,
+	0x3F,0x19,0xDF,0xDA,0xFB,0xB9,0x08,0x93,0xC8,0x7C,0x87,0xEB,0x78,0x3F,0x84,0x0B,0xD3,0xF2,0xC1,0x67,0x37,0xAE,0xB3,0x34,0x8D,0xFE,0xF8,0xB7,0x8B,0xB5,0xBE,0xA4,
+	0x2C,0x1E,0x62,0xCC,0xA8,0xBD,0x37,0xE7,0xAE,0xE3,0x39,0x0B,0xBF,0x16,0xD2,0x21,0x9E,0xAF,0xBB,0xFE,0x08,0x57,0xC8,0xF3,0xDD,0xE1,0xC1,0xCB,0x96,0xD1,0xED,0x1D,
+	0x1D,0x1F,0x54,0x08,0xB5,0x0D,0x69,0xB8,0xD1,0x68,0xB7,0x7B,0xBD,0x83,0xCA,0x5B,0x31,0x11,0x83,0xD9,0xB0,0x49,0x80,0x26,0x7A,0xAC,0xB5,0x5D,0xDB,0xDF,0xAC,0x87,
+	0x8D,0xC3,0xA3,0x67,0xDF,0xA5,0x16,0xC4,0xB2,0x5B,0x3A,0x00,0x07,0xD0,0xFD,0x3E,0x6A,0x26,0x30,0xED,0xB6,0xEC,0xB6,0x91,0xBB,0x90,0x66,0x37,0x66,0xF2,0xB2,0xC7,
+	0x3F,0xBE,0x5C,0x38,0x0E,0xC8,0xF5,0x30,0xB7,0x40,0x47,0x7D,0x70,0xD9,0x55,0xC2,0xBB,0x64,0xB7,0x91,0x3C,0x6D,0x0E,0x8C,0x52,0x57,0x81,0xB5,0xD9,0x6C,0x1F,0xF7,
+	0x5A,0x01,0x75,0x16,0x30,0x90,0x7C,0x70,0x2F,0x82,0x02,0x0E,0x05,0xB4,0x89,0xFE,0x20,0x71,0xC4,0x68,0x18,0x74,0xEE,0xB8,0x3A,0x93,0x17,0x50,0x53,0x17,0x97,0x50,
+	0x82,0xEF,0xAF,0x90,0xC7,0xBC,0x59,0xB6,0x83,0x13,0x42,0xC4,0xE8,0xFF,0x39,0x88,0x6B,0x2C,0x5E,0xB7,0x1F,0xD2,0xF2,0xF1,0xF9,0x77,0x2B,0xD3,0xA7,0x0A,0x59,0x8F,
+	0x1A,0xF8,0xC3,0x43,0xF5,0x1D,0x65,0xD1,0x70,0xE6,0x58,0x46,0x80,0xB0,0xF7,0x20,0x6B,0xA1,0x95,0xD6,0x42,0x4B,0xB9,0x2E,0xA3,0x06,0xFE,0x00,0x12,0x30,0x39,0x7A,
+	0xE3,0x38,0xD6,0x4C,0x77,0x65,0xD6,0xD8,0x92,0xA7,0xA7,0x4D,0x3A,0x93,0xE3,0xC9,0xA1,0x14,0xA8,0xAB,0x8C,0x89,0x3E,0x8B,0xB6,0xF2,0x30,0x5F,0x51,0xA4,0xFD,0x58,
+	0xBB,0xF7,0xF8,0x3E,0xA7,0xD8,0x10,0x26,0x0D,0xFC,0x09,0xCD,0x08,0x56,0x8C,0xB4,0x1A,0xF8,0x5F,0x70,0x15,0x6E,0x03,0x60,0xB6,0x5B,0x0F,0xB6,0x0D,0x86,0x71,0x61,
+	0xDE,0x53,0x03,0x35,0xF2,0x20,0xEF,0x60,0x73,0x67,0xEB,0x9A,0x14,0xE2,0x9C,0x26,0xAE,0x88,0x4D,0xEF,0x60,0x27,0x5B,0x3B,0xB6,0xE3,0x6D,0xF4,0x39,0x2E,0x82,0x69,
+	0x2F,0x1C,0xD0,0xBA,0xBB,0x8B,0xA9,0xAD,0xC9,0xB0,0x5E,0x9E,0x9D,0x4F,0x2E,0x6F,0x7E,0xBB,0x79,0x20,0xF2,0x96,0xF9,0x58,0x9B,0xDE,0x7C,0xBE,0xFA,0x76,0x31,0x9A,
+	0x7C,0x7B,0xFF,0x61,0xFC,0xF9,0x72,0x12,0x3D,0xDE,0x22,0xC6,0xF1,0xCD,0xE5,0x34,0xF1,0xC4,0xD0,0x5D,0x90,0x93,0x52,0x1B,0x27,0x8F,0x6E,0x3E,0x2A,0x1E,0xDF,0x9A,
+	0x8E,0x05,0x3B,0xED,0x63,0xED,0x6C,0xFA,0xFB,0xD5,0x68,0xFA,0x61,0xF4,0xB7,0xC9,0x4D,0x02,0x0C,0x5C,0x7D,0x37,0x73,0x9D,0x3B,0x1B,0xA0,0xBE,0x4E,0xCE,0x93,0xD4,
+	0xC5,0x93,0xB7,0x93,0xAB,0xC9,0xF5,0xC5,0x28,0x49,0x82,0xD2,0xCD,0xC6,0xB4,0xBF,0x03,0xC0,0xE7,0xAB,0xBF,0x5D,0x7D,0xF8,0x7A,0x95,0x44,0x4E,0xD1,0x82,0x2E,0x3F,
+	0xBC,0xFD,0x76,0x39,0xF9,0x32,0xB9,0xFC,0xD6,0x7C,0x20,0xF2,0x6D,0x2B,0x7E,0xDB,0x8E,0xDF,0x76,0xE2,0xB7,0xDD,0xF8,0x6D,0x2F,0xB8,0xFD,0x72,0x31,0xBD,0x38,0x47,
+	0x92,0x86,0xE9,0x6D,0x2C,0x7D,0xD7,0x37,0x6D,0xE1,0x0A,0xF8,0xF4,0xDD,0xC5,0x78,0x3C,0xB9,0x8A,0x1E,0x72,0x6F,0xAA,0xB1,0x54,0xE8,0xDE,0x7F,0x4F,0xED,0xAD,0x64,
+	0x2F,0xFD,0x97,0x6F,0x8E,0xF1,0x07,0xCC,0xE1,0xBE,0xEA,0xAD,0x74,0x03,0x22,0x47,0x83,0x40,0xD4,0x01,0x0B,0xE3,0x11,0x96,0x34,0x2A,0xE2,0x5F,0xAD,0x0D,0x61,0x4D,
+	0x64,0x3F,0x52,0x26,0x30,0x9F,0xCF,0x07,0x71,0x62,0x61,0xB8,0xD3,0x67,0x00,0xB3,0x05,0xEF,0xE3,0x99,0x07,0xCB,0x21,0xE0,0x97,0xE9,0xF9,0xC2,0xBC,0x19,0x78,0x2A,
+	0xE8,0x61,0x7C,0x59,0x9B,0xB6,0xB0,0xF5,0x2E,0x0F,0x8C,0xF7,0x81,0xE9,0xB3,0xFB,0xBF,0xAA,0x26,0x44,0x80,0x7B,0x78,0xD8,0x90,0x73,0xAF,0x23,0x60,0x0B,0x44,0x5D,
+	0xA3,0xA4,0x41,0xF8,0xE8,0x74,0x3A,0x83,0xB8,0xA2,0xAA,0x33,0xCB,0x01,0x03,0x0C,0x0C,0x95,0xB1,0x75,0x24,0x39,0x38,0x4F,0x8D,0xE4,0x91,0x9C,0x40,0xA8,0x0C,0x5E,
+	0x22,0xEE,0x76,0x7F,0x19,0xCC,0xB7,0xAE,0xC7,0xEC,0x66,0xA1,0x6F,0x2D,0x3F,0x0A,0xCF,0x2B,0xD3,0x30,0xC0,0x8E,0xD3,0x3B,0x43,0xC0,0x7E,0x22,0x4C,0x1E,0xE3,0x8F,
+	0x9C,0xFA,0x30,0xB9,0x1E,0x6B,0x6B,0x58,0xCF,0x44,0x88,0xF9,0xA1,0xE8,0x27,0x94,0xCC,0x92,0xC8,0x15,0x1F,0x6F,0xF7,0xE0,0x5A,0xC8,0xB1,0x71,0x4C,0x86,0x3C,0xAE,
+	0x73,0x79,0x3B,0x93,0x55,0xC6,0x97,0x43,0xB0,0x28,0x04,0x52,0xE4,0x77,0xE3,0xA3,0xEE,0xF8,0x4D,0x24,0x4B,0x6B,0x6F,0x61,0x1A,0xB3,0x2E,0x3D,0x9E,0xFF,0x77,0x0A,
+	0xD3,0x2A,0x94,0xE6,0xA4,0x2E,0xEA,0x88,0x93,0xBA,0xA8,0x91,0xB0,0xA0,0x20,0x8E,0x0D,0xD8,0x8D,0xA1,0x66,0x2E,0x48,0xC9,0x87,0x5C,0xC1,0x59,0x94,0x58,0xA6,0xB1,
+	0xDD,0x94,0xC9,0x8B,0xE1,0x90,0x1C,0xE0,0xCE,0xB6,0x00,0x23,0x35,0x0E,0xCA,0x44,0x3C,0x29,0x95,0x07,0x58,0xB3,0x18,0xE6,0x2D,0x31,0x61,0x6A,0x58,0x08,0xC8,0x83,
+	0x41,0xF2,0xAD,0x11,0x46,0x76,0xA8,0x09,0x79,0x7B,0x28,0x6F,0x58,0x1A,0xFC,0x92,0x34,0xC0,0x00,0x85,0x98,0x24,0x89,0x2E,0xCF,0x17,0xA2,0xCD,0x8F,0xF0,0x27,0xEE,
+	0x37,0x6C,0x2F,0x49,0xA8,0x49,0x3B,0x85,0x1A,0xCA,0x75,0xEC,0xE5,0xE9,0x09,0xAA,0x36,0x44,0x1E,0xAA,0xB9,0xD3,0x4B,0xD4,0x48,0xB9,0x35,0x91,0x76,0xCA,0xF3,0x33,
+	0x1F,0x74,0x4D,0xAE,0xA9,0x6E,0xF9,0xE6,0x9A,0x92,0x4B,0x67,0x09,0x51,0x03,0xCA,0x36,0xC4,0x73,0x8A,0xDA,0xE6,0x14,0xEB,0x20,0xCE,0x8F,0x0A,0xD5,0x4D,0xC8,0xD4,
+	0xEC,0x3C,0x41,0x28,0x04,0xDA,0x47,0xA8,0x13,0xD8,0x3A,0x6D,0xB6,0x76,0xAC,0xF0,0x5C,0x81,0x80,0x1A,0xCA,0x01,0xA3,0xA7,0x59,0x52,0x49,0xC2,0xB1,0x89,0xCE,0x06,
+	0x6C,0x91,0xD5,0xB3,0x3A,0x14,0xC8,0x01,0x4F,0xD2,0x72,0x0B,0x81,0x5B,0x98,0x30,0x40,0x39,0x4C,0x2D,0x4B,0xC8,0x35,0xD4,0x1A,0xFC,0x1E,0x37,0xF0,0xF0,0xDE,0xD2,
+	0x3D,0x0F,0x64,0x8A,0x52,0x17,0x86,0xDB,0xC5,0xFF,0x0C,0x46,0x71,0x0A,0x75,0xF4,0xDC,0xA7,0xC6,0x7B,0xC7,0xD8,0x5A,0xD4,0x0B,0xA7,0x08,0xB7,0xD0,0x4E,0x03,0x00,
+	0x22,0x20,0xA0,0xAC,0x36,0xA2,0xE9,0x5F,0xA8,0x3B,0xC3,0x88,0xB7,0xE3,0x60,0xE9,0xE9,0x21,0x40,0x9F,0x34,0xE3,0x53,0x47,0x98,0xE3,0x66,0x4D,0x63,0x0F,0xD1,0x24,
+	0x12,0xF4,0x3E,0xEA,0x5B,0x8F,0x66,0x4D,0x62,0x0F,0xE3,0xF0,0x6F,0x40,0x72,0x61,0x58,0x69,0x78,0x7C,0x28,0xC0,0xEB,0x4C,0x27,0x75,0xA6,0xF5,0xF4,0xB2,0x6C,0xA0,
+	0xB8,0xF8,0x26,0x5A,0x0F,0x71,0xC7,0xE5,0xF5,0x80,0x34,0x76,0xE0,0xD2,0x85,0x4B,0xBD,0xD5,0xF9,0x16,0x36,0x14,0x7B,0x6C,0xDE,0x1E,0xC4,0xAD,0x96,0xD7,0xC4,0x7C,
+	0x87,0xE4,0x89,0x28,0xFA,0x9B,0xBC,0xDB,0x82,0xCD,0x98,0xF6,0x66,0x0B,0x45,0x27,0x56,0x1E,0xDA,0x8C,0x21,0xD2,0xC8,0xAD,0x0E,0x59,0xD4,0x50,0xBB,0xE6,0xE8,0x35,
+	0x88,0x3B,0x73,0xCB,0x9C,0x7F,0x1F,0x6A,0x82,0x20,0x8B,0x29,0x12,0xE3,0xA7,0x27,0xAB,0x66,0x64,0x8C,0xF8,0x68,0xD5,0x0C,0x9F,0x6F,0x44,0x88,0x31,0x6D,0x59,0x1C,
+	0x70,0x48,0x7F,0xEB,0xC1,0x5D,0x32,0xE6,0x74,0x1A,0x69,0x26,0xF9,0x34,0x16,0xD3,0x41,0x11,0x2C,0xA8,0x87,0xD3,0x82,0x04,0x20,0xE9,0x75,0xAC,0x6C,0x89,0x1C,0x0C,
+	0x45,0x47,0x44,0xA1,0xDF,0x70,0x06,0x70,0xB3,0x08,0x1D,0x87,0x24,0x3C,0x45,0xED,0x37,0xB0,0xC4,0x5F,0x21,0x7F,0x70,0xEE,0xB4,0x6C,0x97,0xE9,0x31,0x21,0x82,0x70,
+	0x59,0xDD,0xF5,0x3D,0x88,0x41,0x16,0x5B,0xBB,0x04,0x36,0x5E,0xD8,0x44,0x5E,0x98,0xEB,0x65,0xCD,0x86,0x82,0x66,0xC2,0xCB,0x0E,0xEE,0x39,0xCA,0xD0,0x16,0x92,0xF5,
+	0x43,0x62,0xFD,0x43,0x13,0x4E,0x83,0x73,0xFB,0xE1,0xA1,0xCE,0xC2,0x6B,0x28,0x70,0x77,0xDA,0xE9,0x85,0xCD,0x7B,0x65,0x90,0x79,0x10,0xDD,0x27,0x27,0x7A,0x30,0x35,
+	0x09,0x49,0x56,0x60,0x2F,0x43,0xD6,0x27,0xF4,0xFA,0xF5,0x3A,0x66,0xF9,0xB0,0x05,0x7A,0x2B,0x5C,0x41,0x57,0xB7,0x20,0xAB,0x5C,0x6B,0xA7,0xAA,0xD1,0x93,0xBA,0x7E,
+	0x9A,0xEB,0x2C,0x09,0x25,0x4A,0xE9,0x69,0xE8,0x79,0xF2,0x98,0x00,0x0D,0x9E,0xB0,0x14,0x49,0xB2,0x6A,0x1F,0x9C,0xD6,0xA2,0xAC,0x91,0xC7,0x03,0x4F,0xE9,0x60,0xEA,
+	0x6F,0xED,0x8B,0x39,0x1D,0xAD,0xE8,0xFC,0x3B,0x64,0xB7,0x58,0xB9,0xDF,0x02,0x7F,0xE5,0xD0,0x61,0x58,0x3C,0x8B,0x03,0x69,0xC2,0x8B,0xE6,0xE1,0xBD,0xA1,0xFB,0x7A,
+	0x75,0xBE,0x06,0xD0,0xC6,0x7D,0xA3,0xA5,0x89,0x96,0x61,0x9F,0x60,0xED,0x52,0x87,0xDA,0xE5,0x64,0xE6,0xC6,0xF6,0x9C,0x3D,0x18,0x1C,0xFB,0x96,0x97,0xCF,0x9D,0x0C,
+	0x51,0xC0,0x5A,0x27,0x62,0x0D,0x0B,0xA7,0x1F,0x60,0x6B,0x3A,0xF7,0x37,0x05,0x4A,0x93,0x20,0x0A,0xD8,0x3A,0x92,0x34,0x06,0x05,0xDB,0x0F,0xB0,0x75,0xE6,0xED,0xEC,
+	0xF9,0x14,0xF2,0x76,0xEA,0xE7,0x73,0xA7,0x00,0xCC,0x67,0xB2,0xD3,0x90,0x33,0x8C,0x3E,0x91,0x10,0xFC,0x00,0xBF,0x20,0xF6,0x94,0xBA,0x10,0x3E,0xF2,0xB9,0x4D,0x81,
+	0xE5,0xF3,0x7A,0x94,0xE0,0x35,0x9C,0xFE,0x03,0x9C,0xBE,0xA5,0x90,0x4B,0x9A,0xF3,0x7C,0x3E,0x13,0x40,0xF9,0x5C,0x42,0x4C,0x8B,0xB3,0x29,0x66,0xCB,0x4C,0x26,0xFC,
+	0xFF,0x36,0xD8,0xF8,0x33,0x23,0x40,0x10,0xA2,0x54,0xFB,0x4A,0x96,0xB4,0x10,0xE8,0x2F,0x41,0x18,0xAB,0xD4,0x8C,0x84,0x8A,0xA5,0x18,0x4F,0xD4,0x5A,0x88,0xA7,0xA5,
+	0xC4,0xD3,0xDA,0x1B,0x4F,0x5B,0x89,0xA7,0xBD,0x37,0x9E,0x8E,0x12,0x4F,0x67,0x6F,0x3C,0x5D,0x25,0x9E,0x6E,0xCE,0x82,0x2D,0xA2,0x54,0xE9,0xA7,0x2E,0x19,0x37,0x50,
+	0x29,0x11,0x2B,0x1D,0x48,0x37,0x13,0x1B,0x77,0x11,0x43,0x6D,0xA3,0x69,0xB8,0x94,0x99,0x9E,0x8A,0x07,0x4F,0x55,0x10,0xA4,0x4A,0xD4,0x47,0xBC,0x6F,0x2C,0x7D,0xE9,
+	0x95,0x80,0xDE,0x35,0x8E,0x10,0x76,0xFB,0x74,0x24,0xBA,0x01,0x7C,0x21,0x1A,0x8E,0x41,0x37,0x30,0x57,0x25,0x2C,0xA1,0x7C,0x22,0x0E,0xD6,0xE2,0x95,0x90,0x84,0x19,
+	0x6F,0x0A,0x4B,0xF0,0x0B,0xCB,0x4D,0x56,0x7D,0xE2,0x8B,0xBA,0x13,0xC8,0x5E,0xCC,0x4D,0x90,0x24,0xB2,0xF7,0x73,0x7F,0xD7,0x6F,0x75,0x3E,0xAA,0x9D,0xFE,0xE3,0x3F,
+	0x10,0xF1,0xB9,0x05,0xAC,0x1F,0xCF,0x3E,0x4F,0x27,0x63,0x32,0x24,0x0B,0xDD,0xF2,0xE8,0x20,0xFE,0xF0,0xCE,0x63,0x91,0x31,0x31,0x0A,0xAB,0x6E,0xF3,0xBC,0x5F,0x3D,
+	0x6B,0xF4,0x1E,0xF1,0x3D,0x10,0xED,0xEA,0xC3,0xD5,0x44,0xEB,0x13,0xD8,0x1A,0x1A,0x15,0xA2,0x5D,0x7E,0x78,0xFB,0x76,0x72,0xCD,0xEF,0xC1,0x45,0xB5,0xA0,0x23,0xC8,
+	0x47,0xC0,0xD9,0x34,0xDC,0xCC,0xF8,0x5D,0x07,0x9F,0xC3,0x1E,0xC2,0xEF,0x8E,0xE0,0x4E,0x6A,0xF1,0xB1,0xC1,0x0E,0xA2,0xFC,0x3A,0x39,0x9F,0x4E,0xAE,0xBF,0x08,0xAC,
+	0x47,0x38,0x24,0x5A,0x79,0x6C,0x00,0x42,0x13,0x79,0x4C,0x30,0xC7,0xB9,0xF8,0xF6,0xE6,0xF2,0xEC,0xED,0x94,0x73,0x39,0xB9,0x3A,0x3B,0xBF,0x9C,0x04,0x13,0x00,0xC5,
+	0xF5,0x64,0x3A,0xB9,0xF9,0xF6,0xE6,0x42,0x0C,0xB6,0xC4,0xE0,0xD9,0x58,0x10,0x96,0x60,0x10,0x8B,0xA0,0x0D,0xA4,0xE2,0x94,0x42,0xDF,0x02,0x32,0x4D,0xE0,0x22,0x7A,
+	0xBA,0xD8,0xDA,0xAC,0x97,0x4B,0x3E,0x95,0xEE,0xCB,0xC0,0x82,0x4B,0xFD,0xAD,0x6B,0x13,0xC3,0x99,0x6F,0xA1,0x00,0xF1,0x6B,0x4B,0xEA,0x4F,0x2C,0x8A,0x97,0xE7,0xBB,
+	0x0B,0x03,0x60,0x06,0xE4,0x91,0xD4,0xEB,0x44,0xFB,0xA4,0xA9,0x90,0x4C,0x63,0x58,0x10,0x27,0xEF,0x6A,0xE3,0xAC,0xC4,0x87,0x23,0xE1,0xAE,0xAA,0x42,0x35,0x29,0xDD,
+	0x57,0xC8,0x0E,0xB1,0x31,0x34,0xE0,0xCB,0xCC,0x83,0x40,0x82,0x17,0xBB,0x04,0x3A,0x81,0x8A,0x32,0x1F,0x53,0xE1,0xFA,0x22,0x70,0x15,0x7F,0x04,0xAA,0x5B,0xD3,0x33,
+	0x63,0xB8,0x1E,0xA2,0x4B,0xFC,0x60,0x1B,0x05,0x94,0x39,0x24,0x61,0xDB,0xA4,0x9C,0x04,0xC1,0x8F,0xD0,0x43,0x89,0xE9,0xA5,0x26,0xC2,0x11,0x4E,0x3B,0xC0,0x90,0x74,
+	0x40,0x5E,0x73,0xA3,0x25,0x7D,0xE2,0xBB,0x5B,0x5A,0x1E,0xC4,0x31,0x3C,0xC6,0x6F,0x29,0x40,0xC6,0x47,0x14,0x14,0x13,0x94,0x90,0xCB,0xD7,0xE4,0xE0,0x00,0x28,0x70,
+	0x92,0x39,0x34,0x1E,0x89,0x4A,0x75,0x67,0xF1,0x65,0x30,0xC1,0xDF,0x5C,0xF6,0x6A,0xFF,0xD5,0x90,0x24,0xD6,0x41,0xE8,0x4E,0xDF,0x6C,0xA8,0x6D,0xA8,0x70,0xBD,0xCB,
+	0xC2,0x95,0x42,0x15,0xE0,0xC2,0x20,0xA2,0xC2,0x34,0x2A,0xB2,0x56,0xEF,0x7C,0x37,0xC2,0x90,0x76,0xA5,0xAF,0x29,0xB7,0x5A,0x25,0x1A,0x61,0x18,0x99,0xEB,0x8C,0xCE,
+	0x43,0x05,0x46,0xE0,0x92,0xD1,0x4D,0x68,0x10,0x2A,0x1A,0x52,0x42,0x38,0x13,0x00,0x1A,0x64,0x00,0xBF,0x4F,0xC2,0x39,0x35,0x8B,0xDA,0x4B,0x7F,0x05,0x83,0xAF,0x5E,
+	0x95,0x0B,0x17,0x2F,0x98,0xF5,0x87,0xF9,0x27,0x77,0x1B,0x69,0x21,0x77,0x39,0x0B,0xA7,0x74,0xE8,0x0B,0xDB,0x6F,0xB7,0x6E,0x9C,0xA9,0xEF,0x96,0x6E,0x25,0x5D,0xC1,
+	0x3D,0xEC,0x53,0xB5,0x85,0xEB,0xAC,0x47,0x2B,0xDD,0x1D,0x39,0x06,0x2D,0x95,0x6E,0xC9,0xE9,0x29,0x69,0x75,0xCA,0xE4,0x57,0x88,0x1F,0x6F,0xDE,0x54,0x08,0x1F,0x69,
+	0xF6,0x92,0x23,0x47,0xD1,0xC0,0xAD,0xB8,0xCA,0xD0,0x2D,0x90,0x6F,0xF6,0xF6,0x21,0xBF,0x17,0xEA,0xA3,0xA7,0x61,0x2E,0x40,0x84,0x3B,0xE2,0xF9,0xCE,0xA7,0x25,0x4C,
+	0x22,0x2B,0x64,0xE3,0xBB,0x12,0x3E,0x36,0x58,0x9B,0x0B,0x54,0x67,0x7E,0x09,0x1F,0xE7,0x20,0x9A,0xAE,0x1C,0xD7,0x7F,0x3A,0x26,0x72,0x72,0x82,0x22,0xBF,0x22,0x8A,
+	0x87,0x30,0xDA,0xCC,0xA1,0x04,0xF2,0xEF,0x41,0xE7,0x9F,0x60,0x19,0x0F,0x0F,0x0F,0x5B,0xB8,0x98,0xAF,0x94,0x30,0x8C,0x1C,0xC0,0xF5,0xBA,0xDD,0x76,0x1E,0x50,0x0B,
+	0x81,0x5A,0xDD,0x5E,0x36,0xD7,0xED,0x1C,0xAE,0x2F,0x1D,0xC8,0xA9,0x94,0x6C,0x67,0xF1,0x7D,0xD8,0x6A,0x74,0x0F,0xBB,0xC7,0x9D,0x46,0xFB,0xF0,0xB8,0x75,0x78,0x9C,
+	0xCB,0x1B,0x13,0xA0,0x75,0xD4,0xEC,0x1C,0x76,0x8E,0x0F,0x7B,0x87,0xCD,0x46,0xAF,0x5B,0x28,0x4A,0xB3,0x71,0x7C,0xDC,0x6D,0x36,0x7B,0x2D,0x50,0x4F,0x1E,0x70,0x1B,
+	0x81,0x3B,0xAD,0xE3,0xCE,0x71,0xEF,0xB0,0x75,0x9C,0x23,0x7E,0xE7,0x89,0xDA,0xEE,0x3E,0x45,0xDB,0xBD,0x42,0x6D,0x1F,0x72,0x6D,0x2B,0xF4,0x3D,0x65,0x87,0x05,0xD6,
+	0x6B,0xDD,0x36,0x4A,0x50,0x1B,0x55,0x18,0x82,0xFC,0x28,0xE7,0x01,0xCA,0xA1,0xEC,0xB5,0x30,0x2F,0x20,0x3D,0x48,0x83,0xCF,0x4C,0x1B,0xC0,0x6D,0x7A,0xC7,0xBC,0xF1,
+	0xCC,0x75,0xF5,0x5D,0x09,0x50,0x88,0x78,0x97,0x8C,0x91,0x79,0x11,0x93,0x07,0xCC,0x68,0x2E,0x8F,0x95,0x60,0x1E,0x40,0x02,0x02,0x21,0x80,0xE0,0x33,0x49,0x78,0x33,
+	0xC8,0x41,0x46,0x8E,0x0D,0xE5,0x1B,0xB6,0xC4,0xD1,0xF3,0x89,0xEF,0xE0,0x14,0xDD,0xDD,0x65,0x12,0x16,0x39,0x64,0xCD,0x03,0xF5,0x94,0x00,0x56,0x66,0x53,0xAD,0xC8,
+	0x64,0x1E,0x9E,0xAB,0xC2,0x35,0x6F,0x3D,0xA3,0x50,0x90,0x66,0xC6,0xD2,0x2C,0xFC,0x60,0xCE,0xF0,0xA9,0x94,0x6A,0xFD,0x94,0x6B,0xAC,0x4A,0x60,0x19,0x44,0x88,0xE2,
+	0x5F,0x87,0x98,0xBA,0x86,0x6F,0xAA,0x07,0xC9,0x5C,0x40,0xE0,0x8A,0x35,0x6A,0xF2,0x10,0x61,0x3A,0x3B,0x88,0xED,0xF0,0x32,0x47,0x72,0x5F,0x25,0x97,0x1D,0x48,0x83,
+	0x33,0xB1,0xA8,0xFA,0x1F,0x79,0xC8,0xA4,0x2C,0x3A,0x4B,0xBC,0x74,0x93,0x22,0x0F,0x61,0x98,0x81,0x67,0xB2,0x98,0x6C,0x26,0xE4,0x61,0x13,0xC9,0x3B,0xC7,0x15,0xC7,
+	0x26,0x7B,0x17,0x82,0xF2,0x3C,0xBE,0x22,0x3B,0x8F,0x9C,0xDA,0xD7,0xA4,0x04,0x1D,0x3D,0x4A,0x02,0x13,0x34,0x13,0xA3,0x58,0x94,0xE0,0xF6,0x10,0x66,0xED,0xB8,0xED,
+	0x28,0x4C,0x5A,0x15,0x69,0x47,0xA2,0x5E,0xCB,0xB3,0x55,0xC8,0xC3,0xA4,0x56,0x34,0x54,0x10,0x5A,0xD2,0x5F,0xCF,0x0C,0x2C,0x1C,0x4B,0xDA,0x1F,0xA3,0xCB,0xC9,0xD9,
+	0xF5,0x64,0xFC,0xA7,0x56,0xEC,0x2A,0xEF,0x4C,0x83,0x7E,0xB6,0x79,0x19,0x6D,0xE4,0x50,0x2F,0x72,0x03,0x4C,0x8F,0x59,0x56,0xCC,0xF2,0x44,0xC8,0xD0,0xB4,0xC4,0x79,
+	0x0D,0xE4,0x98,0x55,0xF4,0xE5,0xC1,0x3E,0x5E,0x91,0xC6,0x2B,0x9D,0xF4,0x90,0x70,0x66,0xD8,0xA2,0xDA,0x49,0x14,0xCC,0x46,0xE7,0x43,0x8A,0x91,0xE6,0xFA,0x4C,0x1A,
+	0x77,0xFA,0x6C,0x49,0x31,0x89,0x1C,0x1F,0x4A,0x13,0x88,0x8E,0xA5,0x14,0x23,0xCE,0x74,0xA6,0x34,0xDA,0xF8,0x99,0x96,0x0C,0xD4,0x6A,0xAB,0xBA,0x61,0xF6,0xC4,0x5E,
+	0x99,0x5D,0x53,0x0F,0xB2,0xFC,0x1C,0xCB,0x0A,0xFB,0x07,0x2F,0xF8,0xD5,0x20,0x6D,0xF6,0xF2,0x8B,0x39,0xC8,0x69,0xC5,0x8C,0xD7,0x50,0x44,0x33,0xE4,0x1A,0xD4,0x49,
+	0x1C,0x46,0x2B,0x27,0x7D,0xE2,0x53,0x7C,0x36,0x88,0x1B,0xD4,0x17,0x40,0x31,0x42,0x14,0xBC,0xA8,0x67,0xA8,0x82,0x77,0x78,0x83,0x7C,0xA7,0x4D,0xF7,0x9E,0x4C,0x23,
+	0xE8,0x34,0x65,0x7B,0x31,0x28,0x36,0xD9,0x0C,0xAB,0x08,0xC5,0xA7,0x58,0x37,0x0D,0x69,0x79,0xC8,0x8B,0x52,0x6C,0x24,0x09,0xBE,0x6F,0x7C,0xE3,0x5D,0x0B,0x11,0xC4,
+	0x44,0x66,0x1E,0x27,0xF9,0x9A,0x35,0x5A,0x08,0xEF,0xBF,0x48,0xD1,0xEC,0x29,0x6A,0x91,0x7B,0xC6,0x4A,0xB5,0x90,0x34,0x36,0xFC,0x44,0x3B,0x32,0x16,0x6E,0x8C,0x1D,
+	0xCC,0x65,0x60,0x3F,0xAF,0x41,0x6A,0xB3,0xBF,0x86,0xD2,0xD8,0x17,0x98,0x13,0x84,0xC8,0x23,0x59,0x15,0x01,0x9C,0x8B,0xDE,0x4C,0xA1,0x91,0x55,0xCD,0x99,0x8D,0xA9,
+	0x99,0x51,0x28,0xA7,0xA9,0xE3,0xDA,0xCB,0x0D,0xCF,0x8C,0x75,0x0F,0xDB,0xAC,0x21,0x23,0x81,0xFA,0x94,0xC9,0x09,0x7B,0x54,0xDB,0xB8,0xEC,0xF7,0x98,0x9F,0x1C,0x2A,
+	0x13,0xD5,0x68,0x29,0x49,0x29,0x9A,0x8E,0xC7,0x8A,0x3F,0xBA,0xCE,0x46,0x5F,0xB2,0xD7,0x7C,0xC1,0xFC,0xC4,0x70,0xA9,0x5C,0xE0,0x12,0x21,0xEB,0xD6,0xAD,0x55,0xE8,
+	0x0A,0x72,0x7B,0x0B,0xE0,0x15,0x7E,0x9F,0x3C,0x00,0x00,0x21,0x48,0xEA,0x37,0x6B,0x60,0xBA,0x30,0x2F,0xE5,0x36,0xA0,0xE5,0xF8,0xFB,0x01,0x49,0xCF,0x69,0x73,0xE0,
+	0xD9,0xAC,0x22,0xD5,0x35,0x59,0xD7,0x0D,0xD3,0xDC,0x21,0xE9,0x0D,0xC8,0xAB,0x57,0x66,0x71,0x2B,0x80,0xC5,0xCD,0xE8,0x0C,0x1E,0x72,0x68,0x56,0x38,0x0A,0xE0,0x14,
+	0x03,0x0D,0x3F,0x53,0xC6,0xC2,0x8C,0x88,0xA6,0xB9,0xDD,0xA3,0xC4,0xF6,0x5C,0xE0,0xF2,0xD8,0x2E,0xAD,0x14,0xE5,0x24,0xFF,0xDB,0x6D,0x48,0x64,0x31,0x73,0x28,0x1B,
+	0x2A,0x64,0xED,0x2D,0x2B,0xDC,0x63,0xF3,0x93,0x78,0x83,0x85,0x75,0x58,0x31,0x4D,0x53,0xF0,0x07,0x58,0x8A,0xBB,0x7E,0x9F,0xCE,0x12,0xF9,0x95,0xD4,0x61,0x3F,0x08,
+	0x0E,0xA5,0x1E,0x90,0x53,0x66,0x77,0xC8,0x1D,0xFC,0xD2,0x4E,0xEA,0x61,0x2F,0x3D,0xB5,0x94,0xF8,0xE1,0xC5,0x72,0x7A,0x8D,0xD3,0x3C,0xF2,0xBD,0x28,0x2A,0xB0,0x45,
+	0xB5,0x34,0x06,0xCD,0x11,0x0B,0x32,0x43,0x72,0xB7,0x82,0x6D,0x83,0x6C,0x70,0x33,0x33,0x54,0x86,0x6C,0xA1,0xE3,0x8D,0x02,0x35,0x10,0xE9,0x50,0xA9,0xA6,0x36,0x7C,
+	0xDB,0xF4,0x4D,0xDD,0xFA,0x82,0x3D,0x53,0xD3,0xE2,0x6E,0xC8,0x43,0x17,0x9A,0xAB,0x2A,0x1A,0xBE,0x16,0x68,0xD9,0x89,0x52,0x6C,0x6E,0xA3,0x15,0x93,0xE8,0x14,0x69,
+	0x4A,0x03,0xDE,0x9D,0xE9,0xCF,0x57,0x02,0x6B,0xB1,0xF7,0xCC,0x21,0xCC,0xB3,0x4E,0x7E,0x3F,0xFD,0x0C,0x3F,0xF9,0x12,0xAA,0x66,0xCC,0x5C,0xAA,0x7F,0x57,0x3C,0x0B,
+	0x28,0x75,0xF6,0xA5,0xD4,0x7A,0x2E,0xA5,0xA3,0x7D,0x29,0xB5,0x9F,0x49,0xA9,0xD9,0xD8,0x97,0x52,0xE7,0x99,0x94,0x5A,0x7B,0x53,0xEA,0xEE,0x4B,0x49,0x1C,0x84,0xFD,
+	0x2F,0xB5,0x87,0x94,0x37,0x06,0x56,0xCB,0x7C,0xFC,0x9F,0xF9,0xAB,0x99,0xC6,0x13,0xAD,0x57,0x2E,0xFF,0x33,0xB8,0x8E,0x42,0x55,0xB2,0x42,0x7A,0xCE,0x32,0x04,0x6D,
+	0x82,0x42,0x62,0x72,0xD9,0xF4,0x5C,0x42,0x58,0x25,0x15,0x4B,0x25,0x95,0x52,0xCF,0x25,0x24,0x95,0x4C,0x85,0xF4,0x14,0xE5,0xD5,0x73,0xC9,0x86,0xBD,0x88,0x42,0xA2,
+	0x52,0xC9,0xF5,0x5C,0x62,0xA2,0xBC,0x2A,0x24,0x95,0x28,0xC3,0x7E,0xAA,0x07,0x45,0x54,0xE2,0xDF,0x4F,0xF8,0x21,0xFF,0xC9,0xDD,0x48,0x71,0xF3,0x14,0x54,0x5F,0xC9,
+	0x0E,0xFC,0x4A,0xB1,0x1F,0xC1,0xFE,0x1A,0xEC,0xB7,0xB8,0x83,0xE7,0x6C,0xB7,0xAA,0x3C,0x22,0x3C,0x0E,0x9D,0x74,0xD6,0xF0,0xBD,0x93,0x78,0x5D,0x0E,0xE2,0xAF,0x20,
+	0x83,0xB2,0xE8,0x28,0xCA,0xCD,0x53,0x3B,0x66,0xD0,0x5B,0x99,0x78,0x78,0x32,0xCD,0xF4,0x56,0xD8,0xBB,0x14,0xEF,0xB1,0x81,0x5A,0xAD,0x56,0x4B,0xED,0x7E,0xA2,0x6F,
+	0x29,0x1A,0xAE,0x58,0xD1,0xB3,0xFB,0x92,0x76,0x87,0x87,0xE3,0x50,0xAA,0x3B,0xA6,0xA2,0x9A,0xE5,0xCC,0x59,0x6A,0x54,0xC3,0x53,0xBD,0x28,0x66,0x3D,0x0B,0x57,0x8D,
+	0xB7,0x4A,0xF1,0x6B,0x63,0xB8,0x68,0x3A,0x36,0x70,0x67,0xDB,0xC5,0x82,0xBA,0xC9,0x15,0x0B,0x26,0x38,0xB6,0xB3,0xA1,0xD8,0xF4,0x0D,0xF5,0x02,0xD9,0x9A,0x8F,0x69,
+	0x86,0xFC,0x12,0x1E,0xDF,0x63,0x0E,0x42,0x19,0xC3,0x27,0x5C,0x2A,0xDE,0x4E,0xE5,0x29,0x38,0x20,0xF0,0x4A,0xE9,0xE6,0x42,0x44,0x6D,0x6E,0x39,0x1E,0x2D,0x22,0xC7,
+	0xDF,0xF9,0x87,0xF4,0x46,0xA1,0x1A,0x21,0xD3,0xF1,0x7C,0x41,0x35,0x93,0xC4,0x9A,0x7A,0x9E,0xBE,0x4C,0x13,0x29,0x8C,0xD0,0xAC,0xFA,0x13,0xCB,0x81,0x65,0x3B,0xBE,
+	0xDF,0xA0,0x6E,0x2A,0xA3,0x65,0x56,0x54,0xE3,0x47,0xEF,0xE3,0x44,0xCA,0x69,0x40,0x05,0x99,0x80,0x14,0xEF,0xCD,0xD3,0x1A,0xD8,0xE1,0x12,0x18,0x07,0x2D,0xE2,0x77,
+	0x3A,0xD4,0xF0,0xD9,0x58,0xD8,0x2E,0x34,0x94,0xDE,0x55,0x01,0xDA,0x0A,0x69,0xA8,0x98,0x0E,0x65,0x14,0x15,0x6E,0x62,0x4E,0x2B,0x6B,0x0E,0xA6,0x9F,0x7C,0xB7,0xFB,
+	0x35,0xD8,0xED,0x30,0x5D,0x56,0x6E,0x7C,0x05,0x72,0xE3,0x27,0x96,0xC0,0xE3,0x5B,0x00,0x6F,0x3B,0xE3,0xCD,0xFE,0x52,0xA7,0x1C,0x64,0xF3,0x19,0xAC,0x3C,0xAA,0x87,
+	0xD3,0x2F,0xD1,0x9F,0xC0,0x07,0x14,0x1D,0x73,0x30,0x95,0xF0,0x8D,0x0A,0xE3,0x87,0x51,0x4F,0xB3,0xB5,0x07,0x3F,0x8A,0xA1,0x45,0x0D,0x0F,0xED,0x9C,0x79,0xE7,0xCC,
+	0x3B,0xF9,0x2B,0xCD,0x12,0x5A,0xD9,0xB9,0xE5,0xCC,0x4A,0x7F,0x80,0x71,0xB2,0x26,0xC6,0x9F,0x29,0x32,0x8F,0xF9,0x21,0x2C,0x4F,0x82,0xFC,0x77,0x43,0x3C,0x87,0x61,
+	0x33,0xF6,0xC8,0x5C,0x78,0x7F,0x28,0x63,0xAF,0x40,0x2B,0x11,0x96,0x35,0x24,0xAA,0x4E,0xD2,0xDE,0x0B,0x24,0x98,0x4C,0xBC,0xCF,0x6D,0x94,0x33,0x30,0x15,0x60,0x0B,
+	0x25,0xC1,0x6E,0x55,0x86,0x0C,0xF2,0xE7,0x53,0x49,0x75,0x04,0x4C,0x6E,0x27,0x25,0x8F,0x26,0x65,0x7D,0xB2,0xF6,0x5E,0x15,0x67,0xCD,0x9F,0xC2,0x19,0x8B,0xD7,0x3F,
+	0xCE,0x58,0x86,0xB7,0x65,0x0C,0x67,0x6C,0xFE,0x8A,0xCB,0xF8,0x8B,0x38,0x79,0xE7,0xC8,0x34,0xD8,0xFC,0x77,0x0B,0xCA,0xA5,0xC8,0x79,0x67,0x90,0x05,0x9F,0xF5,0x3A,
+	0x20,0x0B,0xBE,0xA0,0xD3,0x9F,0x35,0x2D,0xB7,0x7B,0xAF,0x9C,0xF4,0x33,0x9A,0xB7,0x60,0x5D,0xED,0x72,0x51,0x56,0x94,0xCA,0x74,0x4A,0x4F,0x68,0x58,0x67,0xB6,0xD3,
+	0x92,0x80,0x4F,0xE8,0x6E,0x16,0x34,0xC0,0xD3,0x7D,0x0A,0x3C,0x5E,0x03,0x5A,0x0B,0xB3,0x36,0x71,0xDC,0xE6,0x8D,0xEB,0xAC,0x3F,0xE2,0x57,0xF2,0x82,0xE6,0x15,0xA4,
+	0x04,0xBF,0x91,0x6A,0x04,0x87,0x27,0x1A,0x6B,0xFC,0x6B,0x18,0x97,0xEC,0x6F,0x0A,0x44,0x70,0xBF,0x67,0xC0,0xDD,0x38,0x1B,0x65,0x7B,0x0B,0x39,0xF8,0xF5,0x57,0xCE,
+	0xC9,0x0B,0xC8,0x1F,0xB6,0x96,0x15,0xDC,0xD7,0x4C,0xF6,0xE6,0x24,0xF5,0x55,0xA7,0xA7,0x65,0x23,0x42,0x5F,0xF8,0xC2,0x01,0x73,0x64,0x6C,0x4A,0xC7,0x74,0xA8,0xDA,
+	0x96,0x70,0x9E,0x0B,0xB4,0x38,0x74,0x8A,0x2E,0x9E,0xA6,0x3A,0xC7,0xAF,0x18,0x82,0x72,0x47,0x16,0xFE,0x91,0x81,0x6B,0x00,0x50,0x26,0x39,0x71,0xEA,0xE2,0xEC,0x12,
+	0xFB,0xEB,0x14,0x43,0x46,0x81,0x5F,0x43,0x3E,0xBA,0xB9,0x57,0x15,0x04,0xCA,0xE9,0xBE,0xB3,0x09,0x66,0xE3,0xE5,0x7E,0x93,0xA3,0x73,0x53,0x1A,0xFB,0xD2,0x6D,0x72,
+	0xA2,0xE2,0x68,0xDD,0x93,0x17,0x28,0xD9,0x4B,0x7E,0xFE,0x02,0xC5,0xBD,0xA1,0x78,0x89,0x52,0x94,0xFF,0x7F,0x89,0xD4,0x4B,0x24,0x7F,0x69,0xAF,0x78,0x79,0xA4,0x77,
+	0xE6,0x3F,0x91,0x87,0xD8,0xCB,0xC2,0x42,0x1E,0x14,0xEF,0x39,0x7F,0x22,0x2F,0xF2,0xF7,0x0B,0x9F,0x6F,0xAE,0xC9,0x60,0x5B,0x6C,0xB0,0x31,0xBA,0xFF,0x87,0x8C,0xF5,
+	0x7F,0xF2,0x4D,0x08,0x7E,0x82,0x93,0x75,0xA9,0x7D,0x93,0xB5,0x58,0x14,0x9B,0x39,0x7F,0x2F,0xC4,0xFE,0xBE,0x4C,0xC9,0x64,0x22,0x63,0x65,0xA3,0xFB,0x34,0xE7,0x1C,
+	0x07,0x03,0xFB,0x43,0x4B,0x7E,0x15,0x5D,0xE3,0x47,0xB6,0x60,0x2E,0x9E,0x3C,0xC6,0x3F,0xAA,0xC1,0x4E,0x1F,0x2F,0x5D,0xBA,0x3B,0x28,0x3C,0x44,0x12,0xFB,0xCA,0x82,
+	0x44,0x3A,0xB9,0x48,0xEC,0xF3,0x63,0x89,0x0F,0x9E,0xA2,0x4F,0x26,0x39,0x0A,0x8E,0xE2,0x5F,0x80,0xC8,0xD4,0xC6,0x33,0xCF,0x04,0x5D,0x40,0xEA,0xA5,0x48,0xB4,0x4E,
+	0xEA,0xFC,0x1B,0x12,0xA7,0xFF,0x09,0xDE,0x39,0xEA,0x1B,0x6C,0x4D,0x00,0x00
 };
 void ILibDefaultLogger_WebSocket_OnReceive(struct ILibWebServer_Session *sender, int InterruptFlag, struct packetheader *header, char *bodyBuffer, int *beginPointer, int endPointer, ILibWebServer_DoneFlag done)
 {
@@ -1351,6 +1416,7 @@ void ILibDefaultLogger_Session_OnReceive(struct ILibWebServer_Session *sender, i
 		}
 		else
 		{
+			ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "Cross-Site Request!");
 			ILibWebServer_StreamHeader_Raw(sender, 400, "Bad Request", NULL, ILibAsyncSocket_MemoryOwnership_STATIC);
 			ILibWebServer_StreamBody(sender, NULL, 0, ILibAsyncSocket_MemoryOwnership_STATIC, ILibWebServer_DoneFlag_Done);
 		}
@@ -1369,10 +1435,25 @@ void ILibDefaultLogger_OnWrite(ILibRemoteLogging module, char* data, int dataLen
 {
 	ILibTransport_Send(userContext, data, dataLen, ILibTransport_MemoryOwnership_USER, ILibTransport_DoneState_COMPLETE);
 }
-unsigned short ILibStartDefaultLogger(void* chain, unsigned short portNumber)
+
+//! Initializes and starts a default ILibRemoteLogging module
+/*!
+\param chain Microstack chain to associate the logger with
+\param portNumber Local port number to bind the WebListener to, which will serve the Web Interface (0 = random port)
+\param path Path to the file to use for logging
+\return The locally bound port number allocated to the WebListener
+*/
+ILibExportMethod unsigned short ILibStartDefaultLoggerEx(void* chain, unsigned short portNumber, char *path)
 {
 	((ILibBaseChain*)chain)->ChainLogger = ILibRemoteLogging_Create(ILibDefaultLogger_OnWrite);
 	((ILibBaseChain*)chain)->LoggingWebServer = ILibWebServer_Create(chain, 5, portNumber, ILibDefaultLogger_OnSession, NULL);
+
+	if (path != NULL)
+	{
+		((ILibBaseChain*)chain)->LoggingWebServerFileTransport = ILibRemoteLogging_CreateFileTransport(((ILibBaseChain*)chain)->ChainLogger, ILibRemoteLogging_Modules_UNKNOWN, ILibRemoteLogging_Flags_NONE, path, -1);
+	}
+
+	ILibForceUnBlockChain(chain);
 	return(ILibWebServer_GetPortNumber(((ILibBaseChain*)chain)->LoggingWebServer));
 }
 #endif
@@ -1396,10 +1477,10 @@ char* ILibDecompressString(unsigned char* CurrentCompressed, const int bufferLen
 	do
 	{
 		// UnCompressed Data Block
-		memcpy(CurrentUnCompressed,CurrentCompressed+1,(int)*CurrentCompressed);
+		memcpy_s(CurrentUnCompressed, (int)*CurrentCompressed, CurrentCompressed + 1, (int)*CurrentCompressed);
 		MEMCHECK(assert((int)*CurrentCompressed <= (DecompressedLength+1) );)
 
-			CurrentUnCompressed += (int)*CurrentCompressed;
+		CurrentUnCompressed += (int)*CurrentCompressed;
 		CurrentCompressed += 1+((int)*CurrentCompressed);
 
 		// CompressedBlock
@@ -1410,15 +1491,46 @@ char* ILibDecompressString(unsigned char* CurrentCompressed, const int bufferLen
 		length = (*((unsigned short*)(CurrentCompressed)))&((unsigned short)63);
 		offset = (*((unsigned short*)(CurrentCompressed)))>>6;
 #endif
-		memcpy(CurrentUnCompressed,CurrentUnCompressed-offset,length);
+		memcpy_s(CurrentUnCompressed, length, CurrentUnCompressed - offset, length);
 		MEMCHECK(assert(length <= (DecompressedLength+1)-(CurrentUnCompressed - RetVal));)
 
-			CurrentCompressed += 2;
+		CurrentCompressed += 2;
 		CurrentUnCompressed += length;
 	} while (CurrentUnCompressed < EndPtr);
 
 	RetVal[DecompressedLength] = 0;
 	return((char*)RetVal);
+}
+
+void ILibChain_RunOnMicrostackThreadSink(void *obj)
+{
+	void* chain = ((void**)obj)[0];
+	ILibChain_StartEvent handler = (ILibChain_StartEvent)((void**)obj)[1];
+	void* user = ((void**)obj)[2];
+
+	if (ILibIsChainBeingDestroyed(chain) == 0)
+	{
+		// Only Dispatch if the chain is still running
+		if (handler != NULL) { handler(chain, user); }
+	}
+	free(obj);
+}
+//! Dispatch an operation to the Microstack Chain thread
+/*!
+	\param chain Microstack Chain to dispatch to
+	\param handler Event to dispatch on the microstack thread
+	\param user Custom user data to dispatch to the microstack thread
+*/
+void ILibChain_RunOnMicrostackThreadEx(void *chain, ILibChain_StartEvent handler, void *user)
+{
+	void** value = NULL;
+	
+	value = (void**)ILibMemory_Allocate(3 * sizeof(void*), 0, NULL, NULL);
+
+	value[0] = chain;
+	value[1] = handler;
+	value[2] = user;
+	ILibLifeTime_AddEx(ILibGetBaseTimer(chain), value, 0, &ILibChain_RunOnMicrostackThreadSink, &ILibChain_RunOnMicrostackThreadSink);
 }
 
 void ILibChain_Safe_Destroy(void *object)
@@ -1429,17 +1541,12 @@ void ILibChain_SafeAddSink(void *object)
 {
 	struct ILibBaseChain_SafeData *data = (struct ILibBaseChain_SafeData*)object;
 
+	ILibRemoteLogging_printf(ILibChainGetLogger(gILibChain), ILibRemoteLogging_Modules_Microstack_Generic, ILibRemoteLogging_Flags_VerbosityLevel_2, "ILibChain_SafeAdd: %p [Pre: %p, Post: %p, Destroy: %p]", (void*)data->Object, (void*)((ILibChain_Link*)data->Object)->PreSelectHandler, (void*)((ILibChain_Link*)data->Object)->PostSelectHandler, (void*)((ILibChain_Link*)data->Object)->DestroyHandler);
+
 	ILibAddToChain(data->Chain,data->Object);
 	free(data);
 }
-void ILibChain_SafeRemoveSink(void *object)
-{
-	struct ILibBaseChain_SafeData *data = (struct ILibBaseChain_SafeData*)object;
-	struct ILibBaseChain *chain = (struct ILibBaseChain*)data->Chain;
 
-	ILibLinkedList_Remove_ByData(chain->Links, data->Object);
-	free(data);
-}
 /*! \fn void ILibChain_SafeAdd(void *chain, void *object)
 \brief Dynamically add a link to a chain that is already running.
 \par
@@ -1458,6 +1565,19 @@ void ILibChain_SafeAdd(void *chain, void *object)
 
 	ILibLifeTime_Add(baseChain->Timer, data, 0, &ILibChain_SafeAddSink, &ILibChain_Safe_Destroy);
 }
+void ILibChain_SafeRemoveEx(void *chain, void *object)
+{
+	ILibLinkedList links = ILibChain_GetLinks(chain);
+	void *node = ILibLinkedList_GetNode_Search(links, NULL, object);
+	ILibChain_Link *link = (ILibChain_Link*)ILibLinkedList_GetDataFromNode(node);
+
+	if (link != NULL)
+	{
+		if (link->DestroyHandler != NULL) { link->DestroyHandler(link); }
+		free(link);
+		ILibLinkedList_Remove(node);
+	}
+}
 /*! \fn void ILibChain_SafeRemove(void *chain, void *object)
 \brief Dynamically remove a link from a chain that is already running.
 \param chain The chain to remove a link from
@@ -1465,57 +1585,70 @@ void ILibChain_SafeAdd(void *chain, void *object)
 */
 void ILibChain_SafeRemove(void *chain, void *object)
 {
-	struct ILibBaseChain *baseChain = (struct ILibBaseChain*)chain;
-	struct ILibBaseChain_SafeData *data;
-
 	if (ILibIsChainBeingDestroyed(chain) == 0)
 	{
-		if ((data = (struct ILibBaseChain_SafeData*)malloc(sizeof(struct ILibBaseChain_SafeData))) == NULL) ILIBCRITICALEXIT(254);
-		memset(data, 0, sizeof(struct ILibBaseChain_SafeData));
-		data->Chain = chain;
-		data->Object = object;
-		ILibLifeTime_Add(baseChain->Timer, data, 1, &ILibChain_SafeRemoveSink, &ILibChain_Safe_Destroy);
+		//
+		// We are always going to context switch to microstack thread, even if we are already on microstack thread,
+		// because we cannot remove an item from the chain, if the call originated from the link that is being removed.
+		// By forcing a context switch, we will gaurantee that the call originates from the BaseTimer link.
+		//
+		ILibRemoteLogging_printf(ILibChainGetLogger(chain), ILibRemoteLogging_Modules_Microstack_Generic, ILibRemoteLogging_Flags_VerbosityLevel_2, "ILibChain_SafeRemove (%p)", (void*)object);
+		ILibChain_RunOnMicrostackThreadEx(chain, ILibChain_SafeRemoveEx, object);
 	}
 }
-
-/*! \fn ILibCreateChain()
-\brief Creates an empty Chain
-\returns Chain
+//! Get the Links of a Chain object
+/*!
+	\param chain Chain object to query
+	\return ILibLinkedList data structure holding the links
 */
-void *ILibCreateChain()
+ILibLinkedList ILibChain_GetLinks(void *chain)
+{
+	return(((ILibBaseChain*)chain)->Links);
+}
+
+void *ILibCreateChainEx(int extraMemorySize)
 {
 	struct ILibBaseChain *RetVal;
 
 #if defined(WIN32) || defined(_WIN32_WCE)
 	WORD wVersionRequested;
 	WSADATA wsaData;
-#ifdef WINSOCK1
-	wVersionRequested = MAKEWORD( 1, 1 );	
-#elif WINSOCK2
-	wVersionRequested = MAKEWORD( 2, 0 );
-#endif
-	if (WSAStartup( wVersionRequested, &wsaData ) != 0) {ILIBCRITICALEXIT(1);}
-#endif
-	if ((RetVal = (struct ILibBaseChain*)malloc(sizeof(struct ILibBaseChain))) == NULL) ILIBCRITICALEXIT(254);
-	memset(RetVal,0,sizeof(struct ILibBaseChain));
+	wVersionRequested = MAKEWORD(2, 0);
 
-	RetVal->Links = ILibLinkedList_Create();
+
+	if (WSAStartup(wVersionRequested, &wsaData) != 0) { ILIBCRITICALEXIT(1); }
+#endif
+	RetVal = ILibMemory_Allocate(sizeof(ILibBaseChain), extraMemorySize, NULL, NULL);
+
+	RetVal->Links = ILibLinkedList_CreateEx(sizeof(ILibChain_Link_Hook));
 	RetVal->LinksPendingDelete = ILibLinkedList_Create();
 
-	RetVal->TerminateFlag = 0;
 #if defined(WIN32) || defined(_WIN32_WCE)
-	RetVal->Terminate = socket(AF_INET, SOCK_DGRAM, 0);
+	RetVal->TerminateFlag = 1;
+	RetVal->TerminateSock = WSASocketW(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+	RetVal->ChainProcessHandle = GetCurrentProcess();
+	if (!SymInitialize(RetVal->ChainProcessHandle, NULL, TRUE)) { RetVal->ChainProcessHandle = NULL; }
 #endif
 
-	if (ILibChainLock_RefCounter==0)
+	RetVal->TerminateFlag = 0;
+	if (ILibChainLock_RefCounter == 0)
 	{
-		sem_init(&ILibChainLock,0,1);
+		sem_init(&ILibChainLock, 0, 1);
 	}
 	ILibChainLock_RefCounter++;
 
 	RetVal->Timer = ILibCreateLifeTime(RetVal);
 
 	return(RetVal);
+}
+
+/*! \fn ILibCreateChain()
+\brief Creates an empty Chain
+\return Chain
+*/
+ILibExportMethod void *ILibCreateChain()
+{
+	return(ILibCreateChainEx(0));
 }
 
 /*! \fn ILibAddToChain(void *Chain, void *object)
@@ -1532,38 +1665,41 @@ void ILibAddToChain(void *Chain, void *object)
 	// Add link to the end of the chain (Linked List)
 	//
 	ILibLinkedList_AddTail(((ILibBaseChain*)Chain)->Links, object);
+	((ILibChain_Link*)object)->ParentChain = Chain;
 }
 
-// Return the base timer for this chain. Most of the time, new timers probably don't need to be created
+//! Return the base timer for this chain. Most of the time, new timers probably don't need to be created
+/*!
+	\param chain Microstack Chain to fetch the timer from
+	\return Base Timer
+*/
 void* ILibGetBaseTimer(void *chain)
 {
 	//return ILibCreateLifeTime(chain);
 	return ((struct ILibBaseChain*)chain)->Timer;
 }
 
+#ifdef WIN32
+void __stdcall ILibForceUnBlockChain_APC(ULONG_PTR obj)
+{
+	struct ILibBaseChain *c = (struct ILibBaseChain*)obj;
+	if (c->TerminateSock != ~0)
+	{
+		closesocket(c->TerminateSock);
+	}
+	c->TerminateSock = WSASocketW(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+}
+#endif
 /*! \fn ILibForceUnBlockChain(void *Chain)
 \brief Forces a Chain to unblock, and check for pending operations
 \param Chain The chain to unblock
 */
-void ILibForceUnBlockChain(void *Chain)
+void ILibForceUnBlockChain(void* Chain)
 {
 	struct ILibBaseChain *c = (struct ILibBaseChain*)Chain;
 
-#if defined(WIN32) || defined(_WIN32_WCE)
-	SOCKET temp;
-#endif
-	sem_wait(&ILibChainLock);
-
-#if defined(WIN32) || defined(_WIN32_WCE)
-	//
-	// Closing the socket will trigger the select on Windows
-	//
-	temp = c->Terminate;
-	if (temp != (SOCKET)~0)
-	{
-		c->Terminate = (SOCKET)~0;
-		closesocket(temp);
-	}	
+#if defined(WIN32)
+	QueueUserAPC((PAPCFUNC)ILibForceUnBlockChain_APC, c->MicrostackThreadHandle !=NULL ? c->MicrostackThreadHandle : GetCurrentThread(), (ULONG_PTR)c);
 #else
 	//
 	// Writing data on the pipe will trigger the select on Posix
@@ -1574,7 +1710,6 @@ void ILibForceUnBlockChain(void *Chain)
 		fflush(c->TerminateWritePipe);
 	}
 #endif
-	sem_post(&ILibChainLock);
 }
 
 /*! \fn void ILibChain_DestroyEx(void *subChain)
@@ -1586,22 +1721,572 @@ void ILibForceUnBlockChain(void *Chain)
 */
 void ILibChain_DestroyEx(void *subChain)
 {
-	ILibChain* module;
+	ILibChain_Link* module;
 	void* node;
 
 	if (subChain == NULL) return;
+	((ILibBaseChain*)subChain)->TerminateFlag = 1;
 
 	node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)subChain)->Links);
-	while (node != NULL && (module = (ILibChain*)ILibLinkedList_GetDataFromNode(node)) != NULL)
+	while (node != NULL && (module = (ILibChain_Link*)ILibLinkedList_GetDataFromNode(node)) != NULL)
 	{
-		if (module->Destroy != NULL) { module->Destroy((void*)module); }
+		if (module->DestroyHandler != NULL) { module->DestroyHandler((void*)module); }
 		free(module);
 		node = ILibLinkedList_GetNextNode(node);
 	}
 	ILibLinkedList_Destroy(((ILibBaseChain*)subChain)->Links);
 	ILibLinkedList_Destroy(((ILibBaseChain*)subChain)->LinksPendingDelete);
+
+#ifdef _REMOTELOGGINGSERVER
+	ILibRemoteLogging_Destroy(((ILibBaseChain*)subChain)->ChainLogger);
+	if(((ILibBaseChain*)subChain)->LoggingWebServerFileTransport != NULL) { ILibTransport_Close(((ILibBaseChain*)subChain)->LoggingWebServerFileTransport); }
+#endif
+
 	free(subChain);
 }
+ILibChain_EventHookToken ILibChain_SetEventHook(void* chainLinkObject, int maxTimeout, ILibChain_EventHookHandler handler)
+{
+	ILibChain_Link_Hook *hook;
+	ILibChain_Link *link = (ILibChain_Link*)chainLinkObject;
+	ILibBaseChain *bChain = (ILibBaseChain*)link->ParentChain;
+	void *node = ILibLinkedList_GetNode_Search(bChain->Links, NULL, chainLinkObject);
+	hook = (ILibChain_Link_Hook*)ILibLinkedList_GetExtendedMemory(node);
+	if (node != NULL && hook != NULL)
+	{
+		if (maxTimeout <= 0 && hook != NULL) { memset(hook, 0, sizeof(ILibChain_Link_Hook)); return(NULL); }
+		hook->MaxTimeout = maxTimeout;
+		hook->Handler = handler;
+		return(node);
+	}
+	else
+	{
+		return(NULL);
+	}
+}
+void ILibChain_UpdateEventHook(ILibChain_EventHookToken token, int maxTimeout)
+{
+	ILibChain_Link_Hook *hook = (ILibChain_Link_Hook*)ILibLinkedList_GetExtendedMemory(token);
+	if (hook == NULL) { return; }
+	if (maxTimeout > 0)
+	{
+		hook->MaxTimeout = maxTimeout;
+	}
+	else
+	{
+		memset(hook, 0, sizeof(ILibChain_Link_Hook));
+	}
+}
+ILibExportMethod void ILibChain_Continue(void *chain, ILibChain_Link **modules, int moduleCount, int maxTimeout)
+{
+	int i;
+	ILibBaseChain *root = (ILibBaseChain*)chain;
+	int slct = 0, v = 0, vX = 0;
+	struct timeval tv;
+	long endTime;
+	fd_set readset;
+	fd_set errorset;
+	fd_set writeset;
+	void *currentNode;
+
+	if (root->continuationState != ILibChain_ContinuationState_INACTIVE) { return; }
+	root->continuationState = ILibChain_ContinuationState_CONTINUE;
+	currentNode = root->node;
+
+	gettimeofday(&tv, NULL);
+	endTime = tv.tv_sec + maxTimeout;
+
+	ILibRemoteLogging_printf(ILibChainGetLogger(chain), ILibRemoteLogging_Modules_Microstack_Generic, ILibRemoteLogging_Flags_VerbosityLevel_1, "ContinueChain...");
+
+	while (root->TerminateFlag == 0 && root->continuationState == ILibChain_ContinuationState_CONTINUE)
+	{
+		slct = 0;
+		FD_ZERO(&readset);
+		FD_ZERO(&errorset);
+		FD_ZERO(&writeset);
+
+		gettimeofday(&tv, NULL);
+
+		if (tv.tv_sec >= endTime)
+		{
+			break;
+		}
+		
+		tv.tv_sec = endTime - tv.tv_sec;
+		tv.tv_usec = 0;
+		v = (int)((tv.tv_sec * 1000) + (tv.tv_usec / 1000));
+
+		for (i = 0; i < moduleCount; ++i)
+		{
+			if (modules[i]->PreSelectHandler != NULL)
+			{
+				root->node = modules[i];
+				vX = v;
+				modules[i]->PreSelectHandler((void*)modules[i], &readset, &writeset, &errorset, &vX);
+				if (vX < v) { v = vX; }
+			}
+		}
+		tv.tv_sec = v / 1000;
+		tv.tv_usec = 1000 * (v % 1000);
+
+#if defined(WIN32) || defined(_WIN32_WCE)
+		//
+		// Put the Terminate socket in the FDSET, for ILibForceUnblockChain
+		//
+
+		FD_SET(root->TerminateSock, &errorset);
+#else
+		//
+		// Put the Read end of the Pipe in the FDSET, for ILibForceUnBlockChain
+		//
+		FD_SET(fileno(root->TerminateReadPipe), &readset);
+#endif
+
+
+		slct = select(FD_SETSIZE, &readset, &writeset, &errorset, &tv);
+		if (slct == -1)
+		{
+			//
+			// If the select simply timed out, we need to clear these sets
+			//
+			FD_ZERO(&readset);
+			FD_ZERO(&writeset);
+			FD_ZERO(&errorset);
+		}
+
+#ifndef WIN32
+		if (FD_ISSET(fileno(root->TerminateReadPipe), &readset))
+		{
+			//
+			// Empty the pipe
+			//
+			while (fgetc(root->TerminateReadPipe) != EOF)
+			{
+			}
+		}
+#endif
+
+		for (i = 0; i < moduleCount && root->continuationState == ILibChain_ContinuationState_CONTINUE; ++i)
+		{
+			if (modules[i]->PostSelectHandler != NULL)
+			{
+				root->node = modules[i];
+				modules[i]->PostSelectHandler((void*)modules[i], slct, &readset, &writeset, &errorset);
+			}
+		}
+
+	}
+	ILibRemoteLogging_printf(ILibChainGetLogger(chain), ILibRemoteLogging_Modules_Microstack_Generic, ILibRemoteLogging_Flags_VerbosityLevel_1, "ContinueChain...Ending...");
+
+	root->continuationState = ILibChain_ContinuationState_INACTIVE;
+	root->node = currentNode;
+}
+
+ILibExportMethod void ILibChain_EndContinue(void *chain)
+{
+	((ILibBaseChain*)chain)->continuationState = ILibChain_ContinuationState_END_CONTINUE;
+	ILibForceUnBlockChain(chain);
+}
+
+#if defined(WIN32)
+int ILib_WindowsExceptionFilter(int exceptionCode, void *exceptionInfo, CONTEXT *exceptionContext)
+{
+	if (IsDebuggerPresent()) { return(EXCEPTION_CONTINUE_SEARCH); }
+	if (exceptionCode == EXCEPTION_ACCESS_VIOLATION || exceptionCode == EXCEPTION_STACK_OVERFLOW || exceptionCode == EXCEPTION_INVALID_HANDLE)
+	{
+		memcpy_s(exceptionContext, sizeof(CONTEXT), ((EXCEPTION_POINTERS*)exceptionInfo)->ContextRecord, sizeof(CONTEXT));
+		return(EXCEPTION_EXECUTE_HANDLER);
+	}
+	return(EXCEPTION_CONTINUE_SEARCH);
+}
+
+void ILib_WindowsExceptionDebug(CONTEXT *exceptionContext)
+{
+	char buffer[4096];
+	STACKFRAME64 StackFrame;
+	char symBuffer[4096];
+	char imgBuffer[4096];
+	DWORD MachineType;
+	int len = 0;
+
+	ZeroMemory(&StackFrame, sizeof(STACKFRAME64));
+	buffer[0] = 0;
+
+#ifndef WIN64
+	MachineType = IMAGE_FILE_MACHINE_I386;
+	StackFrame.AddrPC.Offset = exceptionContext->Eip;
+	StackFrame.AddrPC.Mode = AddrModeFlat;
+	StackFrame.AddrFrame.Offset = exceptionContext->Ebp;
+	StackFrame.AddrFrame.Mode = AddrModeFlat;
+	StackFrame.AddrStack.Offset = exceptionContext->Esp;
+	StackFrame.AddrStack.Mode = AddrModeFlat;
+#else
+	MachineType = IMAGE_FILE_MACHINE_AMD64;
+	StackFrame.AddrPC.Offset = exceptionContext->Rip;
+	StackFrame.AddrPC.Mode = AddrModeFlat;
+	StackFrame.AddrFrame.Offset = exceptionContext->Rsp;
+	StackFrame.AddrFrame.Mode = AddrModeFlat;
+	StackFrame.AddrStack.Offset = exceptionContext->Rsp;
+	StackFrame.AddrStack.Mode = AddrModeFlat;
+#endif
+
+
+	if (StackWalk64(
+		MachineType,
+		GetCurrentProcess(),
+		GetCurrentThread(),
+		&StackFrame,
+		MachineType == IMAGE_FILE_MACHINE_I386
+		? NULL
+		: exceptionContext,
+		NULL,
+		SymFunctionTableAccess64,
+		SymGetModuleBase64,
+		NULL))
+	{
+
+		if (StackFrame.AddrPC.Offset != 0)
+		{
+			//
+			// Valid frame.
+			//
+			PIMAGEHLP_LINE64 pimg = (PIMAGEHLP_LINE64)imgBuffer;
+			DWORD64 tmp = 0;
+			DWORD tmp2;
+			PSYMBOL_INFO psym = (PSYMBOL_INFO)symBuffer;
+			psym->SizeOfStruct = sizeof(SYMBOL_INFO);
+			psym->MaxNameLen = MAX_SYM_NAME;
+			pimg->SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+
+			len = sprintf_s(buffer, sizeof(buffer), "FATAL EXCEPTION @ ");
+
+			if (SymFromAddr(GetCurrentProcess(), StackFrame.AddrPC.Offset, &tmp, psym))
+			{
+				len += sprintf_s(buffer + len, sizeof(buffer) - len, "[%s", (char*)(psym->Name));
+				if (SymGetLineFromAddr64(GetCurrentProcess(), StackFrame.AddrPC.Offset, &tmp2, pimg))
+				{
+					len += sprintf_s(buffer + len, sizeof(buffer) - len, " => %s:%d]\n", (char*)(pimg->FileName), pimg->LineNumber);
+				}
+				else
+				{
+					len += sprintf_s(buffer + len, sizeof(buffer) - len, "]\n");
+				}
+			}
+			else
+			{
+				util_tohex((char*)&(StackFrame.AddrPC.Offset), sizeof(DWORD64), imgBuffer);
+				len += sprintf_s(buffer + len, sizeof(buffer) - len, "[FuncAddr: 0x%s]\n", imgBuffer);
+			}
+		}
+	}
+	
+	ILIBCRITICALEXITMSG(254, buffer);
+}
+#elif defined(_POSIX)
+#include <execinfo.h>
+char ILib_POSIX_CrashParamBuffer[5 * sizeof(void*)];
+void ILib_POSIX_CrashHandler(int code)
+{
+	char msgBuffer[16384];
+	int msgLen = 0;
+	void *buffer[100];
+	char **strings;
+	int sz, i, c;
+	char *ptr;
+
+	signal(SIGSEGV, SIG_IGN);
+	signal(SIGUSR1, SIG_IGN);
+
+	sz = backtrace(buffer, 100);
+	strings = backtrace_symbols(buffer, sz);
+
+	if (code == SIGSEGV || code == SIGABRT)
+	{
+		memcpy_s(msgBuffer + msgLen, sizeof(msgBuffer) - msgLen, "** CRASH **\n", 12);
+		msgLen += 12;
+	}
+	else if (code == 254)
+	{
+		memcpy_s(msgBuffer + msgLen, sizeof(msgBuffer) - msgLen, "** CRITICAL EXIT **\n", 20);
+		msgLen += 20;
+	}
+	else
+	{
+		memcpy_s(msgBuffer + msgLen, sizeof(msgBuffer) - msgLen, "** Microstack Thread STUCK **\n", 30);
+		msgLen += 30;
+	}
+
+	for (i = 1; i < sz; ++i)
+	{
+		pid_t pid;
+		int fd[2];
+		size_t symlen = strnlen_s(strings[i], sizeof(msgBuffer));
+
+		memcpy_s(msgBuffer + msgLen, sizeof(msgBuffer) - msgLen, strings[i], symlen);
+		msgLen += symlen;
+		msgBuffer[msgLen] = '\n';
+		msgLen += 1;
+
+
+		ptr = strings[i];
+		for (c = 0; c < (int)symlen; ++c)
+		{
+			if ((strings[i])[c] == '[') { ptr = strings[i] + c + 1; }
+			if ((strings[i])[c] == ']') { (strings[i])[c] = 0; }
+			if ((strings[i])[c] == 0) { break; }
+		}
+		if (pipe(fd) == 0)
+		{
+			pid = vfork();
+			if (pid == 0)
+			{
+				dup2(fd[1], STDOUT_FILENO);
+				close(fd[1]);
+
+				((char**)ILib_POSIX_CrashParamBuffer)[1] = ptr;
+				execv("/usr/bin/addr2line", (char**)ILib_POSIX_CrashParamBuffer);
+				if (write(STDOUT_FILENO, "??:0", 4)) {}
+				exit(0);
+			}
+			if (pid > 0)
+			{
+				char tmp[8192];
+				int len;
+
+				len = read(fd[0], tmp, 8192);
+				if (len > 0 && tmp[0] != '?')
+				{
+					memcpy_s(msgBuffer + msgLen, sizeof(msgBuffer) - msgLen, "=> ", 3);
+					msgLen += 3;
+					memcpy_s(msgBuffer + msgLen, sizeof(msgBuffer) - msgLen, tmp, len);
+					msgLen += len;
+				}
+				close(fd[0]);
+			}
+		}
+	}
+	msgBuffer[msgLen] = 0;
+	ILIBCRITICALEXITMSG(254, msgBuffer);
+}
+char* ILib_POSIX_InstallCrashHandler(char *exename)
+{
+	char *retVal = NULL;
+	if ((retVal = realpath(exename, NULL)) != NULL)
+	{
+		((char**)ILib_POSIX_CrashParamBuffer)[0] = "addr2line";
+		((char**)ILib_POSIX_CrashParamBuffer)[2] = "-e";
+		((char**)ILib_POSIX_CrashParamBuffer)[3] = retVal;
+		((char**)ILib_POSIX_CrashParamBuffer)[4] = NULL;
+		signal(SIGSEGV, ILib_POSIX_CrashHandler);
+	}
+	return(retVal);
+}
+#endif
+
+char* ILibChain_Debug(void *chain, char* buffer, int bufferLen)
+{
+	char *retVal = NULL;
+	ILibBaseChain *bChain = (ILibBaseChain*)chain;
+#if defined(WIN32)
+	char symBuffer[4096];
+	char imgBuffer[4096];
+	DWORD MachineType;
+	STACKFRAME64 StackFrame;
+	DWORD64 addrOffset;
+	int len = 0;
+	CONTEXT ctx;
+
+	ZeroMemory(&StackFrame, sizeof(STACKFRAME64));
+	if (chain != NULL)
+	{
+		if (bChain->MicrostackThreadHandle != NULL)
+		{
+			SuspendThread(bChain->MicrostackThreadHandle);
+			memset(&(bChain->MicrostackThreadContext), 0, sizeof(CONTEXT));
+			bChain->MicrostackThreadContext.ContextFlags = CONTEXT_FULL;
+			if (GetThreadContext(bChain->MicrostackThreadHandle, &(bChain->MicrostackThreadContext)) == 0)
+			{
+				len = GetLastError();
+			}
+			ResumeThread(bChain->MicrostackThreadHandle);
+		}
+	}
+	else
+	{
+		RtlCaptureContext(&ctx);
+	}
+
+	if (len != 0) { return(NULL); }
+
+#ifndef WIN64
+	MachineType = IMAGE_FILE_MACHINE_I386;
+	StackFrame.AddrPC.Offset = bChain != NULL ? bChain->MicrostackThreadContext.Eip : ctx.Eip;
+	StackFrame.AddrPC.Mode = AddrModeFlat;
+	StackFrame.AddrFrame.Offset = bChain != NULL ? bChain->MicrostackThreadContext.Ebp : ctx.Ebp;
+	StackFrame.AddrFrame.Mode = AddrModeFlat;
+	StackFrame.AddrStack.Offset = bChain != NULL ? bChain->MicrostackThreadContext.Esp : ctx.Esp;
+	StackFrame.AddrStack.Mode = AddrModeFlat;
+#else
+	MachineType = IMAGE_FILE_MACHINE_AMD64;
+	StackFrame.AddrPC.Offset = bChain != NULL ? bChain->MicrostackThreadContext.Rip : ctx.Rip;
+	StackFrame.AddrPC.Mode = AddrModeFlat;
+	StackFrame.AddrFrame.Offset = bChain != NULL ? bChain->MicrostackThreadContext.Rsp : ctx.Rsp;
+	StackFrame.AddrFrame.Mode = AddrModeFlat;
+	StackFrame.AddrStack.Offset = bChain != NULL ? bChain->MicrostackThreadContext.Rsp : ctx.Rsp;
+	StackFrame.AddrStack.Mode = AddrModeFlat;
+#endif
+
+	buffer[0] = 0;
+	retVal = buffer;
+
+	while (1)
+	{
+		if (!StackWalk64(
+			MachineType,
+			bChain != NULL ? bChain->ChainProcessHandle : GetCurrentProcess(),
+			bChain != NULL ? bChain->MicrostackThreadHandle : GetCurrentThread(),
+			&StackFrame,
+			MachineType == IMAGE_FILE_MACHINE_I386
+			? NULL
+			: (bChain!=NULL ? &(bChain->MicrostackThreadContext) : &ctx),
+			NULL,
+			SymFunctionTableAccess64,
+			SymGetModuleBase64,
+			NULL))
+		{
+			//
+			// Maybe it failed, maybe we have finished walking the stack.
+			//
+			break;
+		}
+
+		if (StackFrame.AddrPC.Offset != 0)
+		{
+			//
+			// Valid frame.
+			//
+			addrOffset = StackFrame.AddrPC.Offset;
+			{
+				PIMAGEHLP_LINE64 pimg = (PIMAGEHLP_LINE64)imgBuffer;
+				DWORD64 tmp = 0;
+				DWORD tmp2;
+				PSYMBOL_INFO psym = (PSYMBOL_INFO)symBuffer;
+				psym->SizeOfStruct = sizeof(SYMBOL_INFO);
+				psym->MaxNameLen = MAX_SYM_NAME;
+				pimg->SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+				
+				if (SymFromAddr(bChain!=NULL && bChain->ChainProcessHandle != NULL ? bChain->ChainProcessHandle : GetCurrentProcess(), addrOffset, &tmp, psym))
+				{
+					len += sprintf_s(buffer + len, bufferLen - len, "[%s", (char*)(psym->Name));
+					if (SymGetLineFromAddr64(bChain != NULL && bChain->ChainProcessHandle != NULL ? bChain->ChainProcessHandle : GetCurrentProcess(), addrOffset, &tmp2, pimg))
+					{
+						len += sprintf_s(buffer + len, bufferLen - len, " => %s:%d]\n", (char*)(pimg->FileName), pimg->LineNumber);
+					}
+					else
+					{
+						len += sprintf_s(buffer + len, bufferLen - len, "]\n");
+					}
+				}
+				else
+				{
+					char addrBuffer[255];
+					util_tohex((char*)&addrOffset, sizeof(DWORD64), addrBuffer);
+					len += sprintf_s(buffer + len, bufferLen - len, "[FuncAddr: 0x%s]\n", addrBuffer);
+				}
+			}
+			if (bChain != NULL && bChain->MicrostackThreadHandle == NULL)
+			{
+				break;
+			}
+		}
+		else
+		{
+			//
+			// Base reached.
+			//
+			break;
+		}
+	}
+
+#else
+	pthread_kill(bChain->ChainThreadID, SIGUSR1);
+	return(NULL);
+#endif
+	return(retVal);
+}
+
+
+#ifdef ILibChain_WATCHDOG_TIMEOUT
+void ILibChain_WatchDogStart(void *obj)
+{
+	char msg[4096];
+	ILibBaseChain *chain = (ILibBaseChain*)obj;
+	
+#ifndef WIN32
+	fd_set readset, writeset, errorset;
+	int slct;
+	struct timeval tv;
+	long stamp = ILibGetTimeStamp();
+	tv.tv_usec = 0;
+	tv.tv_sec = ILibChain_WATCHDOG_TIMEOUT / 1000;
+#endif
+	int Pre1=0, Pre2=0, Post1=0, Post2=0;
+	sprintf_s(msg, sizeof(msg), "Microstack STUCK: @ ");
+	
+#ifdef WIN32
+	while (WaitForSingleObject(chain->WatchDogTerminator, ILibChain_WATCHDOG_TIMEOUT) == WAIT_TIMEOUT)
+#else
+	FD_ZERO(&readset);
+	FD_ZERO(&errorset);
+	FD_ZERO(&writeset);
+	FD_SET(chain->WatchDogTerminator[0], &readset);
+	while((slct = select(FD_SETSIZE, &readset, &writeset, &errorset, &tv)) == 0 || slct == EINTR)
+#endif
+	{
+#ifndef WIN32
+		tv.tv_usec = 0;
+		tv.tv_sec = ILibChain_WATCHDOG_TIMEOUT / 1000;
+
+		if (slct == EINTR)
+		{
+			slct = (int)(ILibGetTimeStamp() - stamp);
+			if (slct < ILibChain_WATCHDOG_TIMEOUT)
+			{
+				tv.tv_sec = (ILibChain_WATCHDOG_TIMEOUT - slct) / 1000;
+				continue;
+			}
+		}
+		stamp = ILibGetTimeStamp();
+		FD_ZERO(&readset);
+		FD_ZERO(&errorset);
+		FD_ZERO(&writeset);
+		FD_SET(chain->WatchDogTerminator[0], &readset);
+#endif
+		Pre1 = chain->PreSelectCount;
+		Post1 = chain->PostSelectCount;
+
+		if (Pre1 == Post1)
+		{
+			if (Pre1 == Pre2 && Pre2 != 0)
+			{
+				// STUCK!
+#ifdef WIN32
+				ILibChain_Debug(chain, msg+20, sizeof(msg)-20);
+				ILIBCRITICALEXITMSG(254, msg);
+#else
+				pthread_kill(chain->ChainThreadID, SIGUSR1);
+				break;
+#endif
+			}
+			else
+			{
+				Pre2 = Pre1;
+				Post2 = Post1;
+			}
+		}
+	}
+}
+#endif
+
 /*! \fn ILibStartChain(void *Chain)
 \brief Starts a Chain
 \par
@@ -1610,10 +2295,11 @@ microstack thread. All events and processing will be done on this thread. This m
 will not return until ILibStopChain is called.
 \param Chain The chain to start
 */
-void ILibStartChain(void *Chain)
+ILibExportMethod void ILibStartChain(void *Chain)
 {
-	void* node;
-	ILibChain *module;
+	ILibBaseChain *chain = (ILibBaseChain*)Chain;
+	ILibChain_Link *module;
+	ILibChain_Link_Hook *nodeHook;
 
 	fd_set readset;
 	fd_set errorset;
@@ -1621,20 +2307,37 @@ void ILibStartChain(void *Chain)
 
 	struct timeval tv;
 	int slct;
-	int v;
-
-#if defined(WIN32)
-	((ILibBaseChain*)Chain)->ChainThreadID = GetCurrentThreadId();
-#else
-	((ILibBaseChain*)Chain)->ChainThreadID = pthread_self();
-#endif
-
+	int v, vX;
 #if !defined(WIN32) && !defined(_WIN32_WCE)
 	int TerminatePipe[2];
 	int flags;
 #endif
 
+	if (Chain == NULL) { return; }
+	chain->PreSelectCount = chain->PostSelectCount = 0;
+
+#if defined(WIN32)
+	chain->ChainThreadID = GetCurrentThreadId();
+	chain->ChainProcessHandle = GetCurrentProcess();
+	chain->MicrostackThreadHandle = OpenThread(THREAD_ALL_ACCESS, FALSE, chain->ChainThreadID);
+#else
+	chain->ChainThreadID = pthread_self();
+#endif
+
 	if (gILibChain == NULL) {gILibChain = Chain;} // Set the global instance if it's not already set
+#if defined(ILibChain_WATCHDOG_TIMEOUT)
+#ifdef WIN32
+	chain->WatchDogTerminator = CreateEvent(NULL, TRUE, FALSE, NULL);
+#else
+	if (pipe(chain->WatchDogTerminator) == 0)
+	{
+		flags = fcntl(chain->WatchDogTerminator[0], F_GETFL, 0);
+		fcntl(chain->WatchDogTerminator[0], F_SETFL, O_NONBLOCK | flags);
+		signal(SIGUSR1, ILib_POSIX_CrashHandler);
+	}
+#endif
+	chain->WatchDogThread = ILibSpawnNormalThread(ILibChain_WatchDogStart, chain);
+#endif
 
 	//
 	// Use this thread as if it's our own. Keep looping until we are signaled to stop
@@ -1657,8 +2360,8 @@ void ILibStartChain(void *Chain)
 	((struct ILibBaseChain*)Chain)->TerminateWritePipe = fdopen(TerminatePipe[1],"w");
 #endif
 
-	((struct ILibBaseChain*)Chain)->RunningFlag = 1;
-	while (((struct ILibBaseChain*)Chain)->TerminateFlag == 0)
+	chain->RunningFlag = 1;
+	while (chain->TerminateFlag == 0)
 	{
 		slct = 0;
 		FD_ZERO(&readset);
@@ -1670,67 +2373,67 @@ void ILibStartChain(void *Chain)
 		//
 		// Iterate through all the PreSelect function pointers in the chain
 		//
-		node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->Links);
-		v = (tv.tv_sec * 1000) + (tv.tv_usec / 1000);
-		while(node!=NULL && (module=(ILibChain*)ILibLinkedList_GetDataFromNode(node))!=NULL)
+		chain->node = ILibLinkedList_GetNode_Head(chain->Links);
+		v = (int)((tv.tv_sec * 1000) + (tv.tv_usec / 1000));
+		while(chain->node!=NULL && (module=(ILibChain_Link*)ILibLinkedList_GetDataFromNode(chain->node))!=NULL)
 		{
-			if(module->PreSelect != NULL)
+			if(module->PreSelectHandler != NULL)
 			{
 #ifdef MEMORY_CHECK
 #ifdef WIN32
 				//_CrtCheckMemory();
 #endif
 #endif
-				module->PreSelect((void*)module, &readset, &writeset, &errorset, &v);
+				vX = v;
+				module->PreSelectHandler((void*)module, &readset, &writeset, &errorset, &vX);
+				if (vX < v) { v = vX; }
 #ifdef MEMORY_CHECK
 #ifdef WIN32
 				//_CrtCheckMemory();
 #endif
 #endif
 			}
-			node = ILibLinkedList_GetNextNode(node);
+			nodeHook = (ILibChain_Link_Hook*)ILibLinkedList_GetExtendedMemory(chain->node);
+			if (nodeHook->MaxTimeout > 0 && nodeHook->MaxTimeout < v) { v = nodeHook->MaxTimeout; }
+			chain->node = ILibLinkedList_GetNextNode(chain->node);
 		}
 		tv.tv_sec =  v / 1000;
 		tv.tv_usec = 1000 * (v % 1000);
 
-		sem_wait(&ILibChainLock);
+
 #if defined(WIN32) || defined(_WIN32_WCE)
 		//
-		// Check the fake socket, for ILibForceUnBlockChain
+		// Add the fake socket, for ILibForceUnBlockChain
 		//
-		if (((struct ILibBaseChain*)Chain)->Terminate == ~0)
-		{
-			tv.tv_sec = 0;
-			tv.tv_usec = 0;
-		}
-		else
-		{
-#pragma warning( push, 3 ) // warning C4127: conditional expression is constant
-			FD_SET(((struct ILibBaseChain*)Chain)->Terminate, &errorset);
-#pragma warning( pop )
-		}
+		FD_SET(chain->TerminateSock, &errorset);
 #else
 		//
 		// Put the Read end of the Pipe in the FDSET, for ILibForceUnBlockChain
 		//
 		FD_SET(TerminatePipe[0], &readset);
 #endif
+		sem_wait(&ILibChainLock);
 		while(ILibLinkedList_GetCount(((ILibBaseChain*)Chain)->LinksPendingDelete) > 0)
 		{
-			node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->LinksPendingDelete);
-			module = (ILibChain*)ILibLinkedList_GetDataFromNode(node);
+			chain->node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->LinksPendingDelete);
+			module = (ILibChain_Link*)ILibLinkedList_GetDataFromNode(chain->node);
 			ILibLinkedList_Remove_ByData(((ILibBaseChain*)Chain)->Links, module);
-			ILibLinkedList_Remove(node);
-			if(module->Destroy != NULL) {module->Destroy((void*)module);}
-			free(module);
+			ILibLinkedList_Remove(chain->node);
+			if (module != NULL)
+			{
+				if (module->DestroyHandler != NULL) { module->DestroyHandler((void*)module); }
+				free(module);
+			}
 		}
-
 		sem_post(&ILibChainLock);
 
 		//
 		// The actual Select Statement
 		//
+		chain->PreSelectCount++;
 		slct = select(FD_SETSIZE, &readset, &writeset, &errorset, &tv);
+		chain->PostSelectCount++;
+
 		if (slct == -1)
 		{
 			//
@@ -1741,15 +2444,7 @@ void ILibStartChain(void *Chain)
 			FD_ZERO(&errorset);
 		}
 
-#if defined(WIN32) || defined(_WIN32_WCE)
-		//
-		// Reinitialise our fake socket if necessary
-		//
-		if (((struct ILibBaseChain*)Chain)->Terminate == ~0)
-		{
-			((struct ILibBaseChain*)Chain)->Terminate = socket(AF_INET, SOCK_DGRAM, 0);
-		}
-#else
+#ifndef WIN32
 		if (FD_ISSET(TerminatePipe[0], &readset))
 		{
 			//
@@ -1763,24 +2458,26 @@ void ILibStartChain(void *Chain)
 		//
 		// Iterate through all of the PostSelect in the chain
 		//
-		node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->Links);
-		while(node!=NULL && (module=(ILibChain*)ILibLinkedList_GetDataFromNode(node))!=NULL)
+		chain->node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->Links);
+		while(chain->node!=NULL && (module=(ILibChain_Link*)ILibLinkedList_GetDataFromNode(chain->node))!=NULL)
 		{
-			if (module->PostSelect != NULL)
+			if (module->PostSelectHandler != NULL)
 			{
 #ifdef MEMORY_CHECK
 #ifdef WIN32
 				//_CrtCheckMemory();
 #endif
 #endif
-				module->PostSelect((void*)module, slct, &readset, &writeset, &errorset);
+				module->PostSelectHandler((void*)module, slct, &readset, &writeset, &errorset);
 #ifdef MEMORY_CHECK
 #ifdef WIN32
 				//_CrtCheckMemory();
 #endif
 #endif
 			}
-			node = ILibLinkedList_GetNextNode(node);
+			nodeHook = (ILibChain_Link_Hook*)ILibLinkedList_GetExtendedMemory(chain->node);
+			if (nodeHook->Handler != NULL) { nodeHook->Handler(module, chain->node); }
+			chain->node = ILibLinkedList_GetNextNode(chain->node);
 		}
 	}
 
@@ -1789,31 +2486,40 @@ void ILibStartChain(void *Chain)
 	// through all the Destroy methods. Not all modules in the chain will have a destroy method,
 	// but call the ones that do.
 	//
+	if (chain->WatchDogThread != NULL)
+	{
+#ifdef WIN32
+		SetEvent(chain->WatchDogTerminator);
+#else
+		if (write(chain->WatchDogTerminator[1], " ", 1)) {}
+#endif
+	}
+
 	// Because many modules in the chain are using the base chain timer which is the first node
 	// in the chain in the base timer), these modules may start cleaning up their timers. So, we
 	// are going to make an exception and Destroy the base timer last, something that would usualy
 	// be destroyed first since it's at the start of the chain. This will allow modules to clean
 	// up nicely.
 	//
-	node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->Links);
-	if(node != NULL) {node = ILibLinkedList_GetNextNode(node);} // Skip the base timer which is the first element in the chain.
+	chain->node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->Links);
+	if(chain->node != NULL) {chain->node = ILibLinkedList_GetNextNode(chain->node);} // Skip the base timer which is the first element in the chain.
 
 	//
 	// Set the Terminate Flag to 1, so that ILibIsChainBeingDestroyed returns non-zero when we start cleanup
 	//
 	((struct ILibBaseChain*)Chain)->TerminateFlag = 1;
 
-	while(node!=NULL && (module=(ILibChain*)ILibLinkedList_GetDataFromNode(node))!=NULL)
+	while(chain->node!=NULL && (module=(ILibChain_Link*)ILibLinkedList_GetDataFromNode(chain->node))!=NULL)
 	{
 		//
 		// If this module has a destroy method, call it.
 		//
-		if (module->Destroy != NULL) module->Destroy((void*)module);
+		if (module->DestroyHandler != NULL) module->DestroyHandler((void*)module);
 		//
 		// After calling the Destroy, we free the module and move to the next
 		//
 		free(module);
-		node = ILibLinkedList_Remove(node);
+		chain->node = ILibLinkedList_Remove(chain->node);
 	}
 
 	if (gILibChain ==  Chain) { gILibChain = NULL; } // Reset the global instance if it was set
@@ -1821,27 +2527,31 @@ void ILibStartChain(void *Chain)
 	//
 	// Go back and destroy the base timer for this chain, the first element in the chain.
 	//
-	node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->Links);
-	if (node!=NULL && (module=(ILibChain*)ILibLinkedList_GetDataFromNode(node))!=NULL)
+	chain->node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->Links);
+	if (chain->node!=NULL && (module=(ILibChain_Link*)ILibLinkedList_GetDataFromNode(chain->node))!=NULL)
 	{
-		module->Destroy((void*)module);
+		module->DestroyHandler((void*)module);
 		free(module);
 		((ILibBaseChain*)Chain)->Timer = NULL;
 	}
 
 	ILibLinkedList_Destroy(((ILibBaseChain*)Chain)->Links);
 
-	node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->LinksPendingDelete);
-	while(node != NULL && (module = (ILibChain*)ILibLinkedList_GetDataFromNode(node)) != NULL)
+	chain->node = ILibLinkedList_GetNode_Head(((ILibBaseChain*)Chain)->LinksPendingDelete);
+	while(chain->node != NULL && (module = (ILibChain_Link*)ILibLinkedList_GetDataFromNode(chain->node)) != NULL)
 	{
-		if(module->Destroy != NULL) {module->Destroy((void*)module);}
+		if(module->DestroyHandler != NULL) {module->DestroyHandler((void*)module);}
 		free(module);
-		node = ILibLinkedList_GetNextNode(node);
+		chain->node = ILibLinkedList_GetNextNode(chain->node);
 	}
 	ILibLinkedList_Destroy(((ILibBaseChain*)Chain)->LinksPendingDelete);
 
 #ifdef _REMOTELOGGINGSERVER
-	if (((ILibBaseChain*)Chain)->LoggingWebServer != NULL && ((ILibBaseChain*)Chain)->ChainLogger != NULL) { ILibRemoteLogging_Destroy(((ILibBaseChain*)Chain)->ChainLogger); }
+	if (((ILibBaseChain*)Chain)->LoggingWebServer != NULL && ((ILibBaseChain*)Chain)->ChainLogger != NULL) 
+	{
+		if (((ILibBaseChain*)Chain)->LoggingWebServerFileTransport != NULL) { ILibTransport_Close(((ILibBaseChain*)Chain)->LoggingWebServerFileTransport); }
+		ILibRemoteLogging_Destroy(((ILibBaseChain*)Chain)->ChainLogger); 
+	}
 #endif
 	if(((struct ILibBaseChain*)Chain)->ChainStash != NULL) {ILibHashtable_Destroy(((struct ILibBaseChain*)Chain)->ChainStash);}
 
@@ -1858,10 +2568,10 @@ void ILibStartChain(void *Chain)
 	((ILibBaseChain*)Chain)->TerminateWritePipe=0;
 #endif
 #if defined(WIN32)
-	if (((ILibBaseChain*)Chain)->Terminate != ~0)
+	if (((ILibBaseChain*)Chain)->TerminateSock != ~0)
 	{
-		closesocket(((ILibBaseChain*)Chain)->Terminate);
-		((ILibBaseChain*)Chain)->Terminate = (SOCKET)~0;
+		closesocket(((ILibBaseChain*)Chain)->TerminateSock);
+		((ILibBaseChain*)Chain)->TerminateSock = (SOCKET)~0;
 	}
 #endif
 
@@ -1883,7 +2593,7 @@ This will signal the microstack thread to shutdown. When the chain cleans itself
 the thread that is blocked on ILibStartChain will return.
 \param Chain The Chain to stop
 */
-void ILibStopChain(void *Chain)
+ILibExportMethod void ILibStopChain(void *Chain)
 {
 	((struct ILibBaseChain*)Chain)->TerminateFlag = 2;
 	ILibForceUnBlockChain(Chain);
@@ -1930,7 +2640,7 @@ void ILibDestructXMLAttributeList(struct ILibXMLAttribute *attribute)
 Checks XML for validity, while at the same time populate helper properties on each node,
 such as Parent, Peer, etc, to aid in XML parsing.
 \param nodeList The XML Tree to process
-\returns 0 if the XML is valid, nonzero otherwise
+\return 0 if the XML is valid, nonzero otherwise
 */
 int ILibProcessXMLNodeList(struct ILibXMLNode *nodeList)
 {
@@ -2034,7 +2744,7 @@ int ILibProcessXMLNodeList(struct ILibXMLNode *nodeList)
 \param currentLocation The node used to start the resolve
 \param prefix The namespace prefix to resolve
 \param prefixLength The lenght of the prefix
-\returns The resolved namespace. NULL if unable to resolve
+\return The resolved namespace. NULL if unable to resolve
 */
 char* ILibXML_LookupNamespace(struct ILibXMLNode *currentLocation, char *prefix, int prefixLength)
 {
@@ -2135,7 +2845,7 @@ void ILibXML_BuildNamespaceLookupTable(struct ILibXMLNode *node)
 The data is a pointer into the original string that the XML was read from.
 \param node The node to read the data from
 \param[out] RetVal The data
-\returns The length of the data read
+\return The length of the data read
 */
 int ILibReadInnerXML(struct ILibXMLNode *node, char **RetVal)
 {
@@ -2180,7 +2890,7 @@ int ILibReadInnerXML(struct ILibXMLNode *node, char **RetVal)
 /*! \fn ILibGetXMLAttributes(struct ILibXMLNode *node)
 \brief Reads the attributes from an XML node
 \param node The node to read the attributes from
-\returns A linked list of attributes
+\return A linked list of attributes
 */
 struct ILibXMLAttribute *ILibGetXMLAttributes(struct ILibXMLNode *node)
 {
@@ -2362,7 +3072,7 @@ The strings are never copied. Everything is referenced via pointers into the ori
 \param buffer The string to parse
 \param offset starting index of \a buffer
 \param length Length of \a buffer
-\returns A tree of ILibXMLNodes, representing the XML document
+\return A tree of ILibXMLNodes, representing the XML document
 */
 struct ILibXMLNode *ILibParseXML(char *buffer, int offset, int length)
 {
@@ -2595,7 +3305,7 @@ struct ILibXMLNode *ILibParseXML(char *buffer, int offset, int length)
 
 /*! \fn ILibQueue_Create()
 \brief Create an empty Queue
-\returns An empty queue
+\return An empty queue
 */
 ILibQueue ILibQueue_Create()
 {
@@ -2632,7 +3342,7 @@ void ILibQueue_Destroy(ILibQueue q)
 /*! \fn ILibQueue_IsEmpty(void *q)
 \brief Checks to see if a queue is empty
 \param q The queue to check
-\returns zero value if not empty, non-zero if empty
+\return zero value if not empty, non-zero if empty
 */
 int ILibQueue_IsEmpty(ILibQueue q)
 {
@@ -2651,7 +3361,7 @@ void ILibQueue_EnQueue(ILibQueue q, void *data)
 /*! \fn ILibQueue_DeQueue(void *q)
 \brief Removes an item from the queue
 \param q The queue to pop the item from
-\returns The item popped off the queue. NULL if empty
+\return The item popped off the queue. NULL if empty
 */
 void *ILibQueue_DeQueue(ILibQueue q)
 {
@@ -2670,7 +3380,7 @@ void *ILibQueue_DeQueue(ILibQueue q)
 /*! \fn ILibQueue_PeekQueue(void *q)
 \brief Peeks at an item from the queue
 \param q The queue to peek an item from
-\returns The item from the queue. NULL if empty
+\return The item from the queue. NULL if empty
 */
 void *ILibQueue_PeekQueue(ILibQueue q)
 {
@@ -2688,7 +3398,7 @@ void *ILibQueue_PeekQueue(ILibQueue q)
 /*! \fn ILibQueue_GetCount(void *q)
 \brief Returns the number of items in the queue.
 \param q The queue to query
-\returns The item count in the queue.
+\return The item count in the queue.
 */
 long ILibQueue_GetCount(ILibQueue q)
 {
@@ -2727,7 +3437,7 @@ void ILibPushStack(void **TheStack, void *data)
 /*! \fn ILibPopStack(void **TheStack)
 \brief Pop an item from the stack
 \param TheStack The stack to pop from
-\returns The item that was popped from the stack
+\return The item that was popped from the stack
 */
 void *ILibPopStack(void **TheStack)
 {
@@ -2746,7 +3456,7 @@ void *ILibPopStack(void **TheStack)
 /*! \fn ILibPeekStack(void **TheStack)
 \brief Peek at an item from the stack
 \param TheStack The stack to peek from
-\returns The item that is currently on the top of the stack
+\return The item that is currently on the top of the stack
 */
 void *ILibPeekStack(void **TheStack)
 {
@@ -2821,7 +3531,7 @@ void ILibDestroyHashTree(void *tree)
 \par
 Functionally identicle to an IDictionaryEnumerator in .NET
 \param tree The HashTree to get an enumerator for
-\returns An enumerator
+\return An enumerator
 */
 void *ILibHashTree_GetEnumerator(void *tree)
 {
@@ -2850,7 +3560,7 @@ void ILibHashTree_DestroyEnumerator(void *tree_enumerator)
 /*! \fn ILibHashTree_MoveNext(void *tree_enumerator)
 \brief Advances an enumerator to the next item
 \param tree_enumerator The enumerator to advance
-\returns A zero value if successful, nonzero if no more items
+\return A zero value if successful, nonzero if no more items
 */
 int ILibHashTree_MoveNext(void *tree_enumerator)
 {
@@ -2914,7 +3624,7 @@ void ILibHashTree_GetValueEx(void *tree_enumerator, char **key, int *keyLength, 
 
 /*! \fn ILibInitHashTree()
 \brief Creates an empty ILibHashTree, whose keys are <B>case sensitive</B>.
-\returns An empty ILibHashTree
+\return An empty ILibHashTree
 */
 void* ILibInitHashTree()
 {
@@ -2930,7 +3640,7 @@ void* ILibInitHashTree()
 }
 /*! \fn void* ILibInitHashTree_CaseInSensitive()
 \brief Creates an empty ILibHashTree, whose keys are <B>case insensitive</B>.
-\returns An empty ILibHashTree
+\return An empty ILibHashTree
 */
 void* ILibInitHashTree_CaseInSensitive()
 {
@@ -2990,7 +3700,7 @@ int ILibGetHashValueEx(char *key, int keylength, int caseInSensitiveText)
 		memset(TempValue, 0, 4);
 		if (caseInSensitiveText==0)
 		{
-			memcpy(TempValue, key, keylength);
+			memcpy_s(TempValue, sizeof(TempValue), key, keylength);
 		}
 		else
 		{
@@ -3008,7 +3718,7 @@ int ILibGetHashValueEx(char *key, int keylength, int caseInSensitiveText)
 
 		if (caseInSensitiveText == 0)
 		{
-			memcpy(TempValue, key, 4);
+			memcpy_s(TempValue, sizeof(TempValue), key, 4);
 		}
 		else
 		{
@@ -3017,7 +3727,7 @@ int ILibGetHashValueEx(char *key, int keylength, int caseInSensitiveText)
 		HashValue = *((int*)TempValue);
 		if (caseInSensitiveText==0)
 		{
-			memcpy(TempValue,(char*)key+(keylength-4),4);
+			memcpy_s(TempValue, sizeof(TempValue), (char*)key+(keylength-4),4);
 		}
 		else
 		{
@@ -3033,7 +3743,7 @@ int ILibGetHashValueEx(char *key, int keylength, int caseInSensitiveText)
 		{
 			if (caseInSensitiveText==0)
 			{
-				memcpy(TempValue,(char*)key+(keylength/2),4);
+				memcpy_s(TempValue, sizeof(TempValue), (char*)key+(keylength/2),4);
 			}
 			else
 			{
@@ -3051,7 +3761,7 @@ int ILibGetHashValueEx(char *key, int keylength, int caseInSensitiveText)
 Used by ILibHashTree methods
 \param key The string to hash
 \param keylength The length of the string to hash
-\returns A hash value
+\return A hash value
 */
 int ILibGetHashValue(char *key, int keylength)
 {
@@ -3115,7 +3825,7 @@ struct HashNode* ILibFindEntry(void *hashtree, void *key, int keylength, int cre
 			current->Next->Prev = current;
 			current->Next->KeyHash = HashValue;
 			if ((current->Next->KeyValue = (void*)malloc(keylength + 1)) == NULL) ILIBCRITICALEXIT(254);
-			memcpy(current->Next->KeyValue, key ,keylength);
+			memcpy_s(current->Next->KeyValue, keylength + 1, key ,keylength);
 			current->Next->KeyValue[keylength] = 0; 
 			current->Next->KeyLength = keylength;
 			return(current->Next);
@@ -3133,7 +3843,7 @@ struct HashNode* ILibFindEntry(void *hashtree, void *key, int keylength, int cre
 \param hashtree The HashTree to operate on
 \param key The key
 \param keylength The length of the key
-\returns 0 if does not exist, nonzero otherwise
+\return 0 if does not exist, nonzero otherwise
 */
 int ILibHasEntry(void *hashtree, char* key, int keylength)
 {
@@ -3185,7 +3895,7 @@ void ILibAddEntryEx(void* hashtree, char* key, int keylength, void *value, int v
 \param hashtree The HashTree to operate on
 \param key The key
 \param keylength The length of the key
-\returns The data in the HashTree. NULL if key does not exist
+\return The data in the HashTree. NULL if key does not exist
 */
 void* ILibGetEntry(void *hashtree, char* key, int keylength)
 {
@@ -3211,7 +3921,7 @@ void* ILibGetEntry(void *hashtree, char* key, int keylength)
 \param[out] value The data in the HashTree. NULL if key does not exist
 \param[out] valueEx The extended data in the HashTree.
 */
-void ILibGetEntryEx(void *hashtree, char *key, int keyLength, void **value, int* valueEx)
+ILibExportMethod void ILibGetEntryEx(void *hashtree, char *key, int keyLength, void **value, int* valueEx)
 {
 	//
 	// This can be duplicated by calling FindEntry and setting create to false.
@@ -3259,7 +3969,7 @@ void ILibDeleteEntry(void *hashtree, char* key, int keylength)
 \param TestValue The string to read from
 \param TestValueLength The length of the string
 \param NumericValue The long value extracted from the string
-\returns 0 if succesful, nonzero if there was an error
+\return 0 if succesful, nonzero if there was an error
 */
 int ILibGetLong(char *TestValue, int TestValueLength, long* NumericValue)
 {
@@ -3267,7 +3977,7 @@ int ILibGetLong(char *TestValue, int TestValueLength, long* NumericValue)
 	char* TempBuffer;
 
 	if ((TempBuffer = (char*)malloc(1+sizeof(char)*TestValueLength)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(TempBuffer, TestValue, TestValueLength);
+	memcpy_s(TempBuffer, 1 + sizeof(char)*TestValueLength, TestValue, TestValueLength);
 	TempBuffer[TestValueLength] = '\0';
 	*NumericValue = strtol(TempBuffer,&StopString,10);
 	if (*StopString != '\0')
@@ -3293,7 +4003,7 @@ int ILibGetLong(char *TestValue, int TestValueLength, long* NumericValue)
 \param TestValue The string to read from
 \param TestValueLength The length of the string
 \param NumericValue The long value extracted from the string
-\returns 0 if succesful, nonzero if there was an error
+\return 0 if succesful, nonzero if there was an error
 */
 int ILibGetULong(const char *TestValue, const int TestValueLength, unsigned long* NumericValue)
 {
@@ -3301,7 +4011,7 @@ int ILibGetULong(const char *TestValue, const int TestValueLength, unsigned long
 	char* TempBuffer;
 
 	if ((TempBuffer = (char*)malloc(1 + sizeof(char)*TestValueLength)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(TempBuffer, TestValue, TestValueLength);
+	memcpy_s(TempBuffer, 1 + sizeof(char)*TestValueLength, (char*)TestValue, TestValueLength);
 	TempBuffer[TestValueLength] = '\0';
 	*NumericValue = strtoul(TempBuffer, &StopString, 10);
 
@@ -3374,7 +4084,7 @@ quotation marks, whereas \a ILibParseString does not.
 \param length The length of the buffer to parse
 \param Delimiter The delimiter
 \param DelimiterLength The length of the delimiter
-\returns A list of tokens
+\return A list of tokens
 */
 struct parser_result* ILibParseStringAdv (char* buffer, int offset, int length, const char* Delimiter, int DelimiterLength)
 {
@@ -3498,7 +4208,7 @@ struct parser_result* ILibParseStringAdv (char* buffer, int offset, int length, 
 \brief Trims leading and trailing whitespace characters
 \param theString The string to trim
 \param length Length of \a theString
-\returns Length of the trimmed string
+\return Length of the trimmed string
 */
 int ILibTrimString(char **theString, int length)
 {
@@ -3517,7 +4227,7 @@ quotation marks, whereas \a ILibParseStringAdv does.
 \param length The length of the buffer to parse
 \param Delimiter The delimiter
 \param DelimiterLength The length of the delimiter
-\returns A list of tokens
+\return A list of tokens
 */
 struct parser_result* ILibParseString(char* buffer, int offset, int length, const char* Delimiter, int DelimiterLength)
 {
@@ -3602,6 +4312,18 @@ struct parser_result* ILibParseString(char* buffer, int offset, int length, cons
 	return(RetVal);
 }
 
+parser_result_field* ILibParseString_GetResultIndex(parser_result* r, int index)
+{
+	int i;
+	parser_result_field *retVal = r->FirstResult;
+
+	for (i = 0; i < index - 1; ++i)
+	{
+		retVal = retVal != NULL ? retVal->NextResult : NULL;
+	}
+	return(retVal);
+}
+
 /*! \fn ILibDestructParserResults(struct parser_result *result)
 \brief Frees resources associated with the list of tokens returned from ILibParseString and ILibParseStringAdv.
 \param result The list of tokens to free
@@ -3683,16 +4405,16 @@ GET foo/bar.txt HTTP/1.1<br>
 \b Note: It should be noted that the output buffer needs to be allocated prior to calling this method.
 The required space can be determined by calling \a ILibHTTPEscapeLength.
 \param outdata The escaped string
-\param data The string to escape
-\returns The length of the escaped string
+\param[in,out] data The string to escape
+\return The length of the escaped string
 */
-int ILibHTTPEscape(char* outdata, const char* data)
+int ILibHTTPEscapeEx(char* outdata, const char* data, size_t dataLen)
 {
 	int i = 0;
 	int x = 0;
 	char hex[4];
 
-	while (data[x] != 0)
+	while (data[x] != 0 && x < (int)dataLen)
 	{
 		if ( (data[x]>=63 && data[x]<=90) || (data[x]>=97 && data[x]<=122) || (data[x]>=47 && data[x]<=57) \
 			|| data[x]==59 || data[x]==47 || data[x]==63 || data[x]==58 || data[x]==64 || data[x]==61 \
@@ -3709,7 +4431,7 @@ int ILibHTTPEscape(char* outdata, const char* data)
 			//
 			// If it wasn't one of these characters, then we need to escape it
 			//
-			snprintf(hex, 4, "%02X", (unsigned char)data[x]);
+			sprintf_s(hex, 4, "%02X", (unsigned char)data[x]);
 			outdata[i] = '%';
 			outdata[i+1] = hex[0];
 			outdata[i+2] = hex[1];
@@ -3724,17 +4446,17 @@ int ILibHTTPEscape(char* outdata, const char* data)
 /*! \fn ILibHTTPEscapeLength(const char* data)
 \brief Determines the buffer space required to HTTP escape a particular string.
 \param data Calculates the length requirements as if \a data was escaped
-\returns The minimum required length
+\return The minimum required length
 */
-int ILibHTTPEscapeLength(const char* data)
+int ILibHTTPEscapeLengthEx(const char* data, size_t dataLen)
 {
 	int i=0;
 	int x=0;
-	while (data[x] != 0)
+	while (data[x] != 0 && i < (int)dataLen)
 	{
-		if ( (data[x]>=63 && data[x]<=90) || (data[x]>=97 && data[x]<=122) || (data[x]>=47 && data[x]<=57) \
-			|| data[x]==59 || data[x]==47 || data[x]==63 || data[x]==58 || data[x]==64 || data[x]==61 \
-			|| data[x]==43 || data[x]==36 || data[x]==45 || data[x]==95 || data[x]==46 || data[x]==42)
+		if ((data[x] >= 63 && data[x] <= 90) || (data[x] >= 97 && data[x] <= 122) || (data[x] >= 47 && data[x] <= 57) \
+			|| data[x] == 59 || data[x] == 47 || data[x] == 63 || data[x] == 58 || data[x] == 64 || data[x] == 61 \
+			|| data[x] == 43 || data[x] == 36 || data[x] == 45 || data[x] == 95 || data[x] == 46 || data[x] == 42)
 		{
 			// No need to escape
 			++i;
@@ -3742,17 +4464,11 @@ int ILibHTTPEscapeLength(const char* data)
 		else
 		{
 			// Need to escape
-			i+=3;
+			i += 3;
 		}
 		++x;
 	}
 	return(i+1);
-}
-
-int ILibInPlaceHTTPUnEscape(char* data)
-{
-	int length = (int)strlen(data);
-	return ILibInPlaceHTTPUnEscapeEx(data, length);
 }
 
 /*! \fn ILibInPlaceHTTPUnEscape(char* data)
@@ -3760,8 +4476,8 @@ int ILibInPlaceHTTPUnEscape(char* data)
 \par
 The escaped representation of a string is always longer than the unescaped version
 so this method will overwrite the escaped string, with the unescaped result.
-\param data The buffer to unescape
-\returns The length of the unescaped string
+\param[in,out] data The buffer to unescape
+\return The length of the unescaped string
 */
 int ILibInPlaceHTTPUnEscapeEx(char* data, int length)
 {
@@ -3807,12 +4523,14 @@ int ILibInPlaceHTTPUnEscapeEx(char* data, int length)
 	return(dst_x);
 }
 
-/*! \fn ILibParsePacketHeader(char* buffer, int offset, int length)
-\brief Parses the HTTP headers from a buffer, into a packetheader structure
+//! Parses a string into an packet structure.
+//! None of the strings are copied, so the lifetime of all the values are bound
+//! to the lifetime of the underlying string that is parsed.
+/*!
 \param buffer The buffer to parse
 \param offset The offset of the buffer to start parsing
 \param length The length of the buffer to parse
-\returns>packetheader structure
+\return packetheader structure
 */
 struct packetheader* ILibParsePacketHeader(char* buffer, int offset, int length)
 {
@@ -3854,7 +4572,7 @@ struct packetheader* ILibParsePacketHeader(char* buffer, int offset, int length)
 		RetVal->Version[RetVal->VersionLength] = 0;
 		ILibDestructParserResults(p);
 		if ((tempbuffer = (char*)malloc(1+sizeof(char)*(StartLine->FirstResult->NextResult->datalength))) == NULL) ILIBCRITICALEXIT(254);
-		memcpy(tempbuffer,StartLine->FirstResult->NextResult->data, StartLine->FirstResult->NextResult->datalength);
+		memcpy_s(tempbuffer,1 + StartLine->FirstResult->NextResult->datalength, StartLine->FirstResult->NextResult->data, StartLine->FirstResult->NextResult->datalength);
 		MEMCHECK(assert(StartLine->FirstResult->NextResult->datalength <= 1+(int)sizeof(char)*(StartLine->FirstResult->NextResult->datalength));) 
 
 			//
@@ -3925,11 +4643,11 @@ struct packetheader* ILibParsePacketHeader(char* buffer, int offset, int length)
 			{
 				tempbuffer = node->FieldData;
 				if ((node->FieldData = (char*)malloc(node->FieldDataLength + HeaderLine->datalength)) == NULL) ILIBCRITICALEXIT(254);
-				memcpy(node->FieldData, tempbuffer, node->FieldDataLength);
+				memcpy_s(node->FieldData, node->FieldDataLength + HeaderLine->datalength, tempbuffer, node->FieldDataLength);
 
 				tempbuffer = node->Field;
 				if ((node->Field = (char*)malloc(node->FieldLength + 1)) == NULL) ILIBCRITICALEXIT(254);
-				memcpy(node->Field, tempbuffer, node->FieldLength);
+				memcpy_s(node->Field, node->FieldLength + 1, tempbuffer, node->FieldLength);
 
 				node->UserAllocStrings = -1;
 			}
@@ -3938,7 +4656,7 @@ struct packetheader* ILibParsePacketHeader(char* buffer, int offset, int length)
 				if ((tmp = (char*)realloc(node->FieldData, node->FieldDataLength + HeaderLine->datalength)) == NULL) ILIBCRITICALEXIT(254);
 				node->FieldData = tmp;
 			}
-			memcpy(node->FieldData+node->FieldDataLength, HeaderLine->data + 1, HeaderLine->datalength - 1);
+			memcpy_s(node->FieldData+node->FieldDataLength, HeaderLine->datalength, HeaderLine->data + 1, HeaderLine->datalength - 1);
 			node->FieldDataLength += (HeaderLine->datalength-1);
 		}
 		else
@@ -4017,7 +4735,7 @@ struct packetheader* ILibParsePacketHeader(char* buffer, int offset, int length)
 \param delimiter Line delimiter
 \param delimiterLength Length of \a delimiter
 \param tokenLength The maximum size of each fragment or token
-\returns The length of the buffer required to call \a ILibFragmentText
+\return The length of the buffer required to call \a ILibFragmentText
 */
 int ILibFragmentTextLength(char *text, int textLength, char *delimiter, int delimiterLength, int tokenLength)
 {
@@ -4038,14 +4756,15 @@ int ILibFragmentTextLength(char *text, int textLength, char *delimiter, int deli
 \param delimiterLength Length of \a delimiter
 \param tokenLength The maximum size of each fragment or token
 \param RetVal The buffer to store the resultant string
-\returns The length of the written string
+\return The length of the written string
 */
 int ILibFragmentText(char *text, int textLength, char *delimiter, int delimiterLength, int tokenLength, char **RetVal)
 {
 	char *Buffer;
 	int i=0,i2=0;
 	int BufferSize = 0;
-	if ((*RetVal = (char*)malloc(ILibFragmentTextLength(text,textLength,delimiter,delimiterLength,tokenLength))) == NULL) ILIBCRITICALEXIT(254);
+	int allocSize = ILibFragmentTextLength(text, textLength, delimiter, delimiterLength, tokenLength);
+	if ((*RetVal = (char*)malloc(allocSize)) == NULL) ILIBCRITICALEXIT(254);
 
 	Buffer = *RetVal;
 
@@ -4054,11 +4773,11 @@ int ILibFragmentText(char *text, int textLength, char *delimiter, int delimiterL
 	{
 		if (i2!=textLength)
 		{
-			memcpy(Buffer+i,delimiter,delimiterLength);
+			memcpy_s(Buffer+i, allocSize - i, delimiter,delimiterLength);
 			i+=delimiterLength;
 			BufferSize += delimiterLength;
 		}
-		memcpy(Buffer+i,text + (textLength-i2),i2>tokenLength?tokenLength:i2);
+		memcpy_s(Buffer+i, allocSize - i, text + (textLength-i2),i2>tokenLength?tokenLength:i2);
 		i+=i2>tokenLength?tokenLength:i2;
 		BufferSize += i2>tokenLength?tokenLength:i2;
 		i2 -= i2>tokenLength?tokenLength:i2;
@@ -4071,8 +4790,8 @@ int ILibFragmentText(char *text, int textLength, char *delimiter, int delimiterL
 \par
 \b Note: The returned buffer must be freed
 \param packet The packetheader struture to convert
-\param RetVal The output char* buffer
-\returns The length of the output buffer
+\param[out] RetVal The output char* buffer
+\return The length of the output buffer
 */
 int ILibGetRawPacket(struct packetheader* packet, char **RetVal)
 {
@@ -4111,7 +4830,7 @@ int ILibGetRawPacket(struct packetheader* packet, char **RetVal)
 	while (ILibHashTree_MoveNext(en)==0)
 	{
 		ILibHashTree_GetValueEx(en,&Field,&FieldLength,(void**)&FieldData,&FieldDataLength);
-
+		if (FieldDataLength < 0) { continue; }
 		//
 		// A conservative estimate adding the lengths of the header name and value, plus
 		// 4 characters for the ':' and CRLF
@@ -4145,15 +4864,15 @@ int ILibGetRawPacket(struct packetheader* packet, char **RetVal)
 		//
 		// Write the response
 		//
-		memcpy(Buffer, "HTTP/", 5);
-		memcpy(Buffer + 5, packet->Version, packet->VersionLength);
+		memcpy_s(Buffer, BufferSize, "HTTP/", 5);
+		memcpy_s(Buffer + 5, BufferSize - 5, packet->Version, packet->VersionLength);
 		i = 5 + packet->VersionLength;
 
-		i += snprintf(Buffer + i, BufferSize - i, " %d ", packet->StatusCode);
-		memcpy(Buffer + i, packet->StatusData ,packet->StatusDataLength);
+		i += sprintf_s(Buffer + i, BufferSize - i, " %d ", packet->StatusCode);
+		memcpy_s(Buffer + i, BufferSize - i, packet->StatusData ,packet->StatusDataLength);
 		i += packet->StatusDataLength;
 
-		memcpy(Buffer + i, "\r\n", 2);
+		memcpy_s(Buffer + i, BufferSize - i, "\r\n", 2);
 		i += 2;
 		/* HTTP/1.1 200 OK\r\n */
 	}
@@ -4162,17 +4881,17 @@ int ILibGetRawPacket(struct packetheader* packet, char **RetVal)
 		//
 		// Write the Request
 		//
-		memcpy(Buffer,packet->Directive,packet->DirectiveLength);
+		memcpy_s(Buffer, BufferSize, packet->Directive,packet->DirectiveLength);
 		i = packet->DirectiveLength;
-		memcpy(Buffer+i," ",1);
+		memcpy_s(Buffer+i, BufferSize - i, " ",1);
 		i+=1;
-		memcpy(Buffer+i,packet->DirectiveObj,packet->DirectiveObjLength);
+		memcpy_s(Buffer+i, BufferSize - i, packet->DirectiveObj,packet->DirectiveObjLength);
 		i+=packet->DirectiveObjLength;
-		memcpy(Buffer+i," HTTP/",6);
+		memcpy_s(Buffer+i, BufferSize - i, " HTTP/",6);
 		i+=6;
-		memcpy(Buffer+i,packet->Version,packet->VersionLength);
+		memcpy_s(Buffer+i, BufferSize - i, packet->Version,packet->VersionLength);
 		i+=packet->VersionLength;
-		memcpy(Buffer+i,"\r\n",2);
+		memcpy_s(Buffer+i, BufferSize - i, "\r\n",2);
 		i+=2;
 		/* GET / HTTP/1.1\r\n */
 	}
@@ -4181,49 +4900,46 @@ int ILibGetRawPacket(struct packetheader* packet, char **RetVal)
 	while (ILibHashTree_MoveNext(en)==0)
 	{
 		ILibHashTree_GetValueEx(en,&Field,&FieldLength,(void**)&FieldData,&FieldDataLength);
+		if (FieldDataLength < 0) { continue; }
 
 		//
 		// Write each header
 		//
-		memcpy(Buffer+i,Field,FieldLength);
+		memcpy_s(Buffer+i, BufferSize - i, Field,FieldLength);
 		i+=FieldLength;
-		memcpy(Buffer+i,": ",2);
+		memcpy_s(Buffer+i, BufferSize - i, ": ",2);
 		i+=2;
-		BufferSize += (FieldLength + 2);
 
 		if (ILibFragmentTextLength(FieldData,FieldDataLength,"\r\n ",3, MAX_HEADER_LENGTH)>FieldDataLength)
 		{
 			// Fragment this
 			i2 = ILibFragmentText(FieldData,FieldDataLength,"\r\n ",3, MAX_HEADER_LENGTH,&temp);
-			memcpy(Buffer+i,temp,i2);
+			memcpy_s(Buffer+i, BufferSize - i, temp,i2);
 			i += i2;
-			BufferSize += i2;
 			free(temp);
 		}
 		else
 		{
 			// No need to fragment this
-			memcpy(Buffer+i,FieldData,FieldDataLength);
+			memcpy_s(Buffer+i, BufferSize - i, FieldData,FieldDataLength);
 			i += FieldDataLength;
-			BufferSize += FieldDataLength;
 		}
 
-		memcpy(Buffer+i,"\r\n",2);
+		memcpy_s(Buffer+i, BufferSize - i, "\r\n",2);
 		i+=2;
-		BufferSize += 2;
 	}
 	ILibHashTree_DestroyEnumerator(en);
 
 	//
 	// Write the empty line
 	//
-	memcpy(Buffer+i,"\r\n",2);
+	memcpy_s(Buffer+i, BufferSize - i, "\r\n",2);
 	i+=2;
 
 	//
 	// Write the body
 	//
-	memcpy(Buffer+i,packet->Body,packet->BodyLength);
+	memcpy_s(Buffer+i, BufferSize - i, packet->Body,packet->BodyLength);
 	i+=packet->BodyLength;
 	Buffer[i] = '\0';
 
@@ -4258,16 +4974,16 @@ SOCKET ILibGetSocket(struct sockaddr *localif, int type, int protocol)
 }
 
 
-/*! \fn ILibParseUri(char* URI, char** IP, unsigned short* Port, char** Path)
-\brief Parses a URI string, into its IP Address, Port Number, and Path components
-\par
-\b Note: The IP and Path components must be freed
+//! Parses a URI string, into its IP Address, Port Number, and Path components
+/*!
+\b Note: The Address and Path components must be freed
 \param URI The URI to parse
-\param IP The IP Address component in dotted quad format
+\param[out] Addr The Address component
 \param Port The Port component. Default is 80
-\param Path The Path component
+\param[out] Path The Path component
+\param[in,out] AddrStruct sockaddr_in6 structure holding the address and port [Can be NULL]
 */
-void ILibParseUri (const char* URI, char** Addr, unsigned short* Port, char** Path, struct sockaddr_in6* AddrStruct)
+ILibParseUriResult ILibParseUriEx (const char* URI, size_t URILen, char** Addr, unsigned short* Port, char** Path, struct sockaddr_in6* AddrStruct)
 {
 	struct parser_result *result, *result2, *result3;
 	char *TempString, *TempString2;
@@ -4275,8 +4991,31 @@ void ILibParseUri (const char* URI, char** Addr, unsigned short* Port, char** Pa
 	unsigned short lport;
 	char* laddr = NULL;
 
+	ILibParseUriResult retVal = ILibParseUriResult_UNKNOWN_SCHEME;
+
 	// A scheme has the format xxx://yyy , so if we parse on ://, we can extract the path info
-	result = ILibParseString((char *)URI, 0, (int)strlen(URI), "://", 3);
+	result = ILibParseString((char *)URI, 0, (int)URILen, "://", 3);
+
+	// Check the Scheme
+	switch (result->FirstResult->datalength)
+	{
+		case 2:
+			if (strncmp(result->FirstResult->data, "ws", 2) == 0 || strncmp(result->FirstResult->data, "WS", 2) == 0) { retVal = ILibParseUriResult_NO_TLS; }
+			break;
+		case 3:
+			if (strncmp(result->FirstResult->data, "wss", 3) == 0 || strncmp(result->FirstResult->data, "WSS", 3) == 0) { retVal = ILibParseUriResult_TLS; }
+			break;
+		case 4:
+			if (strncmp(result->FirstResult->data, "http", 4) == 0 || strncmp(result->FirstResult->data, "HTTP", 4) == 0) { retVal = ILibParseUriResult_NO_TLS; }
+			break;
+		case 5:
+			if (strncmp(result->FirstResult->data, "https", 5) == 0 || strncmp(result->FirstResult->data, "HTTPS", 5) == 0) { retVal = ILibParseUriResult_TLS; }
+			break;
+		default:
+			retVal = ILibParseUriResult_UNKNOWN_SCHEME;
+			break;
+	}
+
 	TempString = result->LastResult->data;
 	TempStringLength = result->LastResult->datalength;
 
@@ -4286,7 +5025,7 @@ void ILibParseUri (const char* URI, char** Addr, unsigned short* Port, char** Pa
 	if (Path != NULL)
 	{
 		if ((*Path = (char*)malloc(TempStringLength2 + 1)) == NULL) ILIBCRITICALEXIT(254);
-		memcpy(*Path, TempString + (result2->FirstResult->datalength), TempStringLength2);
+		memcpy_s(*Path, TempStringLength2 + 1, TempString + (result2->FirstResult->datalength), TempStringLength2);
 		(*Path)[TempStringLength2] = '\0';
 	}
 
@@ -4294,14 +5033,14 @@ void ILibParseUri (const char* URI, char** Addr, unsigned short* Port, char** Pa
 	result3 = ILibParseString(result2->FirstResult->data, 0, result2->FirstResult->datalength, ":", 1);
 	if (result3->NumResults == 1)
 	{
-		// The default port is 80, if non is specified, because we are assuming an HTTP scheme
-		lport = 80;
+		// The default port if non is specified, assuming HTTP(s) or WS(s)
+		lport = (retVal == ILibParseUriResult_TLS) ? 443 : 80;
 	}
 	else
 	{
 		// If a port was specified, use that
 		if ((TempString2 = (char*)malloc(result3->LastResult->datalength + 1)) == NULL) ILIBCRITICALEXIT(254);
-		memcpy(TempString2, result3->LastResult->data, result3->LastResult->datalength);
+		memcpy_s(TempString2, result3->LastResult->datalength + 1, result3->LastResult->data, result3->LastResult->datalength);
 		TempString2[result3->LastResult->datalength] = '\0';
 		lport = (unsigned short)atoi(TempString2);
 		free(TempString2);
@@ -4315,7 +5054,7 @@ void ILibParseUri (const char* URI, char** Addr, unsigned short* Port, char** Pa
 		if (TempStringLength2 > 0)
 		{
 			if ((laddr = (char*)malloc(TempStringLength2 + 2)) == NULL) ILIBCRITICALEXIT(254);
-			memcpy(laddr, result3->FirstResult->data, TempStringLength2 + 1);
+			memcpy_s(laddr, TempStringLength2 + 2, result3->FirstResult->data, TempStringLength2 + 1);
 			(laddr)[TempStringLength2 + 1] = '\0';
 		}
 	}
@@ -4324,7 +5063,7 @@ void ILibParseUri (const char* URI, char** Addr, unsigned short* Port, char** Pa
 		// This is an IPv4 address
 		TempStringLength2 = result3->FirstResult->datalength;
 		if ((laddr = (char*)malloc(TempStringLength2 + 1)) == NULL) ILIBCRITICALEXIT(254);
-		memcpy(laddr, result3->FirstResult->data, TempStringLength2);
+		memcpy_s(laddr, TempStringLength2 + 1, result3->FirstResult->data, TempStringLength2);
 		(laddr)[TempStringLength2] = '\0';
 	}
 
@@ -4349,18 +5088,27 @@ void ILibParseUri (const char* URI, char** Addr, unsigned short* Port, char** Pa
 		{
 			// IPv4
 			AddrStruct->sin6_family = AF_INET;
-			ILibInet_pton(AF_INET, laddr, &((struct sockaddr_in*)&AddrStruct)->sin_addr);
-			((struct sockaddr_in*)&AddrStruct)->sin_port = (unsigned short)htons(lport);
+			if (ILibInet_pton(AF_INET, laddr, &(((struct sockaddr_in*)AddrStruct)->sin_addr)) == 0)
+			{
+				// This was not an IP Address, but a DNS name
+				if (ILibResolveEx(laddr, lport, AddrStruct) != 0)
+				{
+					// Failed to resolve
+					AddrStruct->sin6_family = AF_UNSPEC;
+				}
+			}
+			((struct sockaddr_in*)AddrStruct)->sin_port = (unsigned short)htons(lport);
 		}
 	}
 
 	if (Port != NULL) *Port = lport;
 	if (Addr != NULL) *Addr = laddr; else if (laddr != NULL) free(laddr);
+	return(retVal);
 }
 
 /*! \fn ILibCreateEmptyPacket()
 \brief Creates an empty packetheader structure
-\returns An empty packet
+\return An empty packet
 */
 struct packetheader *ILibCreateEmptyPacket()
 {
@@ -4383,7 +5131,7 @@ struct packetheader *ILibCreateEmptyPacket()
 Because ILibParsePacketHeader does not copy any data, the data will become invalid
 once the data is flushed. This method is used to preserve the data.
 \param packet The packet to clone
-\returns A cloned packet structure
+\return A cloned packet structure
 */
 struct packetheader* ILibClonePacket(struct packetheader *packet)
 {
@@ -4393,8 +5141,8 @@ struct packetheader* ILibClonePacket(struct packetheader *packet)
 	RetVal->ClonedPacket = 1;
 
 	// Copy the addresses
-	memcpy(&(RetVal->ReceivingAddress), &(packet->ReceivingAddress), INET_SOCKADDR_LENGTH(((struct sockaddr_in6*)(packet->ReceivingAddress))->sin6_family));
-	memcpy(&(RetVal->Source), &(packet->Source), INET_SOCKADDR_LENGTH(((struct sockaddr_in6*)(packet->ReceivingAddress))->sin6_family));
+	memcpy_s(&(RetVal->ReceivingAddress), sizeof(RetVal->ReceivingAddress), &(packet->ReceivingAddress), INET_SOCKADDR_LENGTH(((struct sockaddr_in6*)(packet->ReceivingAddress))->sin6_family));
+	memcpy_s(&(RetVal->Source), sizeof(RetVal->Source), &(packet->Source), INET_SOCKADDR_LENGTH(((struct sockaddr_in6*)(packet->ReceivingAddress))->sin6_family));
 
 	// These three calls will result in the fields being copied
 	ILibSetDirective(
@@ -4438,7 +5186,7 @@ void ILibSetVersion(struct packetheader *packet, char* Version, int VersionLengt
 	if (packet->UserAllocVersion!=0) {free(packet->Version);}
 	packet->UserAllocVersion = 1;
 	if ((packet->Version = (char*)malloc(1+VersionLength)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(packet->Version,Version,VersionLength);
+	memcpy_s(packet->Version, 1 + VersionLength, Version, VersionLength);
 	packet->Version[VersionLength] = '\0';
 }
 
@@ -4451,9 +5199,10 @@ void ILibSetVersion(struct packetheader *packet, char* Version, int VersionLengt
 */
 void ILibSetStatusCode(struct packetheader *packet, int StatusCode, char *StatusData, int StatusDataLength)
 {
+	if (StatusDataLength < 0) { StatusDataLength = (int)strnlen_s(StatusData, 255); }
 	packet->StatusCode = StatusCode;
 	if ((packet->StatusData = (char*)malloc(StatusDataLength+1)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(packet->StatusData,StatusData,StatusDataLength);
+	memcpy_s(packet->StatusData, StatusDataLength + 1, StatusData, StatusDataLength);
 	packet->StatusData[StatusDataLength] = '\0';
 	packet->StatusDataLength = StatusDataLength;
 }
@@ -4468,17 +5217,36 @@ void ILibSetStatusCode(struct packetheader *packet, int StatusCode, char *Status
 */
 void ILibSetDirective(struct packetheader *packet, char* Directive, int DirectiveLength, char* DirectiveObj, int DirectiveObjLength)
 {
+	if (DirectiveLength < 0)DirectiveLength = (int)strnlen_s(Directive, 255);
+	if (DirectiveObjLength < 0)DirectiveObjLength = (int)strnlen_s(DirectiveObj, 255);
+
 	if ((packet->Directive = (char*)malloc(DirectiveLength+1)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(packet->Directive,Directive,DirectiveLength);
+	memcpy_s(packet->Directive, DirectiveLength + 1, Directive,DirectiveLength);
 	packet->Directive[DirectiveLength] = '\0';
 	packet->DirectiveLength = DirectiveLength;
 
 	if ((packet->DirectiveObj = (char*)malloc(DirectiveObjLength+1)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(packet->DirectiveObj,DirectiveObj,DirectiveObjLength);
+	memcpy_s(packet->DirectiveObj, DirectiveObjLength + 1, DirectiveObj, DirectiveObjLength);
 	packet->DirectiveObj[DirectiveObjLength] = '\0';
 	packet->DirectiveObjLength = DirectiveObjLength;
 	packet->UserAllocStrings = -1;
 }
+
+void ILibHTTPPacket_Stash_Put(ILibHTTPPacket *packet, char* key, int keyLen, void *data)
+{
+	if (keyLen < 0) { keyLen = (int)strnlen_s(key, 255); }
+	ILibAddEntryEx(packet->HeaderTable, key, keyLen, data, -1);
+}
+int ILibHTTPPacket_Stash_HasKey(ILibHTTPPacket *packet, char* key, int keyLen)
+{
+	return(ILibHasEntry(packet->HeaderTable, key, keyLen));
+}
+void* ILibHTTPPacket_Stash_Get(ILibHTTPPacket *packet, char* key, int keyLen)
+{
+	if (keyLen < 0) { keyLen = (int)strnlen_s(key, 255); }
+	return(ILibGetEntry(packet->HeaderTable, key, keyLen));
+}
+
 /*! \fn void ILibDeleteHeaderLine(struct packetheader *packet, char* FieldName, int FieldNameLength)
 \brief Removes an HTTP header entry from a packetheader structure
 \param packet The packet to modify
@@ -4500,6 +5268,8 @@ void ILibDeleteHeaderLine(struct packetheader *packet, char* FieldName, int Fiel
 void ILibAddHeaderLine(struct packetheader *packet, const char* FieldName, int FieldNameLength, const char* FieldData, int FieldDataLength)
 {
 	struct packetheader_field_node *node;
+	if (FieldNameLength < 0) { FieldNameLength = (int)strnlen_s(FieldName, 255); }
+	if (FieldDataLength < 0) { FieldDataLength = (int)strnlen_s(FieldData, 255); }
 
 	//
 	// Create the Header Node
@@ -4507,12 +5277,12 @@ void ILibAddHeaderLine(struct packetheader *packet, const char* FieldName, int F
 	if ((node = (struct packetheader_field_node*)malloc(sizeof(struct packetheader_field_node))) == NULL) ILIBCRITICALEXIT(254);
 	node->UserAllocStrings = -1;
 	if ((node->Field = (char*)malloc(FieldNameLength+1)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(node->Field, FieldName, FieldNameLength);
+	memcpy_s(node->Field, FieldNameLength + 1, (char*)FieldName, FieldNameLength);
 	node->Field[FieldNameLength] = '\0';
 	node->FieldLength = FieldNameLength;
 
 	if ((node->FieldData = (char*)malloc(FieldDataLength+1)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(node->FieldData,FieldData,FieldDataLength);
+	memcpy_s(node->FieldData, FieldDataLength + 1, (char*)FieldData, FieldDataLength);
 	node->FieldData[FieldDataLength] = '\0';
 	node->FieldDataLength = FieldDataLength;
 
@@ -4539,7 +5309,7 @@ char* ILibUrl_GetHost(char *url, int urlLen)
 {
 	int startX, endX;
 	char *retVal = NULL;
-	urlLen = urlLen >= 0 ? urlLen : strlen(url);
+	urlLen = urlLen >= 0 ? urlLen : (int)strnlen_s(url, sizeof(ILibScratchPad));
 
 	startX = ILibString_IndexOf(url, urlLen, "://", 3);
 	if (startX < 0) { startX = 0; } else { startX += 3; }
@@ -4551,15 +5321,16 @@ char* ILibUrl_GetHost(char *url, int urlLen)
 	return(retVal);
 }
 
-/*! \fn ILibGetHeaderLine(struct packetheader *packet, char* FieldName, int FieldNameLength)
+/*! \fn ILibGetHeaderLineEx(struct packetheader *packet, char* FieldName, int FieldNameLength, int *len)
 \brief Retrieves an HTTP header value from a packet structure
 \par
 \param packet The packet to introspect
 \param FieldName The header name to lookup
 \param FieldNameLength The length of \a FieldName
-\returns The header value. NULL if not found
+\param len The length of the return value. Can be NULL
+\return The header value. NULL if not found
 */
-char* ILibGetHeaderLine(struct packetheader *packet, char* FieldName, int FieldNameLength)
+char* ILibGetHeaderLineEx(struct packetheader *packet, char* FieldName, int FieldNameLength, int *len)
 {
 	void* RetVal = NULL;
 	int valLength;
@@ -4569,7 +5340,42 @@ char* ILibGetHeaderLine(struct packetheader *packet, char* FieldName, int FieldN
 	{
 		((char*)RetVal)[valLength]=0;
 	}
+	if (len != NULL) { *len = valLength; }
 	return((char*)RetVal);
+}
+char* ILibGetHeaderLineSP_Next(char* PreviousValue, char* FieldName, int FieldNameLength)
+{
+	packetheader_field_node *header = (packetheader_field_node*)(PreviousValue - sizeof(void*));
+	char *retVal = ILibScratchPad + sizeof(void*);
+
+	while (header != NULL)
+	{
+		if (FieldNameLength == header->FieldLength && strncasecmp(FieldName, header->Field, FieldNameLength) == 0)
+		{
+			((void**)ILibScratchPad)[0] = header->NextField;
+			memcpy_s(retVal, sizeof(ILibScratchPad) - sizeof(void*), header->FieldData, header->FieldDataLength);
+			retVal[header->FieldDataLength] = 0;
+			return(retVal);
+		}
+		header = header->NextField;
+	}
+	return(NULL);
+}
+
+/*! \fn ILibGetHeaderLine(struct packetheader *packet, char* FieldName, int FieldNameLength)
+\brief Retrieves an HTTP header value from a packet structure, copied into the ScratchPad
+\par
+\param packet The packet to introspect
+\param FieldName The header name to lookup
+\param FieldNameLength The length of \a FieldName
+\return The header value. NULL if not found
+*/
+char* ILibGetHeaderLineSP(struct packetheader *packet, char* FieldName, int FieldNameLength)
+{
+	char* retVal = ILibScratchPad + sizeof(void*);
+	((void**)ILibScratchPad)[0] = packet->FirstField;;
+
+	return(ILibGetHeaderLineSP_Next(retVal, FieldName, FieldNameLength));
 }
 
 static const char cb64[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -4588,7 +5394,7 @@ void ILibencodeblock( unsigned char in[3], unsigned char out[4], int len )
 \brief Returns the length the ILibBase64Encode function would use a stream adding padding and line breaks as per spec.
 \par
 \param input The length of the en-encoded data
-\returns The length of the encoded stream
+\return The length of the encoded stream
 */
 int ILibBase64EncodeLength(const int inputLen)
 {
@@ -4601,8 +5407,8 @@ int ILibBase64EncodeLength(const int inputLen)
 \b Note: The encoded stream must be freed if **ouput is passed in as NULL
 \param input The stream to encode
 \param inputlen The length of \a input
-\param output The encoded stream. if *output is not NULL, then the base64 will be copied there, if it is NULL, then the function will malloc
-\returns The length of the encoded stream
+\param[in,out] output The encoded stream. if *output is not NULL, then the base64 will be copied there, if it is NULL, then the function will malloc
+\return The length of the encoded stream
 */
 int ILibBase64Encode(unsigned char* input, const int inputlen, unsigned char** output)
 {
@@ -4634,7 +5440,7 @@ void ILibdecodeblock( unsigned char in[4], unsigned char out[3] )
 \brief Returns the length the ILibBase64Decode function would use to store the decoded string value
 \par
 \param input The length of the en-encoded data
-\returns The length of the decoded stream
+\return The length of the decoded stream
 */
 int ILibBase64DecodeLength(const int inputLen)
 {
@@ -4647,8 +5453,8 @@ int ILibBase64DecodeLength(const int inputLen)
 \b Note: The encoded stream must be freed if **ouput is passed in as NULL
 \param input The stream to decode
 \param inputlen The length of \a input
-\param The encoded stream. if *output is not NULL, then the base64 will be copied there, if it is NULL, then the function will malloc
-\returns The length of the decoded stream
+\param[in,out] The encoded stream. if *output is not NULL, then the base64 will be copied there, if it is NULL, then the function will malloc
+\return The length of the decoded stream
 */
 int ILibBase64Decode(unsigned char* input, const int inputlen, unsigned char** output)
 {
@@ -4708,11 +5514,11 @@ int ILibBase64Decode(unsigned char* input, const int inputlen, unsigned char** o
 Since an escaped XML string is always larger than its unescaped form, this method
 will overwrite the escaped string with the unescaped string, while decoding.
 \param data The XML string to unescape
-\returns The length of the unescaped XML string
+\return The length of the unescaped XML string
 */
-int ILibInPlaceXmlUnEscape(char* data)
+int ILibInPlaceXmlUnEscapeEx(char* data, size_t dataLen)
 {
-	char* end = data+strlen(data);
+	char* end = data + dataLen;
 	char* i = data;              /* src */
 	char* j = data;              /* dest */
 
@@ -4767,12 +5573,12 @@ int ILibInPlaceXmlUnEscape(char* data)
 \par
 \b Note: This calculation does not include space for a null terminator
 \param data The XML string to calculate buffer requirments with
-\returns The minimum required buffer size
+\return The minimum required buffer size
 */
-int ILibXmlEscapeLength(const char* data)
+int ILibXmlEscapeLengthEx(const char* data, size_t dataLen)
 {
 	int i = 0, j = 0;
-	while (data[i] != 0)
+	while (data[i] != 0 && i < (int)dataLen)
 	{
 		switch (data[i])
 		{
@@ -4806,46 +5612,44 @@ int ILibXmlEscapeLength(const char* data)
 \b Note: \a outdata must be pre-allocated and freed
 \param outdata The escaped XML string
 \param indata The string to escape
-\returns The length of the escaped string
+\return The length of the escaped string
 */
-int ILibXmlEscape(char* outdata, const char* indata)
+int ILibXmlEscapeEx(char* outdata, const char* indata, size_t indataLen)
 {
 	int i=0;
-	int inlen;
 	char* out;
 
 	out = outdata;
-	inlen = (int)strlen(indata);
 
-	for (i=0; i < inlen; i++)
+	for (i=0; i < (int)indataLen; i++)
 	{
 		if (indata[i] == '"')
 		{
-			memcpy(out, "&quot;", 6);
+			memcpy_s(out, 6, "&quot;", 6);
 			out = out + 6;
 		}
 		else
 			if (indata[i] == '\'')
 			{
-				memcpy(out, "&apos;", 6);
+				memcpy_s(out, 6, "&apos;", 6);
 				out = out + 6;
 			}
 			else
 				if (indata[i] == '<')
 				{
-					memcpy(out, "&lt;", 4);
+					memcpy_s(out, 4, "&lt;", 4);
 					out = out + 4;
 				}
 				else
 					if (indata[i] == '>')
 					{
-						memcpy(out, "&gt;", 4);
+						memcpy_s(out, 4, "&gt;", 4);
 						out = out + 4;
 					}
 					else
 						if (indata[i] == '&')
 						{
-							memcpy(out, "&amp;", 5);
+							memcpy_s(out, 5, "&amp;", 5);
 							out = out + 5;
 						}
 						else
@@ -4899,7 +5703,7 @@ void ILibLifeTime_AddEx(void *LifetimeMonitorObject,void *data, int ms, ILibLife
 	// Set the trigger time
 	//
 	ltms->data = data;
-	ltms->ExpirationTick = ILibGetUptime() + (long long)(ms);
+	ltms->ExpirationTick = ms != 0 ? (ILibGetUptime() + (long long)(ms)) : 0;
 
 	//
 	// Set the callback handlers
@@ -4914,14 +5718,14 @@ void ILibLifeTime_AddEx(void *LifetimeMonitorObject,void *data, int ms, ILibLife
 	if (node == NULL)
 	{
 		ILibLinkedList_AddTail(LifeTimeMonitor->ObjectList, ltms);
-		ILibForceUnBlockChain(LifeTimeMonitor->Chain);
+		ILibForceUnBlockChain(LifeTimeMonitor->ChainLink.ParentChain);
 	}
 	else
 	{
 		while (node != NULL)
 		{
 			temp = (struct LifeTimeMonitorData*)ILibLinkedList_GetDataFromNode(node);
-			if (ltms->ExpirationTick <= temp->ExpirationTick)
+			if (ltms->ExpirationTick < temp->ExpirationTick)
 			{
 				ILibLinkedList_InsertBefore(node, ltms);
 				break;
@@ -4932,9 +5736,9 @@ void ILibLifeTime_AddEx(void *LifetimeMonitorObject,void *data, int ms, ILibLife
 		{
 			ILibLinkedList_AddTail(LifeTimeMonitor->ObjectList,ltms);
 		}
-		else if (ILibLinkedList_GetNode_Head(LifeTimeMonitor->ObjectList) == ltms)
+		else if (ILibLinkedList_GetDataFromNode(ILibLinkedList_GetNode_Head(LifeTimeMonitor->ObjectList)) == ltms)
 		{
-			ILibForceUnBlockChain(LifeTimeMonitor->Chain);
+			ILibForceUnBlockChain(LifeTimeMonitor->ChainLink.ParentChain);
 		}
 	}
 
@@ -4961,6 +5765,7 @@ void ILibLifeTime_Check(void *LifeTimeMonitorObject, fd_set *readset, fd_set *wr
 	UNREFERENCED_PARAMETER( writeset );
 	UNREFERENCED_PARAMETER( errorset );
 
+
 	//
 	// Get the current tick count for reference
 	//
@@ -4969,7 +5774,7 @@ void ILibLifeTime_Check(void *LifeTimeMonitorObject, fd_set *readset, fd_set *wr
 	//
 	// This will speed things up by skipping the timer check
 	//
-	if ((LifeTimeMonitor->NextTriggerTick > CurrentTick) && (LifeTimeMonitor->NextTriggerTick != -1) && (*blocktime > (int)(LifeTimeMonitor->NextTriggerTick - CurrentTick)))
+	if(LifeTimeMonitor->NextTriggerTick !=0 && ((LifeTimeMonitor->NextTriggerTick > CurrentTick) && (LifeTimeMonitor->NextTriggerTick != -1) && (*blocktime > (int)(LifeTimeMonitor->NextTriggerTick - CurrentTick))))
 	{
 		*blocktime = (int)(LifeTimeMonitor->NextTriggerTick - CurrentTick);
 		return;
@@ -4990,7 +5795,7 @@ void ILibLifeTime_Check(void *LifeTimeMonitorObject, fd_set *readset, fd_set *wr
 	while (node != NULL)
 	{
 		Temp = (struct LifeTimeMonitorData*)ILibLinkedList_GetDataFromNode(node);
-		if (Temp->ExpirationTick <= CurrentTick)
+		if (Temp->ExpirationTick == 0 || Temp->ExpirationTick < CurrentTick)
 		{
 			ILibQueue_EnQueue(EventQueue, Temp);
 			node = ILibLinkedList_Remove(node);
@@ -5144,7 +5949,7 @@ void ILibLifeTime_Destroy(void *LifeTimeToken)
 \par
 \b Note: All events are triggered on the MicroStack thread. Developers must \b NEVER block this thread!
 \param Chain The chain to add the \a ILibLifeTime to
-\returns An \a ILibLifeTime token, which is used to add/remove callbacks
+\return An \a ILibLifeTime token, which is used to add/remove callbacks
 */
 void *ILibCreateLifeTime(void *Chain)
 {
@@ -5153,9 +5958,9 @@ void *ILibCreateLifeTime(void *Chain)
 	memset(RetVal,0,sizeof(struct ILibLifeTime));
 
 	RetVal->ObjectList = ILibLinkedList_Create();
-	RetVal->PreSelect = &ILibLifeTime_Check;
-	RetVal->Destroy = &ILibLifeTime_Destroy;
-	RetVal->Chain = Chain;
+	RetVal->ChainLink.PreSelectHandler = &ILibLifeTime_Check;
+	RetVal->ChainLink.DestroyHandler = &ILibLifeTime_Destroy;
+	RetVal->ChainLink.ParentChain = Chain;
 	RetVal->Reserved = ILibQueue_Create();
 
 	ILibAddToChain(Chain, RetVal);
@@ -5173,7 +5978,7 @@ long ILibLifeTime_Count(void* LifeTimeToken)
 \brief Find the index in \a Table that contains \a Entry.
 \param Entry The char* to find
 \param Table Array of char*, where the last entry is NULL
-\returns the index into \a Table, that contains \a Entry
+\return the index into \a Table, that contains \a Entry
 */
 int ILibFindEntryInTable(char *Entry, char **Table)
 {
@@ -5192,13 +5997,22 @@ void ILibLinkedList_SetData(void *LinkedList_Node, void *data)
 {
 	((struct ILibLinkedListNode*)LinkedList_Node)->Data = data;
 }
-
-void ILibLinkedList_SortedInsertEx(void* LinkedList, ILibLinkedList_Comparer comparer, ILibLinkedList_Chooser chooser, void *data, void *user)
+//! Use the given comparer to insert data into the list. 
+//! A Duplicate (according to comparer) will result in the chooser being dispatched to determine which value to keep
+/*!
+	\param LinkedList ILibLinkedList to perform the insert operation on
+	\param comparer ILibLinkedList_Comparer handler to dispatch to perform the compare operation
+	\param chooser ILibLinkedList_Chooser handler to dispatch to determine which value to keep, if a duplicate entry is detected
+	\param data The data to insert
+	\param user Custom user data to pass along with dispatched calls
+	\return The LinkedList node that was inserted
+*/
+void* ILibLinkedList_SortedInsertEx(void* LinkedList, ILibLinkedList_Comparer comparer, ILibLinkedList_Chooser chooser, void *data, void *user)
 {
 	void* node = ILibLinkedList_GetNode_Head(LinkedList);
 	if(node == NULL)
 	{
-		ILibLinkedList_AddHead(LinkedList, chooser(NULL, data, user));
+		node = ILibLinkedList_AddHead(LinkedList, chooser(NULL, data, user));
 	}
 	else
 	{
@@ -5212,16 +6026,17 @@ void ILibLinkedList_SortedInsertEx(void* LinkedList, ILibLinkedList_Comparer com
 			}
 			else if(comparer(ILibLinkedList_GetDataFromNode(node), data) < 0)
 			{
-				ILibLinkedList_InsertBefore(node, chooser(NULL, data, user));
+				node = ILibLinkedList_InsertBefore(node, chooser(NULL, data, user));
 				break;
 			}
 			node = ILibLinkedList_GetNextNode(node);
 		}
 		if(node == NULL)
 		{
-			ILibLinkedList_AddTail(LinkedList, chooser(NULL, data, user));			
+			node = ILibLinkedList_AddTail(LinkedList, chooser(NULL, data, user));			
 		}
 	}
+	return(node);
 }
 
 void* ILibLinkedList_SortedInsert_DefaultChooser(void *oldObject, void *newObject, void *user)
@@ -5230,13 +6045,28 @@ void* ILibLinkedList_SortedInsert_DefaultChooser(void *oldObject, void *newObjec
 	return(newObject);
 }
 
-// If there is a duplicate (comparer returns 0), this method will replace the old data with new data, and return the old data
+
+//! Use the given comparer to insert data into the list. 
+//! A Duplicate (according to comparer) will result in the value being updated, and the old value being returned
+/*!
+	\param LinkedList ILibLinkedList to perform the insert operation on
+	\param comparer ILibLinkedList_Comparer handler to dispatch to perform the compare operation
+	\param data The data to insert
+	\return Duplicates are not allowed, so if the comparison resulted in a duplicate, the old value will be returned, and the new value overwritten
+*/
 void* ILibLinkedList_SortedInsert(void* LinkedList, ILibLinkedList_Comparer comparer, void *data)
 {
 	void *retVal = NULL;
 	ILibLinkedList_SortedInsertEx(LinkedList, comparer, &ILibLinkedList_SortedInsert_DefaultChooser, data, &retVal);
 	return(retVal);
 }
+//! Use the given comparer to return the Linked List node that matches with the specified object
+/*!
+	\param LinkedList The ILibLinkedList to search
+	\param comparer The ILibLinkedList_Comparer handler to dispatch to perform the comparison
+	\param matchWith object to search
+	\return First matching node [NULL if none found]
+*/
 void* ILibLinkedList_GetNode_Search(void* LinkedList, ILibLinkedList_Comparer comparer, void *matchWith)
 {
 	void *retVal = NULL;
@@ -5253,32 +6083,63 @@ void* ILibLinkedList_GetNode_Search(void* LinkedList, ILibLinkedList_Comparer co
 	return(retVal);
 }
 
-/*! \fn ILibLinkedList_Create()
+/*! \fn ILibLinkedList_CreateEx(int userMemorySize)
 \brief Create an empty Linked List Data Structure
-\returns Empty Linked List
+\param userMemorySize Amount of memory to allocate for user data when allocating a linked list node
+\return Empty Linked List
 */
-void* ILibLinkedList_Create()
+void* ILibLinkedList_CreateEx(int userMemorySize)
 {
 	struct ILibLinkedListNode_Root *root;
-	if ((root = (struct ILibLinkedListNode_Root*)malloc(sizeof(struct ILibLinkedListNode_Root))) == NULL) ILIBCRITICALEXIT(254);
-	memset(root, 0, sizeof(struct ILibLinkedListNode_Root));
+	void *mem;
+
+	ILibMemory_Allocate(sizeof(ILibLinkedListNode_Root), userMemorySize, (void**)&root, &mem);
+	root->ExtraMemory = mem;
+	
 	sem_init(&(root->LOCK), 0, 1);
 	return root;
 }
 
+
+void* ILibLinkedList_Create()
+{
+	return(ILibLinkedList_CreateEx(0));
+}
+//! Associate custom user data with a linked list object
+/*!
+	\param list ILibLinkedList to associate
+	\param tag Custom user data to associate
+*/
 void ILibLinkedList_SetTag(ILibLinkedList list, void *tag)
 {
 	((struct ILibLinkedListNode_Root*)list)->Tag = tag;
 }
+//! Fetch the associated custom user data from a linked list
+/*!
+	\param list ILibLinkedList to query
+	\return Associated custom user data [NULL if none associated]
+*/
 void* ILibLinkedList_GetTag(ILibLinkedList list)
 {
 	return(((struct ILibLinkedListNode_Root*)list)->Tag);
 }
 
+void* ILibLinkedList_AllocateNode(void *LinkedList)
+{
+	void* newNode;
+	ILibMemory_Allocate(sizeof(ILibLinkedListNode), ILibMemory_GetExtraMemorySize(((ILibLinkedListNode_Root*)LinkedList)->ExtraMemory), &newNode, NULL);
+	return(newNode);
+}
+
+void* ILibLinkedList_GetExtendedMemory(void* LinkedList_Node)
+{
+	if (LinkedList_Node == NULL) { return(NULL); }
+	return(ILibMemory_GetExtraMemory(LinkedList_Node, sizeof(ILibLinkedListNode)));
+}
 /*! \fn ILibLinkedList_ShallowCopy(void *LinkedList)
-\brief Create a shallow copy of a linked list
+\brief Create a shallow copy of a linked list. That is, the structure is copied, but none of the data contents are copied. The pointer values are just copied.
 \param LinkedList The linked list to copy
-\returns The copy of the supplied linked list
+\return The copy of the supplied linked list
 */
 void* ILibLinkedList_ShallowCopy(void *LinkedList)
 {
@@ -5295,7 +6156,7 @@ void* ILibLinkedList_ShallowCopy(void *LinkedList)
 /*! \fn ILibLinkedList_GetNode_Head(void *LinkedList)
 \brief Returns the Head node of a linked list data structure
 \param LinkedList The linked list
-\returns The first node of the linked list
+\return The first node of the linked list
 */
 void* ILibLinkedList_GetNode_Head(void *LinkedList)
 {
@@ -5305,7 +6166,7 @@ void* ILibLinkedList_GetNode_Head(void *LinkedList)
 /*! \fn ILibLinkedList_GetNode_Tail(void *LinkedList)
 \brief Returns the Tail node of a linked list data structure
 \param LinkedList The linked list
-\returns The last node of the linked list
+\return The last node of the linked list
 */
 void* ILibLinkedList_GetNode_Tail(void *LinkedList)
 {
@@ -5315,7 +6176,7 @@ void* ILibLinkedList_GetNode_Tail(void *LinkedList)
 /*! \fn ILibLinkedList_GetNextNode(void *LinkedList_Node)
 \brief Returns the next node, from the specified linked list node
 \param LinkedList_Node The current linked list node
-\returns The next adjacent node of the current one
+\return The next adjacent node of the current one
 */
 void* ILibLinkedList_GetNextNode(void *LinkedList_Node)
 {
@@ -5325,8 +6186,9 @@ void* ILibLinkedList_GetNextNode(void *LinkedList_Node)
 /*! \fn ILibLinkedList_GetPreviousNode(void *LinkedList_Node)
 \brief Returns the previous node, from the specified linked list node
 \param LinkedList_Node The current linked list node
-\returns The previous adjacent node of the current one
-*/void* ILibLinkedList_GetPreviousNode(void *LinkedList_Node)
+\return The previous adjacent node of the current one
+*/
+void* ILibLinkedList_GetPreviousNode(void *LinkedList_Node)
 {
 	return(((struct ILibLinkedListNode*)LinkedList_Node)->Previous);
 }
@@ -5334,25 +6196,26 @@ void* ILibLinkedList_GetNextNode(void *LinkedList_Node)
 /*! \fn ILibLinkedList_GetDataFromNode(void *LinkedList_Node)
 \brief Returns the data pointed to by a linked list node
 \param LinkedList_Node The current linked list node
-\returns The data pointer
+\return The data pointer
 */
 void *ILibLinkedList_GetDataFromNode(void *LinkedList_Node)
 {
-	return(((struct ILibLinkedListNode*)LinkedList_Node)->Data);
+	return(LinkedList_Node != NULL ? (((struct ILibLinkedListNode*)LinkedList_Node)->Data) : NULL);
 }
 
 /*! \fn ILibLinkedList_InsertBefore(void *LinkedList_Node, void *data)
 \brief Creates a new element, and inserts it before the given node
 \param LinkedList_Node The linked list node
 \param data The data pointer to be referenced
+\return The LinkedList node that was inserted
 */
-void ILibLinkedList_InsertBefore(void *LinkedList_Node, void *data)
+void* ILibLinkedList_InsertBefore(void *LinkedList_Node, void *data)
 {
 	struct ILibLinkedListNode_Root *r = ((struct ILibLinkedListNode*)LinkedList_Node)->Root;
 	struct ILibLinkedListNode *n = (struct ILibLinkedListNode*) LinkedList_Node;
 	struct ILibLinkedListNode *newNode;
 
-	if ((newNode = (struct ILibLinkedListNode*)malloc(sizeof(struct ILibLinkedListNode))) == NULL) ILIBCRITICALEXIT(254);
+	newNode = ILibLinkedList_AllocateNode(r);
 	newNode->Data = data;
 	newNode->Root = r;
 
@@ -5374,19 +6237,22 @@ void ILibLinkedList_InsertBefore(void *LinkedList_Node, void *data)
 		r->Head = newNode;
 	}
 	++r->count;
+	return(newNode);
 }
 
 /*! \fn ILibLinkedList_InsertAfter(void *LinkedList_Node, void *data)
 \brief Creates a new element, and appends it after the given node
 \param LinkedList_Node The linked list node
 \param data The data pointer to be referenced
-*/void ILibLinkedList_InsertAfter(void *LinkedList_Node, void *data)
+\return The LinkedList Node that was inserted
+*/
+void* ILibLinkedList_InsertAfter(void *LinkedList_Node, void *data)
 {
 	struct ILibLinkedListNode_Root *r = ((struct ILibLinkedListNode*)LinkedList_Node)->Root;
 	struct ILibLinkedListNode *n = (struct ILibLinkedListNode*) LinkedList_Node;
 	struct ILibLinkedListNode *newNode;
 
-	if ((newNode = (struct ILibLinkedListNode*)malloc(sizeof(struct ILibLinkedListNode))) == NULL) ILIBCRITICALEXIT(254);
+	newNode = ILibLinkedList_AllocateNode(r);
 	newNode->Data = data;
 	newNode->Root = r;
 
@@ -5403,12 +6269,13 @@ void ILibLinkedList_InsertBefore(void *LinkedList_Node, void *data)
 	//
 	if (r->Tail==n) r->Tail = newNode;
 	++r->count;
+	return(newNode);
 }
 
 /*! \fn ILibLinkedList_Remove(void *LinkedList_Node)
 \brief Removes the given node from a linked list data structure
 \param LinkedList_Node The linked list node to remove
-\returns The next node
+\return The next node
 */
 void* ILibLinkedList_Remove(void *LinkedList_Node)
 {
@@ -5417,9 +6284,9 @@ void* ILibLinkedList_Remove(void *LinkedList_Node)
 	void* RetVal;
 
 	if (LinkedList_Node == NULL) { return(NULL); }
-
 	r = ((struct ILibLinkedListNode*)LinkedList_Node)->Root;
 	n = (struct ILibLinkedListNode*) LinkedList_Node;
+
 	RetVal = n->Next;
 
 	if (n->Previous!=NULL)
@@ -5457,7 +6324,7 @@ Given a data pointer, will traverse the linked list data structure, deleting
 elements that point to this data pointer.
 \param LinkedList The linked list to traverse
 \param data The data pointer to compare
-\returns Non-zero if an item was removed
+\return Non-zero if an item was removed
 */
 int ILibLinkedList_Remove_ByData(void *LinkedList, void *data)
 {
@@ -5485,12 +6352,12 @@ int ILibLinkedList_Remove_ByData(void *LinkedList, void *data)
 \param LinkedList The linked list
 \param data The data pointer to reference
 */
-void ILibLinkedList_AddHead(void *LinkedList, void *data)
+void* ILibLinkedList_AddHead(void *LinkedList, void *data)
 {
 	struct ILibLinkedListNode_Root *r = (struct ILibLinkedListNode_Root*)LinkedList;
 	struct ILibLinkedListNode *newNode;
 
-	if ((newNode = (struct ILibLinkedListNode*)malloc(sizeof(struct ILibLinkedListNode))) == NULL) ILIBCRITICALEXIT(254);
+	newNode = ILibLinkedList_AllocateNode(r);
 	newNode->Data = data;
 	newNode->Root = r;
 	newNode->Previous = NULL;
@@ -5500,6 +6367,7 @@ void ILibLinkedList_AddHead(void *LinkedList, void *data)
 	r->Head = newNode;
 	if (r->Tail==NULL) r->Tail = newNode;
 	++r->count;
+	return(newNode);
 }
 
 /*! \fn ILibLinkedList_AddTail(void *LinkedList, void *data)
@@ -5507,12 +6375,12 @@ void ILibLinkedList_AddHead(void *LinkedList, void *data)
 \param LinkedList The linked list
 \param data The data pointer to reference
 */
-void ILibLinkedList_AddTail(void *LinkedList, void *data)
+void* ILibLinkedList_AddTail(void *LinkedList, void *data)
 {
 	struct ILibLinkedListNode_Root *r = (struct ILibLinkedListNode_Root*)LinkedList;
 	struct ILibLinkedListNode *newNode;
 
-	if ((newNode = (struct ILibLinkedListNode*)malloc(sizeof(struct ILibLinkedListNode))) == NULL) ILIBCRITICALEXIT(254);
+	newNode = ILibLinkedList_AllocateNode(r);
 	newNode->Data = data;
 	newNode->Root = r;
 	newNode->Next = NULL;
@@ -5522,6 +6390,7 @@ void ILibLinkedList_AddTail(void *LinkedList, void *data)
 	r->Tail = newNode;
 	if (r->Head == NULL) r->Head = newNode;
 	++r->count;
+	return(newNode);
 }
 
 /*! \fn ILibLinkedList_Lock(void *LinkedList)
@@ -5563,12 +6432,32 @@ void ILibLinkedList_Destroy(void *LinkedList)
 /*! \fn ILibLinkedList_GetCount(void *LinkedList)
 \brief Returns the number of nodes in the linked list
 \param LinkedList The linked list
-\returns Number of elements in the linked list
+\return Number of elements in the linked list
 */
 long ILibLinkedList_GetCount(void *LinkedList)
 {
 	return(((struct ILibLinkedListNode_Root*)LinkedList)->count);
 }
+
+int ILibLinkedList_GetIndex(void *node)
+{
+	ILibLinkedListNode *current = (ILibLinkedListNode*)ILibLinkedList_GetNode_Head(((ILibLinkedListNode*)node)->Root);
+	int i = 0;
+	
+	while (current != NULL && current != node)
+	{
+		++i;
+		current = current->Next;
+	}
+	return(current != NULL ? i : -1);
+}
+
+typedef struct ILibHashtable_ClearCallbackStruct
+{
+	ILibHashtable source;
+	ILibHashtable_OnDestroy onClear;
+	void *user;
+}ILibHashtable_ClearCallbackStruct;
 
 int ILibHashtable_DefaultBucketizer(int value)
 {
@@ -5590,37 +6479,45 @@ int ILibHashtable_DefaultHashFunc(void* Key1, char* Key2, int Key2Len)
 
 	u.p = Key1;
 	if(Key1!=NULL) {retVal ^= u.i;}
-	if(Key2 != NULL && Key2Len < 5) 
+	if (Key2 != NULL)
 	{
-		((int*)tmp)[0] = 0;
-		for(i=0;i<Key2Len;++i)
+		if (Key2Len < 5)
 		{
-			tmp[i] = Key2[i];
+			((int*)tmp)[0] = 0;
+			for (i = 0; i < Key2Len; ++i)
+			{
+				tmp[i] = Key2[i];
+			}
+			retVal ^= ((int*)tmp)[0];
 		}
-		retVal ^= ((int*)tmp)[0];
-	}
-	if(Key2 != NULL && Key2Len < 9)
-	{
-		((int*)tmp)[0] = 0;
-		for(i=0;i<4;++i)
+		
+		if (Key2Len > 4)
 		{
-			tmp[i] = Key2[Key2Len-1-i];
+			((int*)tmp)[0] = 0;
+			for (i = 0; i < 4; ++i)
+			{
+				tmp[i] = Key2[Key2Len - 1 - i];
+			}
+			retVal ^= ((int*)tmp)[0];
+			
+			if (Key2Len > 12)
+			{
+				int x = Key2Len / 2;
+				((int*)tmp)[0] = 0;
+				for (i = 0; i < 4; ++i)
+				{
+					tmp[i] = Key2[i + x];
+				}
+				retVal ^= ((int*)tmp)[0];
+			}
 		}
-		retVal ^= ((int*)tmp)[0];
 	}
-	if(Key2 != NULL && Key2Len > 12)
-	{
-		int x = Key2Len / 2;
-		((int*)tmp)[0] = 0;
-		for(i=0;i<4;++i)
-		{
-			tmp[i] = Key2[i+x];
-		}
-		retVal ^= ((int*)tmp)[0];
-	}
-
 	return(retVal & 0x7FFFFFFF);
 }
+//! Create an Advanced Hashtable using the default Hashing Function, and default SparseArray/Bucketizer
+/*!
+	\return Hashtable
+*/
 ILibHashtable ILibHashtable_Create()
 {
 	ILibHashtable_Root *retVal;
@@ -5635,16 +6532,17 @@ ILibHashtable ILibHashtable_Create()
 }
 void ILibHashtable_DestroyEx2(ILibSparseArray sender, int index, void *value, void *user)
 {
+	ILibHashtable_ClearCallbackStruct *state = (ILibHashtable_ClearCallbackStruct*)user;
 	UNREFERENCED_PARAMETER(sender);
 	UNREFERENCED_PARAMETER(index);
 
 	if(value != NULL)
 	{
 		ILibHashtable_Node *tmp, *node = (ILibHashtable_Node*)value;
-		ILibHashtable_OnDestroy onDestroy = (ILibHashtable_OnDestroy)((void**)user)[1];
+		ILibHashtable_OnDestroy onDestroy = state->onClear;
 		while(node != NULL)
 		{
-			if(onDestroy!=NULL) {onDestroy(((void**)user)[0], node->Key1, node->Key2, node->Key2Len, node->Data, ((void**)user)[2]);}
+			if(onDestroy!=NULL) {onDestroy(state->source, node->Key1, node->Key2, node->Key2Len, node->Data, state->user);}
 			tmp = node->next;
 			if(node->Key2 != NULL) { free(node->Key2); }
 			free(node);
@@ -5652,22 +6550,102 @@ void ILibHashtable_DestroyEx2(ILibSparseArray sender, int index, void *value, vo
 		}
 	}
 }
+//! Free the resources associated with an Advanced Hashtable
+
+//! Dispatches event handler for each element that is destroyed/cleared
+/*!
+	\param table Hashtable
+	\param onDestroy Event handler to dispatch for destroyed/cleared elements
+	\param user Custom User state data
+*/
 void ILibHashtable_DestroyEx(ILibHashtable table, ILibHashtable_OnDestroy onDestroy, void *user)
 {
 	ILibHashtable_Root *root = (ILibHashtable_Root*)table;
-	void* temp[3];
+	ILibHashtable_ClearCallbackStruct state;
+	memset(&state, 0, sizeof(ILibHashtable_ClearCallbackStruct));
+	
+	state.source = table;
+	state.onClear = onDestroy;
+	state.user = user;
 
-	temp[0] = table;
-	temp[1] = onDestroy;
-	temp[2] = user;
-	ILibSparseArray_DestroyEx(root->table, &ILibHashtable_DestroyEx2, temp);
+	ILibSparseArray_DestroyEx(root->table, &ILibHashtable_DestroyEx2, &state);
 	free(root);
 }
 
+void ILibHashtable_EnumerateSink(ILibSparseArray sender, int index, void *value, void *user)
+{
+	ILibHashtable_ClearCallbackStruct *state = (ILibHashtable_ClearCallbackStruct*)user;
+	UNREFERENCED_PARAMETER(sender);
+	UNREFERENCED_PARAMETER(index);
+
+	if (value != NULL)
+	{
+		ILibHashtable_Node *node = (ILibHashtable_Node*)value;
+		ILibHashtable_OnDestroy onEnumerate = state->onClear;
+		while (node != NULL)
+		{
+			if (onEnumerate != NULL) { onEnumerate(state->source, node->Key1, node->Key2, node->Key2Len, node->Data, state->user); }
+			node = node->next;
+		}
+	}
+}
+
+//! Enumerates the Hashtable
+/*!
+	\param table Hashtable to enumerate
+	\param onEnumerate The callback to dispatch for each item
+	\param user User state object to pass thru to the callback
+*/
+void ILibHashtable_Enumerate(ILibHashtable table, ILibHashtable_OnDestroy onEnumerate, void *user)
+{
+	ILibHashtable_ClearCallbackStruct state;
+	memset(&state, 0, sizeof(ILibHashtable_ClearCallbackStruct));
+
+	state.source = table;
+	state.onClear = onEnumerate;
+	state.user = user;
+
+	ILibSparseArray_Enumerate(((ILibHashtable_Root*)table)->table, ILibHashtable_EnumerateSink, &state);
+}
+
+//! Clear the Hashtable, with a callback for each removed item
+/*!
+	\param table Hashtable to clear
+	\param onClear The callback to dispatch for each item removed
+	\param user User state object to pass thru to the callback
+*/
+void ILibHashtable_ClearEx(ILibHashtable table, ILibHashtable_OnDestroy onClear, void *user)
+{
+	ILibHashtable_ClearCallbackStruct state;
+	memset(&state, 0, sizeof(ILibHashtable_ClearCallbackStruct));
+
+	state.source = table;
+	state.onClear = onClear;
+	state.user = user;
+	ILibSparseArray_ClearEx(((ILibHashtable_Root*)table)->table, ILibHashtable_DestroyEx2, &state);
+}
+//! Clear the Hashtable
+/*!
+	\param table Hashtable to clear
+*/
+void ILibHashtable_Clear(ILibHashtable table)
+{
+	ILibSparseArray_ClearEx(((ILibHashtable_Root*)table)->table, NULL, NULL);
+}
+//! Change the hashing function used by the specified hashtable
+/*!
+	\param table Hashtable to modify
+	\param hashFunc Handler for the hashing function to use
+*/
 void ILibHashtable_ChangeHashFunc(ILibHashtable table, ILibHashtable_Hash_Func hashFunc)
 {
 	((ILibHashtable_Root*)table)->hashFunc = hashFunc;
 }
+//! Change the bucketizer function used by the underlying Sparse Array for the specified Hashtable
+/*!
+	\param table Hashtable to modify
+	\param bucketizer Handler for the bucketizer function to use
+*/
 void ILibHashtable_ChangeBucketizer(ILibHashtable table, int bucketCount, ILibSparseArray_Bucketizer bucketizer)
 {
 	if(((ILibHashtable_Root*)table)->table != NULL) {ILibSparseArray_Destroy(((ILibHashtable_Root*)table)->table);}
@@ -5685,7 +6663,7 @@ ILibHashtable_Node* ILibHashtable_CreateNode(void* Key1, char* Key2, int Key2Len
 	if(Key2Len > 0)
 	{
 		if((node->Key2 = (char*)malloc(Key2Len))==NULL) {ILIBCRITICALEXIT(254);}
-		memcpy(node->Key2, Key2, Key2Len);
+		memcpy_s(node->Key2, Key2Len, Key2, Key2Len);
 	}
 	return(node);
 }
@@ -5752,6 +6730,17 @@ ILibHashtable_Node* ILibHashtable_GetEx(ILibHashtable table, void *Key1, char* K
 	}
 	return(retVal);
 }
+//! Add/Modify an entry in the Hashtable
+
+//! Key1 and Key2 can both be NULL, but not at the same time.
+/*!
+	\param table Hashtable to perform the operation on
+	\param Key1 Address Key [Can be NULL]
+	\param Key2 String Key [Can be NULL]
+	\param Key2Len String Key LEngth
+	\param Data New Element Value
+	\return Old Element Value [NULL if it didn't exist]
+*/
 void* ILibHashtable_Put(ILibHashtable table, void *Key1, char* Key2, int Key2Len, void* Data)
 {	
 	ILibHashtable_Node *node = ILibHashtable_GetEx(table, Key1, Key2, Key2Len, ILibHashtable_Flags_ADD);
@@ -5759,11 +6748,31 @@ void* ILibHashtable_Put(ILibHashtable table, void *Key1, char* Key2, int Key2Len
 	node->Data = Data;
 	return(retVal);
 }
+//! Get the specified Element Value associated with the specified Key(s).
+
+//! Key1 and Key2 can both be NULL, but not at the same time.
+/*!
+	\param table Hashtable to fetch the value from
+	\param Key1 Address Key [Can be NULL]
+	\param Key2 String Key [Can be NULL]
+	\param Key2Len String Key Length
+	\return Element Value [NULL if it doesn't exist]
+*/
 void* ILibHashtable_Get(ILibHashtable table, void *Key1, char* Key2, int Key2Len)
 {
 	ILibHashtable_Node *node = ILibHashtable_GetEx(table, Key1, Key2, Key2Len, ILibHashtable_Flags_NONE);
 	return(node != NULL ? node->Data : NULL);
 }
+//! Remove an entry from the hashtable
+
+//! Both Key1 and Key can be NULL, but not at the same time
+/*!
+	\param table Hashtable to remove the entry from
+	\param Key1 Address Key [Can be NULL]
+	\param Key2 String Key [Can be NULL]
+	\param Key2Len String Key Length
+	\return Element Value that was removed [NULL if it didn't exist]
+*/
 void* ILibHashtable_Remove(ILibHashtable table, void *Key1, char* Key2, int Key2Len)
 {
 	ILibHashtable_Node *node = ILibHashtable_GetEx(table, Key1, Key2, Key2Len, ILibHashtable_Flags_REMOVE);
@@ -5775,30 +6784,54 @@ void* ILibHashtable_Remove(ILibHashtable table, void *Key1, char* Key2, int Key2
 	}
 	return(retVal);
 }
+//! Use the specified hashtable as a synchronization lock, and acquire it
+/*!
+	\param table Hashtable to use as a synchronization lock
+*/
 void ILibHashtable_Lock(ILibHashtable table)
 {
 	ILibSparseArray_Lock(((ILibHashtable_Root*)table)->table);
 }
+//! Use the specified hashtable as a synchronization lock, and release it
+/*!
+	\param table Hashtable to use as a synchronization lock
+*/
 void ILibHashtable_UnLock(ILibHashtable table)
 {
 	ILibSparseArray_UnLock(((ILibHashtable_Root*)table)->table);
 }
 
 
-ILibSparseArray ILibSparseArray_Create(int numberOfBuckets, ILibSparseArray_Bucketizer bucketizer)
+//! Allocates a new SparseArray using the specified number of buckets and the given bucketizer method, which maps indexes to buckets.
+/*!
+	\param numberOfBuckets Number of buckets to initialize
+	\param bucketizer Event handler to be triggered whenever an index value needs to be hashed into a bucket value
+	\param userMemorySize Size of extra memory to allocate for user state
+	\return ILibSparseArray object
+*/
+ILibSparseArray ILibSparseArray_CreateWithUserMemory(int numberOfBuckets, ILibSparseArray_Bucketizer bucketizer, int userMemorySize)
 {
-	ILibSparseArray_Root *retVal = (ILibSparseArray_Root*)malloc(sizeof(ILibSparseArray_Root));
+	ILibSparseArray_Root *retVal = (ILibSparseArray_Root*)ILibMemory_Allocate(sizeof(ILibSparseArray_Root), userMemorySize, NULL, NULL);
+
 	sem_init(&(retVal->LOCK), 0, 1);
 	retVal->bucketSize = numberOfBuckets;
 	retVal->bucketizer = bucketizer;
 	retVal->bucket = (ILibSparseArray_Node*)malloc(numberOfBuckets * sizeof(ILibSparseArray_Node));
+	retVal->userMemorySize = userMemorySize;
 	memset(retVal->bucket, 0, numberOfBuckets * sizeof(ILibSparseArray_Node));
 
 	return(retVal);
 }
+
+//! Allocates a new SparseArray using the same parameters as an existing SparseArray
+/*!
+	\param source The ILibSparseArray to duplicate parameters from
+	\return New ILibSparseArray object
+*/
 ILibSparseArray ILibSparseArray_CreateEx(ILibSparseArray source)
 {
-	return(ILibSparseArray_Create(((ILibSparseArray_Root*)source)->bucketSize, ((ILibSparseArray_Root*)source)->bucketizer));
+	ILibSparseArray retVal = ILibSparseArray_CreateWithUserMemory(((ILibSparseArray_Root*)source)->bucketSize, ((ILibSparseArray_Root*)source)->bucketizer, ((ILibSparseArray_Root*)source)->userMemorySize);
+	return(retVal);
 }
 
 
@@ -5813,6 +6846,13 @@ int ILibSparseArray_Comparer(void *obj1, void *obj2)
 		return(((ILibSparseArray_Node*)obj1)->index < ((ILibSparseArray_Node*)obj2)->index ? -1 : 1);
 	}
 }
+//! Populates the "index" in the SparseArray. If that index is already defined, the new value is saved, and the old value is returned. 
+/*!
+	\param sarray Sparse Array Object
+	\param index Index to initialize/set
+	\param data Value to set to the index
+	\return Old value of index if it was initialized, NULL otherwise
+*/
 void* ILibSparseArray_Add(ILibSparseArray sarray, int index, void *data)
 {
 	void* retVal = NULL;
@@ -5908,24 +6948,46 @@ void* ILibSparseArray_GetEx(ILibSparseArray sarray, int index, int remove)
 	}
 	return(retVal);
 }
+//! Fetches the value at the index. NULL if the index is not defined
+/*!
+	\param sarray Sparse Array Object
+	\param index Index to fetch
+	\return Value at specified index, NULL if it was not defined
+*/
 void* ILibSparseArray_Get(ILibSparseArray sarray, int index)
 {
 	return(ILibSparseArray_GetEx(sarray, index, 0));
 }
-
+//! Removes an index from the SparseArray (if it exists), and returns the associated value if it does exist.
+/*!
+	\param sarray Sparse Array Object
+	\param index Index value to remove
+	\return Value defined at Index, NULL if it was not defined
+*/
 void* ILibSparseArray_Remove(ILibSparseArray sarray, int index)
 {
 	return(ILibSparseArray_GetEx(sarray, index, 1));
 }
-
+//! Clones the contents of the given Sparse Array into a new Sparse Array
+/*!
+	\param sarray The Sparse Array to clone
+	\return Cloned Sparse Array
+*/
 ILibSparseArray ILibSparseArray_Move(ILibSparseArray sarray)
 {
 	ILibSparseArray_Root *root = (ILibSparseArray_Root*)sarray;
 	ILibSparseArray_Root *retVal = (ILibSparseArray_Root*)ILibSparseArray_CreateEx(sarray);
-	memcpy(retVal->bucket, root->bucket, root->bucketSize * sizeof(ILibSparseArray_Node));
+	memcpy_s(retVal->bucket, root->bucketSize * sizeof(ILibSparseArray_Node), root->bucket, root->bucketSize * sizeof(ILibSparseArray_Node));
 	return(retVal);
 }
-void ILibSparseArray_ClearEx(ILibSparseArray sarray, ILibSparseArray_OnValue onClear, void *user)
+//! Clears the SparseArray, and dispatches an event for each defined index
+/*!
+	\param sarray Sparse Array Object
+	\param onClear Event to dispatch for defined indexes
+	\param user Custom user state data
+	\param nonZeroWillDelete If this is zero, will just enumerato, otherwise will delete
+*/
+void ILibSparseArray_ClearEx2(ILibSparseArray sarray, ILibSparseArray_OnValue onClear, void *user, int nonZeroWillDelete)
 {
 	ILibSparseArray_Root *root = (ILibSparseArray_Root*)sarray;
 	int i;
@@ -5942,11 +7004,10 @@ void ILibSparseArray_ClearEx(ILibSparseArray sarray, ILibSparseArray_OnValue onC
 				{
 					ILibSparseArray_Node *sn = (ILibSparseArray_Node*)ILibLinkedList_GetDataFromNode(node);
 					if(onClear!=NULL) { onClear(sarray, sn->index, sn->ptr, user);}
-					
-					free(sn);
+					if (nonZeroWillDelete != 0) { free(sn); }
 					node = ILibLinkedList_GetNextNode(node);
 				}
-				ILibLinkedList_Destroy(root->bucket[i].ptr);
+				if (nonZeroWillDelete != 0) { ILibLinkedList_Destroy(root->bucket[i].ptr); }
 			}
 			else
 			{
@@ -5956,11 +7017,20 @@ void ILibSparseArray_ClearEx(ILibSparseArray sarray, ILibSparseArray_OnValue onC
 					onClear(sarray, root->bucket[i].index, root->bucket[i].ptr, user);
 				}
 			}
-			root->bucket[i].index = 0;
-			root->bucket[i].ptr = NULL;
+			if (nonZeroWillDelete != 0)
+			{
+				root->bucket[i].index = 0;
+				root->bucket[i].ptr = NULL;
+			}
 		}
 	}
 }
+//! Frees the resources used by an ILibSparseArray, and dispatches an event for each defined index
+/*!
+	\param sarray Sparse Array Object
+	\param onDestroy Event handler to dispatch for each defined entry
+	\param user Custom user state data
+*/
 void ILibSparseArray_DestroyEx(ILibSparseArray sarray, ILibSparseArray_OnValue onDestroy, void *user)
 {
 	ILibSparseArray_ClearEx(sarray, onDestroy, user);
@@ -5968,14 +7038,26 @@ void ILibSparseArray_DestroyEx(ILibSparseArray sarray, ILibSparseArray_OnValue o
 	free(((ILibSparseArray_Root*)sarray)->bucket);
 	free(sarray);
 }
+//! Frees the resources used by an ILibSparseArray
+/*!
+	\param sarray Sparse Array Object to free
+*/
 void ILibSparseArray_Destroy(ILibSparseArray sarray)
 {
 	ILibSparseArray_DestroyEx(sarray, NULL, NULL);
 }
+//! Use the Sparse Array as a synchronization lock, and acquire it
+/*!
+	\param sarray Sparse Array to use as a synchronization lock
+*/
 void ILibSparseArray_Lock(ILibSparseArray sarray)
 {
 	sem_wait(&(((ILibSparseArray_Root*)sarray)->LOCK));
 }
+//! Use the Sparse Array as a synchronization lock, and release it
+/*!
+	\param sarray Sparse Array to use as a synchronization lock
+*/
 void ILibSparseArray_UnLock(ILibSparseArray sarray)
 {
 	sem_post(&(((ILibSparseArray_Root*)sarray)->LOCK));
@@ -5999,11 +7081,14 @@ int ILibString_IndexOfFirstWhiteSpace(const char *inString, int inStringLength)
 \param endWithString The substring to match
 \param endWithStringLength The length of \a startsWithString
 \param caseSensitive 0 if the matching is case-insensitive
-\returns Non-zero if the string starts with the substring
+\return Non-zero if the string starts with the substring
 */
 int ILibString_EndsWithEx(const char *inString, int inStringLength, const char *endWithString, int endWithStringLength, int caseSensitive)
 {
 	int RetVal = 0;
+	if (inStringLength < 0) { inStringLength = (int)strnlen_s(inString, sizeof(ILibScratchPad)); }
+	if (endWithStringLength < 0) { endWithStringLength = (int)strnlen_s(endWithString, sizeof(ILibScratchPad)); }
+
 	if (inStringLength>=endWithStringLength)
 	{
 		if (caseSensitive!=0 && memcmp(inString+inStringLength-endWithStringLength,endWithString,endWithStringLength)==0) RetVal = 1;
@@ -6017,7 +7102,7 @@ int ILibString_EndsWithEx(const char *inString, int inStringLength, const char *
 \param inStringLength The length of \a inString
 \param endWithString The substring to match
 \param endWithStringLength The length of \a startsWithString
-\returns Non-zero if the string starts with the substring
+\return Non-zero if the string starts with the substring
 */
 int ILibString_EndsWith(const char *inString, int inStringLength, const char *endWithString, int endWithStringLength)
 {
@@ -6030,7 +7115,7 @@ int ILibString_EndsWith(const char *inString, int inStringLength, const char *en
 \param startsWithString The substring to match
 \param startsWithStringLength The length of \a startsWithString
 \param caseSensitive Non-zero if match is to be case sensitive
-\returns Non-zero if the string starts with the substring
+\return Non-zero if the string starts with the substring
 */
 int ILibString_StartsWithEx(const char *inString, int inStringLength, const char *startsWithString, int startsWithStringLength, int caseSensitive)
 {
@@ -6048,7 +7133,7 @@ int ILibString_StartsWithEx(const char *inString, int inStringLength, const char
 \param inStringLength The length of \a inString
 \param startsWithString The substring to match
 \param startsWithStringLength The length of \a startsWithString
-\returns Non-zero if the string starts with the substring
+\return Non-zero if the string starts with the substring
 */
 int ILibString_StartsWith(const char *inString, int inStringLength, const char *startsWithString, int startsWithStringLength)
 {
@@ -6061,7 +7146,7 @@ int ILibString_StartsWith(const char *inString, int inStringLength, const char *
 \param indexOf The substring to search for
 \param indexOfLength The length of \a lastIndexOf
 \param caseSensitive Non-zero if the match is case sensitive
-\returns Position index of first occurance. -1 if the substring is not found
+\return Position index of first occurance. -1 if the substring is not found
 */
 int ILibString_IndexOfEx(const char *inString, int inStringLength, const char *indexOf, int indexOfLength,  int caseSensitive)
 {
@@ -6090,7 +7175,7 @@ int ILibString_IndexOfEx(const char *inString, int inStringLength, const char *i
 \param inStringLength The length of \a inString
 \param indexOf The substring to search for
 \param indexOfLength The length of \a lastIndexOf
-\returns Position index of first occurance. -1 if the substring is not found
+\return Position index of first occurance. -1 if the substring is not found
 */
 int ILibString_IndexOf(const char *inString, int inStringLength, const char *indexOf, int indexOfLength)
 {
@@ -6103,12 +7188,12 @@ int ILibString_IndexOf(const char *inString, int inStringLength, const char *ind
 \param lastIndexOf The substring to search for
 \param lastIndexOfLength The length of \a lastIndexOf
 \param caseSensitive 0 for case insensitive matching, non-zero for case-sensitive matching
-\returns Position index of last occurance. -1 if the substring is not found
+\return Position index of last occurance. -1 if the substring is not found
 */
 int ILibString_LastIndexOfEx(const char *inString, int inStringLength, const char *lastIndexOf, int lastIndexOfLength, int caseSensitive)
 {
 	int RetVal = -1;
-	int index = inStringLength-lastIndexOfLength;
+	int index = (inStringLength < 0 ? (int)strnlen_s(inString, sizeof(ILibScratchPad)) : inStringLength) - (lastIndexOfLength < 0 ? (int)strnlen_s(lastIndexOf, sizeof(ILibScratchPad)) : lastIndexOfLength);
 
 	while (index >= 0)
 	{
@@ -6132,7 +7217,7 @@ int ILibString_LastIndexOfEx(const char *inString, int inStringLength, const cha
 \param inStringLength The length of \a inString
 \param lastIndexOf The substring to search for
 \param lastIndexOfLength The length of \a lastIndexOf
-\returns Position index of last occurance. -1 if the substring is not found
+\return Position index of last occurance. -1 if the substring is not found
 */
 int ILibString_LastIndexOf(const char *inString, int inStringLength, const char *lastIndexOf, int lastIndexOfLength)
 {
@@ -6148,7 +7233,7 @@ int ILibString_LastIndexOf(const char *inString, int inStringLength, const char 
 \param replaceThisLength The length of \a replaceThis
 \param replaceWithThis The substring to substitute for \a replaceThis
 \param replaceWithThisLength The length of \a replaceWithThis
-\returns New string with replaced values
+\return New string with replaced values
 */
 char *ILibString_Replace(const char *inString, int inStringLength, const char *replaceThis, int replaceThisLength, const char *replaceWithThis, int replaceWithThisLength)
 {
@@ -6156,24 +7241,26 @@ char *ILibString_Replace(const char *inString, int inStringLength, const char *r
 	int RetValLength;
 	struct parser_result *pr;
 	struct parser_result_field *prf;
+	int mallocSize;
 
 	pr = ILibParseString((char*)inString, 0, inStringLength,(char*)replaceThis,replaceThisLength);
 	RetValLength = (pr->NumResults-1) * replaceWithThisLength; // string that will be inserted
 	RetValLength += (inStringLength - ((pr->NumResults-1) * replaceThisLength)); // Add the length of the rest of the string
+	mallocSize = RetValLength + 1;
 
-	if ((RetVal = (char*)malloc(RetValLength+1)) == NULL) ILIBCRITICALEXIT(254);
+	if ((RetVal = (char*)malloc(mallocSize)) == NULL) ILIBCRITICALEXIT(254);
 	RetVal[RetValLength]=0;
 
 	RetValLength = 0;
 	prf = pr->FirstResult;
 	while (prf != NULL)
 	{
-		memcpy(RetVal+RetValLength, prf->data, prf->datalength);
+		memcpy_s(RetVal + RetValLength, mallocSize - RetValLength, prf->data, prf->datalength);
 		RetValLength += prf->datalength;
 
 		if (prf->NextResult!=NULL)
 		{
-			memcpy(RetVal + RetValLength, replaceWithThis, replaceWithThisLength);
+			memcpy_s(RetVal + RetValLength, mallocSize - RetValLength, (char*)replaceWithThis, replaceWithThisLength);
 			RetValLength += replaceWithThisLength;
 		}
 		prf = prf->NextResult;
@@ -6181,21 +7268,97 @@ char *ILibString_Replace(const char *inString, int inStringLength, const char *r
 	ILibDestructParserResults(pr);
 	return(RetVal);
 }
+char* ILibString_Cat_s(char *destination, size_t destinationSize, char *source)
+{
+	size_t sourceLen = strnlen_s(source, destinationSize);
+	int i;
+	int x = -1;
+	for (i = 0; i < (int)destinationSize - 1; ++i)
+	{
+		if (destination[i] == 0) { x = i; break; }
+	}
+	if (x < 0 || ((x + sourceLen + 1 )> destinationSize)) { ILIBCRITICALEXIT(254); }
+	memcpy_s(destination + x, destinationSize - x, source, sourceLen);
+	destination[x + sourceLen] = 0;
+	return(destination);
+}
+#ifndef WIN32
+#ifdef ILib_need_sprintf_s
+int sprintf_s(void *dest, size_t destSize, char *format, ...)
+{
+	int len = 0;
+	va_list argptr;
+
+	va_start(argptr, format);
+	len += vsnprintf(dest + len, destSize - len, format, argptr);
+	va_end(argptr);
+
+	return(len < destSize ? len : -1);
+}
+#endif
+int ILibMemory_Copy_s(void *destination, size_t destinationSize, void *source, size_t sourceLength)
+{
+	if (destinationSize >= sourceLength)
+	{
+		memcpy(destination, source, sourceLength);
+	}
+	else
+	{
+		ILIBCRITICALEXIT(254);
+	}
+	return(0);
+}
+int ILibMemory_Move_s(void *destination, size_t destinationSize, void *source, size_t sourceLength)
+{
+	if (destinationSize >= sourceLength)
+	{
+		memmove(destination, source, sourceLength);
+	}
+	else
+	{
+		ILIBCRITICALEXIT(254);
+	}
+	return(0);
+}
+#endif
+int ILibString_n_Copy_s(char *destination, size_t destinationSize, char *source, size_t maxCount)
+{
+	size_t count = strnlen_s(source, maxCount == (size_t)-1 ? (destinationSize-1) : maxCount);
+	if ((count + 1) > destinationSize) 
+	{
+		ILIBCRITICALEXIT(254); 
+	}
+	memcpy_s(destination, destinationSize, source, count);
+	destination[count] = 0;
+	return(0);
+}
+int ILibString_Copy_s(char *destination, size_t destinationSize, char *source)
+{
+	size_t sourceLen = strnlen_s(source, destinationSize);
+
+	if ((sourceLen + 1) > destinationSize) { ILIBCRITICALEXIT(254); }
+	memcpy_s(destination, destinationSize, source, sourceLen);
+	destination[sourceLen] = 0;
+	return(0);
+}
+
 char* ILibString_Cat(const char *inString1, int inString1Len, const char *inString2, int inString2Len)
 {
 	char *RetVal;
+	if (inString1Len < 0) { inString1Len = (int)strnlen_s(inString1, sizeof(ILibScratchPad)); }
+	if (inString2Len < 0) { inString2Len = (int)strnlen_s(inString2, sizeof(ILibScratchPad)); }
 	if ((RetVal = (char*)malloc(inString1Len + inString2Len+1)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(RetVal, inString1, inString1Len);
-	memcpy(RetVal + inString1Len, inString2, inString2Len);
+	memcpy_s(RetVal, inString1Len + inString2Len + 1, (char*)inString1, inString1Len);
+	memcpy_s(RetVal + inString1Len, inString2Len + 1, (char*)inString2, inString2Len);
 	RetVal[inString1Len + inString2Len]=0;
 	return(RetVal);
 }
 char* ILibString_Copy(const char *inString, int length)
 {
 	char *RetVal;
-	if (length<0) length = (int)strlen(inString);
+	if (length<0) length = (int)strnlen_s(inString, sizeof(ILibScratchPad));
 	if ((RetVal = (char*)malloc(length + 1)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(RetVal, inString, length);
+	memcpy_s(RetVal, length + 1, (char*)inString, length);
 	RetVal[length] = 0;
 	return(RetVal);
 }
@@ -6205,7 +7368,7 @@ char* ILibString_Copy(const char *inString, int length)
 \b Note: \a Returned string must be freed
 \param inString Pointer to char* to convert to upper case
 \param length The length of \a inString
-\returns Converted string
+\return Converted string
 */
 char *ILibString_ToUpper(const char *inString, int length)
 {
@@ -6221,7 +7384,7 @@ char *ILibString_ToUpper(const char *inString, int length)
 \b Note: \a Returned string must be freed
 \param inString Pointer to char* to convert to lower case
 \param length The length of \a inString
-\returns Converted string
+\return Converted string
 */
 char *ILibString_ToLower(const char *inString, int length)
 {
@@ -6237,7 +7400,7 @@ char *ILibString_ToLower(const char *inString, int length)
 \b Note: \a Target must be freed
 \param Target Pointer to char* that will contain the data
 \param FileName Filename of the file to read
-\returns length of the data read
+\return length of the data read
 */
 int ILibReadFileFromDiskEx(char **Target, char *FileName)
 {
@@ -6269,7 +7432,7 @@ int ILibReadFileFromDiskEx(char **Target, char *FileName)
 \par
 \b Note: Data must be null terminated
 \param FileName Filename of the file to read
-\returns data read
+\return data read
 */
 char *ILibReadFileFromDisk(char *FileName)
 {
@@ -6287,7 +7450,7 @@ char *ILibReadFileFromDisk(char *FileName)
 */
 void ILibWriteStringToDisk(char *FileName, char *data)
 {
-	ILibWriteStringToDiskEx(FileName, data, (int)strlen(data));
+	ILibWriteStringToDiskEx(FileName, data, (int)strnlen_s(data, 65535));
 }
 void ILibWriteStringToDiskEx(char *FileName, char *data, int dataLen)
 {
@@ -6344,7 +7507,13 @@ void ILibGetDiskFreeSpace(void *i64FreeBytesToCaller, void *i64TotalBytes)
 	*((uint64_t *)i64TotalBytes)= (uint64_t)stfs.f_blocks * stfs.f_bsize;
 #endif
 }
-
+long ILibGetTimeStamp()
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return((tv.tv_sec * 1000) + (tv.tv_usec / 1000));
+}
+int ILibIsLittleEndian() { int v = 1; return (((char*)&v)[0] == 1 ? 1 : 0); }
 int ILibGetCurrentTimezoneOffset_Minutes()
 {
 #if defined(_WIN32)
@@ -6418,6 +7587,25 @@ int ILibIsDaylightSavingsTime()
 	return daylight;
 #endif
 }
+
+
+int ILibGetLocalTime(char *dest, int destLen)
+{
+	int retVal;
+	struct timeval  tv;
+#ifdef WIN32
+	struct tm t;
+#endif
+	gettimeofday(&tv, NULL);
+#ifdef WIN32
+	localtime_s(&t, (time_t*)&(tv.tv_sec));
+	retVal = (int)strftime(dest, destLen, "%Y-%m-%d %I:%M:%S %p", &t);
+#else
+	retVal = (int)strftime(dest, destLen, "%F %r", localtime((time_t*)(&(tv.tv_sec))));
+#endif
+	return(retVal);
+}
+
 #if defined(WIN32) || defined(_WIN32_WCE)
 void ILibGetTimeOfDay(struct timeval *tp)
 {
@@ -6496,7 +7684,7 @@ long long ILibGetUptime()
     if (pILibGetUptimeGetTickCount64 != NULL) return pILibGetUptimeGetTickCount64(); 
 
 	// Windows XP with rollover prevention
-	r = (long long)GetTickCount();
+	r = (long long)GetTickCount();  // Static Analyser reports this could roll over, but that's why this block is doing rollover prevention
 	if (r < ILibGetUptimeUpperEmulation1) ILibGetUptimeUpperEmulation2 += ((long long)1) << 32;
 	ILibGetUptimeUpperEmulation1 = r;
 	r += ILibGetUptimeUpperEmulation2;
@@ -6766,7 +7954,7 @@ char* ILibTime_Serialize(time_t timeVal)
 	if ((RetVal = (char*)malloc(20)) == NULL) ILIBCRITICALEXIT(254);
 	T = gmtime(&timeVal);
 	if (T == NULL) ILIBCRITICALEXIT(253);
-	snprintf(RetVal, 20, "%04d-%02d-%02dT%02d:%02d:%02d",
+	sprintf_s(RetVal, 20, "%04d-%02d-%02dT%02d:%02d:%02d",
 		T->tm_year + 1900,
 		T->tm_mon + 1,
 		T->tm_mday,
@@ -6776,7 +7964,7 @@ char* ILibTime_Serialize(time_t timeVal)
 	char *RetVal;
 	if ((RetVal = (char*)malloc(20)) == NULL) ILIBCRITICALEXIT(254);
 	if (localtime_s(&T, &timeVal) != 0) ILIBCRITICALEXIT(253);
-	snprintf(RetVal, 20, "%04d-%02d-%02dT%02d:%02d:%02d",
+	sprintf_s(RetVal, 20, "%04d-%02d-%02dT%02d:%02d:%02d",
 		T.tm_year + 1900,
 		T.tm_mon + 1,
 		T.tm_mday,
@@ -6787,7 +7975,7 @@ char* ILibTime_Serialize(time_t timeVal)
 	if ((RetVal = (char*)malloc(20)) == NULL) ILIBCRITICALEXIT(254);
 	T = localtime(&timeVal);
 	if (T == NULL) ILIBCRITICALEXIT(253);
-	snprintf(RetVal, 20, "%04d-%02d-%02dT%02d:%02d:%02d",
+	sprintf_s(RetVal, 20, "%04d-%02d-%02dT%02d:%02d:%02d",
 		T->tm_year + 1900,
 		T->tm_mon + 1,
 		T->tm_mday,
@@ -6807,7 +7995,7 @@ int ILibTime_ValidateTimePortion(char *timeString)
 	char *temp;
 	struct parser_result *pr;
 	int RetVal = 0;
-	int length = (int)strlen(timeString);
+	int length = (int)strnlen_s(timeString, 20);
 	if (length==8 || length==9 || length==12 || length==13 || length==14 || length==18)
 	{
 		pr = ILibParseString(timeString,0,length,":",1);
@@ -6830,7 +8018,7 @@ int ILibTime_ValidateTimePortion(char *timeString)
 						//
 						free(temp);
 						temp = ILibString_Copy(pr->FirstResult->NextResult->NextResult->data,length-6);
-						switch((int)strlen(temp))
+						switch((int)strnlen_s(temp, length-6))
 						{
 						case 2: // ss
 							if (!(atoi(temp)>=0 && atoi(temp)<60))
@@ -6948,13 +8136,13 @@ char* ILibTime_ValidateDatePortion(char *timeString)
 	struct parser_result *pr;
 	char *startTime;
 	int errCode = 1;
-	int temp = (int)strlen(timeString);
+	int timeStringLen = (int)strnlen_s(timeString, 255);
 	char *RetVal = NULL;
 	int t;
 
-	if (temp==10)
+	if (timeStringLen == 10)
 	{
-		pr = ILibParseString(timeString,0,temp,"-",1);
+		pr = ILibParseString(timeString,0, timeStringLen,"-",1);
 		if (pr->NumResults==3)
 		{
 			// This means there it is in x-y-z format
@@ -6974,9 +8162,9 @@ char* ILibTime_ValidateDatePortion(char *timeString)
 						{
 							// Everything in correct format
 							errCode = 0;
-							t = (int)strlen(timeString)+10;
+							t = timeStringLen + 10;
 							if ((RetVal = (char*)malloc(t)) == NULL) ILIBCRITICALEXIT(254);
-							snprintf(RetVal, t, "%sT00:00:00", timeString);
+							sprintf_s(RetVal, t, "%sT00:00:00", timeString);
 						}
 					}
 					free(startTime);
@@ -7001,6 +8189,7 @@ int ILibTime_ParseEx(char *timeString, time_t *val)
 	struct parser_result *pr,*pr2;
 	struct tm t;
 	char *startTime;
+	int timeStringLen = (int)strnlen_s(timeString, 255);
 	int i;
 
 	char *year=NULL,*month=NULL,*day=NULL;
@@ -7008,7 +8197,7 @@ int ILibTime_ParseEx(char *timeString, time_t *val)
 
 	char *tempString;
 
-	if (ILibString_IndexOf(timeString,(int)strlen(timeString),"T",1)==-1)
+	if (ILibString_IndexOf(timeString, timeStringLen,"T",1)==-1)
 	{
 		//
 		// Doesn't have time Component, so format must be: yyyy-mm-dd
@@ -7027,7 +8216,7 @@ int ILibTime_ParseEx(char *timeString, time_t *val)
 		//						yyyy-mm-ddThh:mm:ssZ
 		//						yyyy-mm-ddThh:mm:ss
 		//
-		i = ILibString_IndexOf(timeString,(int)strlen(timeString),"T",1);
+		i = ILibString_IndexOf(timeString, timeStringLen,"T",1);
 		tempString = ILibString_Copy(timeString,i);
 		startTime = ILibTime_ValidateDatePortion(tempString);
 		free(tempString);
@@ -7051,7 +8240,7 @@ int ILibTime_ParseEx(char *timeString, time_t *val)
 		}
 		if (errCode==0)
 		{
-			startTime = ILibString_Copy(timeString,(int)strlen(timeString));
+			startTime = ILibString_Copy(timeString, timeStringLen);
 		}
 	}
 
@@ -7067,7 +8256,7 @@ int ILibTime_ParseEx(char *timeString, time_t *val)
 	memset(&t, 0, sizeof(struct tm));
 	t.tm_isdst = -1;
 
-	pr = ILibParseString(startTime, 0, (int)strlen(startTime), "T", 1);
+	pr = ILibParseString(startTime, 0, (int)strnlen_s(startTime, timeStringLen), "T", 1);
 	if (pr->NumResults == 2)
 	{
 		pr2 = ILibParseString(pr->FirstResult->data, 0, pr->FirstResult->datalength,"-", 1);
@@ -7077,7 +8266,7 @@ int ILibTime_ParseEx(char *timeString, time_t *val)
 			year = pr2->FirstResult->data;
 			year[pr2->FirstResult->datalength]=0;
 
-			month = pr2->FirstResult->NextResult->data; // Klockwork reports this could be NULL, but that's not possible becuase NumREsults is 3
+			month = pr2->FirstResult->NextResult->data; // Klockwork reports this could be NULL, but that's not possible becuase NumResults is 3
 			month[pr2->FirstResult->NextResult->datalength]=0;
 
 			day = pr2->LastResult->data;
@@ -7136,13 +8325,17 @@ time_t ILibTime_Parse(char *timeString)
 }
 
 
-// Copy the IPv4 address into an IPv6 mapped address
+//! Copy an IPv4 address into an IPv6 mapped address
+/*!
+	\param[in] addr4 IPv4 Address
+	\param[in,out] addr6 IPv6 Address
+*/
 void ILibMakeIPv6Addr(struct sockaddr *addr4, struct sockaddr_in6 *addr6)
 {
 	if (addr4->sa_family == AF_INET6 || !g_ILibDetectIPv6Support)
 	{
 		// Direct copy
-		memcpy(addr6, addr4, sizeof(struct sockaddr_in6));
+		memcpy_s(addr6, sizeof(struct sockaddr_in6), addr4, sizeof(struct sockaddr_in6));
 	}
 	else
 	{
@@ -7159,7 +8352,12 @@ char IPv4MappedPrefix[12] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0
 char IPv4MappedLoopback[16] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0xFF,0x7F,0x00,0x00,0x01};
 char IPv4Loopback[4] = {0x7F,0x00,0x00,0x01};
 
-// Copy the IPv4 address into an IPv6 mapped address
+//! Copy the IP Address into an HTTP Header style string
+/*!
+	\param[in] addr IP Address
+	\param[out] str HTTP Header Style String
+	\return Length of str
+*/
 int ILibMakeHttpHeaderAddr(struct sockaddr *addr, char** str)
 {
 	int len;
@@ -7172,14 +8370,14 @@ int ILibMakeHttpHeaderAddr(struct sockaddr *addr, char** str)
 		{
 			// IPv4 translation conversion
 			ILibInet_ntop(AF_INET, &(((int*)&((struct sockaddr_in6*)addr)->sin6_addr)[3]), *str, 256);
-			len = (int)strlen(*str);
+			len = (int)strnlen_s(*str, 256);
 		}
 		else
 		{
 			// IPv6 conversion
 			*str[0] = '[';
 			ILibInet_ntop(AF_INET6, &((struct sockaddr_in6*)addr)->sin6_addr, *str + 1, 254);
-			len = (int)strlen(*str);
+			len = (int)strnlen_s(*str, 256);
 			(*str)[len++] = ']';
 			(*str)[len++] = 0;
 		}
@@ -7188,18 +8386,26 @@ int ILibMakeHttpHeaderAddr(struct sockaddr *addr, char** str)
 	{
 		// IPv4 conversion
 		ILibInet_ntop(AF_INET, &(((struct sockaddr_in*)addr)->sin_addr), *str, 256);
-		len = (int)strlen(*str);
+		len = (int)strnlen_s(*str, 256);
 	}
 	return len;
 }
 
-// Return true if the given address is an IPv4 mapped address in an IPv6 container
+//! Return true if the given address is an IPv4 mapped address in an IPv6 container
+/*!
+	\param addr IP Address
+	\return [ZERO = FALSE, NON-ZERO = TRUE]
+*/
 int ILibIsIPv4MappedAddr(struct sockaddr *addr)
 {
 	return (addr->sa_family == AF_INET6 && memcmp(&((struct sockaddr_in6*)addr)->sin6_addr, IPv4MappedPrefix, 12) == 0);
 }
 
-// Return 1 if the given address is IPv4 or IPv6 loopback
+//! Checks if the given address is a loopback address (IPv4 or IPv6)
+/*!
+	\param addr
+	\return [0 = NOT-LOOPBACK, 1 = LOOPBACK]
+*/
 int ILibIsLoopback(struct sockaddr *addr)
 {
 	if (addr->sa_family == AF_INET)
@@ -7252,7 +8458,7 @@ void ILibGetAddrFromBlob(char* ptr, int len, unsigned short port, struct sockadd
 		// IPv4 address
 		addr->sin6_family = AF_INET;
 		((struct sockaddr_in*)addr)->sin_port = port;
-		memcpy(&(((struct sockaddr_in*)addr)->sin_addr), ptr, 4);
+		memcpy_s(&(((struct sockaddr_in*)addr)->sin_addr), sizeof(struct in_addr), ptr, 4);
 	}
 	else if (len == 16 || len == 20)
 	{
@@ -7260,13 +8466,18 @@ void ILibGetAddrFromBlob(char* ptr, int len, unsigned short port, struct sockadd
 		addr->sin6_family = AF_INET6;
 		addr->sin6_port = port;
 		// memcpy(&(addr->sin6_addr), ptr, len); // Fast version (not klocworks friendly);
-		memcpy(&(addr->sin6_addr), ptr, 16);
-		if (len == 20) memcpy(&(addr->sin6_scope_id), ptr + 16, 4);
+		memcpy_s(&(addr->sin6_addr), sizeof(struct in6_addr), ptr, 16);
+		if (len == 20) memcpy_s(&(addr->sin6_scope_id), 4, ptr + 16, 4);
 	}
 	else ILIBCRITICALEXIT(253)
 }
 
 int g_ILibDetectIPv6Support = -1;
+
+//! Determine if IPv6 is supported
+/*!
+	\return [ZERO = NOT SUPPORTED, NON-ZERO = SUPPORTED]
+*/
 int ILibDetectIPv6Support()
 {
 	SOCKET sock;
@@ -7307,7 +8518,7 @@ char* ILibInet_ntop2(struct sockaddr* addr, char *dst, size_t dstsize)
 #if defined(WIN32)
 
 typedef PCTSTR (WSAAPI *inet_ntop_type)(__in INT Family, __in PVOID pAddr, __out PTSTR pStringBuf, __in size_t StringBufSize);
-typedef PCTSTR (WSAAPI *inet_pton_type)(__in INT Family, __in PCTSTR pszAddrString, __out PVOID pAddrBuf);
+typedef INT (WSAAPI *inet_pton_type)(__in INT Family, __in PCTSTR pszAddrString, __out PVOID pAddrBuf);
 inet_ntop_type inet_ntop_ptr = NULL;
 inet_pton_type inet_pton_ptr = NULL;
 int inet_pton_setup_done = 0;
@@ -7355,9 +8566,15 @@ int ILibInet_pton(int af, const char *src, char *dst)
 	{
 		// Use the alternate IPv4 only version
 		char dst2[8];
+		char dst3[4];
+		int i;
+
 		if (af != AF_INET) return 0;
-		sscanf_s(src, "%hhu.%hhu.%hhu.%hhu", (unsigned char*)(dst2), (unsigned char*)(dst2 + 1), (unsigned char*)(dst2 + 2), (unsigned char*)(dst2 + 3));
-		((int*)dst)[0] = ((int*)dst2)[0];
+		sscanf_s(src, "%hu.%hu.%hu.%hu", (unsigned short*)(dst2), (unsigned short*)(dst2 + 2), (unsigned short*)(dst2 + 4), (unsigned short*)(dst2 + 6));
+		
+		for (i = 0; i < 4; ++i) { ((unsigned char*)dst3)[i] = (unsigned char)((unsigned short*)dst2)[i]; }
+
+		((int*)dst)[0] = ((int*)dst3)[0];
 		return 1;
 	}
 }
@@ -7366,7 +8583,7 @@ int ILibInet_pton(int af, const char *src, char *dst)
 
 char* ILibInet_ntop(int af, const void *src, char *dst, size_t dstsize)
 {
-	return (char*)inet_ntop(af, src, dst, dstsize);
+	return (char*)inet_ntop(af, src, dst, (socklen_t)dstsize);
 }
 
 int ILibInet_pton(int af, const char *src, void *dst)
@@ -7423,12 +8640,23 @@ int ILibResolve(char* hostname, char* service, struct sockaddr_in6* addr6)
 	r = getaddrinfo(hostname, service, &hints, &result);
 	if (r != 0) { if (result != NULL) { freeaddrinfo(result); } return r; }
 	if (result == NULL) return -1;
-	if (result->ai_family == AF_INET) { memcpy(addr6, result->ai_addr, sizeof(struct sockaddr_in)); }
-	if (result->ai_family == AF_INET6) { memcpy(addr6, result->ai_addr, sizeof(struct sockaddr_in6)); }
+	if (result->ai_family == AF_INET) { memcpy_s(addr6, sizeof(struct sockaddr_in6), result->ai_addr, sizeof(struct sockaddr_in)); }
+	if (result->ai_family == AF_INET6) { memcpy_s(addr6, sizeof(struct sockaddr_in6), result->ai_addr, sizeof(struct sockaddr_in6)); }
 	freeaddrinfo(result);
 	return 0;
 }
-
+int ILibResolveEx(char* hostname, unsigned short port, struct sockaddr_in6* addr6)
+{
+	char service[16];
+	if (sprintf_s(service, sizeof(service), "%u", port) > 0)
+	{
+		return(ILibResolve(hostname, service, addr6));
+	}
+	else
+	{
+		return(1);
+	}
+}
 unsigned char ILib6to4Header[12]= { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF };
 void ILib6to4(struct sockaddr* addr)
 {
@@ -7447,13 +8675,36 @@ void ILib6to4(struct sockaddr* addr)
 }
 
 // Log a critical error to file
-void ILibCriticalLog (const char* msg, const char* file, int line, int user1, int user2)
+char* ILibCriticalLog (const char* msg, const char* file, int line, int user1, int user2)
 {
-	int len = snprintf(ILibScratchPad, sizeof(ILibScratchPad), "\r\n%s:%d (%d,%d) %s", file, line, user1, user2, msg);
+	char timeStamp[32];
+	int len = ILibGetLocalTime((char*)timeStamp, (int)sizeof(timeStamp));
+	if (file != NULL)
+	{
+		len = sprintf_s(ILibScratchPad, sizeof(ILibScratchPad), "\r\n[%s] %s:%d (%d,%d) %s", timeStamp, file, line, user1, user2, msg);
+	}
+	else
+	{
+		len = sprintf_s(ILibScratchPad, sizeof(ILibScratchPad), "\r\n[%s] %s", timeStamp, msg);
+	}
 	if (len > 0 && len < (int)sizeof(ILibScratchPad) && ILibCriticalLogFilename != NULL) ILibAppendStringToDiskEx(ILibCriticalLogFilename, ILibScratchPad, len);
+	if (file != NULL)
+	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(gILibChain), ILibRemoteLogging_Modules_Microstack_Generic, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s:%d (%d,%d) %s", file, line, user1, user2, msg);
+	}
+	else
+	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(gILibChain), ILibRemoteLogging_Modules_Microstack_Generic, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s", msg);
+	}
+	return(ILibScratchPad);
 }
-
-void* ILibSpawnNormalThread(voidfp method, void* arg)
+//! Platform Agnostic method to Spawn a detached worker thread with normal priority/affinity
+/*!
+	\param method Handler to dispatch on the new thread
+	\param arg Optional Parameter to dispatch [Can be NULL]
+	\return Thread Handle
+*/
+void* ILibSpawnNormalThread(voidfp1 method, void* arg)
 {
 #if defined (_POSIX) || defined (__APPLE__)
 	intptr_t result;
@@ -7473,7 +8724,7 @@ void* ILibSpawnNormalThread(voidfp method, void* arg)
 	return CreateThread(NULL, 0, method, arg, 0, NULL );
 #endif
 }
-
+//! Platform Agnostic to end the currently executing thread
 void ILibEndThisThread()
 {
 #if defined (_POSIX) || defined (__APPLE__)
@@ -7488,10 +8739,26 @@ void ILibEndThisThread()
 	ExitThread(0);
 #endif
 }
-
+#ifdef WIN32
+void ILibHandle_DisableInherit(HANDLE * h)
+{
+	HANDLE tmpRead = *h;
+	if (tmpRead != NULL)
+	{
+		DuplicateHandle(GetCurrentProcess(), tmpRead, GetCurrentProcess(), h, 0, FALSE, DUPLICATE_SAME_ACCESS);
+		CloseHandle(tmpRead);
+	}
+}
+#endif
 // Convert a block of data to HEX
 // The "out" must have (len*2)+1 free space.
 char ILibHexTable[16] = { '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f' };
+//! Convert a block of data to HEX
+/*!
+	\param data Block of data to convert
+	\param len Data Length
+	\param[in,out] out Hex Result. Length must be at least (len*2) + 1
+*/
 char* ILibToHex(char* data, int len, char* out)
 {
 	int i;
@@ -7505,15 +8772,234 @@ char* ILibToHex(char* data, int len, char* out)
 	*p = 0;
 	return out;
 }
-
+//! Determine if the current thread is the Microstack thread
+/*!
+	\param chain Microstack Thread to compare
+	\return 0 = NO, 1 = YES
+*/
 int ILibIsRunningOnChainThread(void* chain)
 {
 	struct ILibBaseChain* c = (struct ILibBaseChain*)chain;
 
 #if defined(WIN32)
-	return(c->ChainThreadID == GetCurrentThreadId());
+	return(c->ChainThreadID == 0 || c->ChainThreadID == GetCurrentThreadId());
 #else
 	return(pthread_equal(c->ChainThreadID, pthread_self()));
 #endif
 }
 
+#define ILibLinkedList_FileBacked_Root_Raw_HEAD_OFFSET(root) ((unsigned int)((char*)&(root->head) - (char*)root))
+#define ILibLinkedList_FileBacked_Root_Raw_TAIL_OFFSET(root) ((unsigned int)((char*)&(root->tail) - (char*)root))
+
+void ILibLinkedList_FileBacked_Close(ILibLinkedList_FileBacked_Root *root)
+{
+	FILE *source = ((FILE**)ILibMemory_GetExtraMemory(root, sizeof(ILibLinkedList_FileBacked_Root)))[0];
+	if (source != NULL) { fclose(source); }
+	free(root);
+}
+
+int ILibLinkedList_FileBacked_IsEmpty(ILibLinkedList_FileBacked_Root *root)
+{
+	return(root->head == 0 ? 1 : 0);
+}
+
+void ILibLinkedList_FileBacked_Reset(ILibLinkedList_FileBacked_Root *root)
+{
+	void **ptr = ILibMemory_GetExtraMemory(root, sizeof(ILibLinkedList_FileBacked_Root));
+	FILE* source = (FILE*)ptr[0];
+	fclose(source);
+	source = NULL;
+#ifdef WIN32
+	fopen_s(&source, (char*)ptr[1], "wb+N");
+#else
+	source = fopen((char*)ptr[1], "wb+");
+#endif
+	ptr[0] = source;
+	root->head = root->tail = 0;
+	ILibLinkedList_FileBacked_SaveRoot(root);
+}
+int ILibLinkedList_FileBacked_ReloadRoot(ILibLinkedList_FileBacked_Root* root)
+{
+	void **ptr = ILibMemory_GetExtraMemory(root, sizeof(ILibLinkedList_FileBacked_Root));
+	FILE* source = (FILE*)ptr[0];
+
+	fseek(source, 0, SEEK_SET);
+	return(fread((void*)root, sizeof(char), sizeof(ILibLinkedList_FileBacked_Root), source) > 0 ? 0 : 1);
+}
+void ILibLinkedList_FileBacked_SaveRoot(ILibLinkedList_FileBacked_Root* root)
+{
+	void **ptr = ILibMemory_GetExtraMemory(root, sizeof(ILibLinkedList_FileBacked_Root));
+	FILE* source = (FILE*)ptr[0];
+
+	fseek(source, 0, SEEK_SET);
+	fwrite(root, sizeof(char), sizeof(ILibLinkedList_FileBacked_Root), source);
+	fflush(source);
+}
+ILibLinkedList_FileBacked_Node* ILibLinkedList_FileBacked_ReadNext(ILibLinkedList_FileBacked_Root* root, ILibLinkedList_FileBacked_Node* current)
+{
+	void **ptr = ILibMemory_GetExtraMemory(root, sizeof(ILibLinkedList_FileBacked_Root));
+	FILE* source = (FILE*)ptr[0];
+	char* buffer = (char*)&ptr[2];
+	ILibLinkedList_FileBacked_Node *retVal = NULL;
+	size_t br;
+
+	if (current == NULL)
+	{
+		if (root->head > 0)
+		{
+			retVal = (ILibLinkedList_FileBacked_Node*)(buffer);
+			fseek(source, root->head, SEEK_SET);
+			br = fread(buffer, sizeof(char), 2 * sizeof(unsigned int), source);
+			if (fread(buffer + br, sizeof(char), retVal->dataLen, source) != retVal->dataLen) { retVal = NULL; }
+		}
+	}
+	else
+	{
+		if (current->next > 0)
+		{
+			retVal = (ILibLinkedList_FileBacked_Node*)(buffer);
+			fseek(source, current->next, SEEK_SET);
+			br = fread(buffer, sizeof(char), 2 * sizeof(unsigned int), source);
+			if (fread(buffer + br, sizeof(char), retVal->dataLen, source) != retVal->dataLen) { retVal = NULL; }
+		}
+	}
+
+	return(retVal);
+}
+
+void ILibLinkedList_FileBacked_CopyPath(ILibLinkedList_FileBacked_Root *root, char* path)
+{
+	char *extraMemory = (char*)ILibMemory_GetExtraMemory(root, sizeof(ILibLinkedList_FileBacked_Root));
+	int pathLen = (int)strnlen_s(path, _MAX_PATH);
+	int offset = ILibMemory_GetExtraMemorySize(extraMemory) - pathLen - 1;
+
+	memcpy_s(extraMemory + offset, pathLen, path, pathLen);
+	(extraMemory + offset)[pathLen] = 0;
+
+	((void**)extraMemory)[1] = &extraMemory[offset];
+}
+ILibLinkedList_FileBacked_Root* ILibLinkedList_FileBacked_Create(char* path, unsigned int maxFileSize, int maxRecordSize)
+{
+	FILE* source;
+	ILibLinkedList_FileBacked_Root *retVal = NULL;
+
+#ifdef WIN32
+	if (fopen_s(&source, path, "rb+N") != 0)
+	{
+		fopen_s(&source, path, "wb+N");
+	}
+#else
+	if ((source = fopen(path, "rb+")) == NULL)
+	{
+		source = fopen(path, "wb+");
+	}
+#endif
+	
+	if (source == NULL) { return(NULL); }
+
+	fseek(source, 0, SEEK_END);
+	if ((int)ftell(source) < (int)sizeof(ILibLinkedList_FileBacked_Root))
+	{
+		// New File
+		retVal = (ILibLinkedList_FileBacked_Root*)ILibMemory_Allocate(sizeof(ILibLinkedList_FileBacked_Root), maxRecordSize + (int)strnlen_s(path, _MAX_PATH) + 1 + (int)(2*sizeof(void*)), NULL, NULL);
+		retVal->maxSize = maxFileSize;
+		((FILE**)ILibMemory_GetExtraMemory(retVal, sizeof(ILibLinkedList_FileBacked_Root)))[0] = source;
+		ILibLinkedList_FileBacked_CopyPath(retVal, path);
+		fwrite((void*)retVal, sizeof(char), sizeof(ILibLinkedList_FileBacked_Root), source);
+		fflush(source);
+	}
+	else
+	{
+		// File Exists
+		fseek(source, 0, SEEK_SET);
+		retVal = (ILibLinkedList_FileBacked_Root*)ILibMemory_Allocate(sizeof(ILibLinkedList_FileBacked_Root), maxRecordSize + (int)strnlen_s(path, _MAX_PATH) + 1 + (int)(2 * sizeof(void*)), NULL, NULL);
+		if (fread((void*)retVal, sizeof(char), sizeof(ILibLinkedList_FileBacked_Root), source) != sizeof(ILibLinkedList_FileBacked_Root))
+		{
+			free(retVal);
+			retVal = NULL;
+			fclose(source);
+		}
+		else
+		{
+			((FILE**)ILibMemory_GetExtraMemory(retVal, sizeof(ILibLinkedList_FileBacked_Root)))[0] = source;
+			ILibLinkedList_FileBacked_CopyPath(retVal, path);
+		}
+	}
+
+	return(retVal);
+}
+
+int ILibLinkedList_FileBacked_AddTail(ILibLinkedList_FileBacked_Root* root, char* data, unsigned int dataLen)
+{
+	unsigned int sizeNeeded = dataLen + 8;
+	unsigned int i;
+	unsigned int tmp;
+	int headUpdated = 0;
+
+	FILE* source = ((FILE**)ILibMemory_GetExtraMemory(root, sizeof(ILibLinkedList_FileBacked_Root)))[0];
+
+	fseek(source, 0, SEEK_SET);
+	if (fread((void*)root, sizeof(char), sizeof(ILibLinkedList_FileBacked_Root), source) != sizeof(ILibLinkedList_FileBacked_Root)) { return(1); }
+
+	// Grab a memory pointer that we can write to
+	if (root->tail == 0)
+	{
+		i = (unsigned int)sizeof(ILibLinkedList_FileBacked_Root);
+	}
+	else
+	{
+		// Need to calculate some things
+		fseek(source, root->tail + (unsigned int)sizeof(unsigned int), SEEK_SET);
+		if (fread(&i, sizeof(char), sizeof(unsigned int), source) != sizeof(unsigned int)) { return(1); }
+		i += ((unsigned int)2*sizeof(unsigned int) + root->tail);
+
+		if (i + sizeNeeded > root->maxSize) { i = root->head; }
+	}
+	
+	// Check to see if we write to this memory location, do we need to move the head pointer
+	while (root->head != 0 && i <= root->head && (i + sizeNeeded > root->head))
+	{
+		fseek(source, root->head, SEEK_SET);
+		if (fread(&(root->head), sizeof(char), sizeof(unsigned int), source) != sizeof(unsigned int)) { return(1); }
+		headUpdated = 1;
+	}
+
+	if (root->head == 0)
+	{
+		root->head = i;
+		headUpdated = 1;
+	}
+
+	// Write the new Head Pointer
+	if (headUpdated != 0)
+	{
+		fseek(source, ILibLinkedList_FileBacked_Root_Raw_HEAD_OFFSET(root), SEEK_SET);
+		fwrite(&(root->head), sizeof(char), sizeof(unsigned int), source);
+		fflush(source);
+	}
+
+	// Write Record
+	fseek(source, i, SEEK_SET);
+	tmp = 0;
+	fwrite(&tmp, sizeof(char), sizeof(unsigned int), source);		// Next
+	fwrite(&dataLen, sizeof(char), sizeof(unsigned int), source);	// Data Length
+	if (dataLen > 0)
+	{
+		fwrite(data, sizeof(char), dataLen, source);				// Data
+	}
+	fflush(source);
+
+	// Update 'Next' of old Tail
+	if (root->tail != 0)
+	{
+		fseek(source, root->tail, SEEK_SET);
+		fwrite(&i, sizeof(char), sizeof(unsigned int), source);			// New NEXT value
+		fflush(source);
+	}
+
+	// Write new Tail Pointer
+	fseek(source, ILibLinkedList_FileBacked_Root_Raw_TAIL_OFFSET(root), SEEK_SET);
+	fwrite(&i, sizeof(char), sizeof(unsigned int), source);			// NEXT
+	fflush(source);
+	return(0);
+}

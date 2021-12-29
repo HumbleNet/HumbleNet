@@ -20,18 +20,16 @@ limitations under the License.
 //
 
 #if defined(WIN32) && !defined(_WIN32_WCE)
-#include "stdafx.h"
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #define _CRTDBG_MAP_ALLOC
 #include <crtdbg.h>
 #endif
 
-#include "Microstack/ILibParsers.h"
-#include "Microstack/ILibAsyncSocket.h"
-#include "Microstack/ILibWebRTC.h"
-#include "core/utils.h"
-#include "Microstack/ILibWrapperWebRTC.h"
+#include "../../microstack/ILibParsers.h"
+#include "../../microstack/ILibAsyncSocket.h"
+#include "../../microstack/ILibWebRTC.h"
+#include "../../microstack/ILibWrapperWebRTC.h"
 #include "SimpleRendezvousServer.h"
 
 #if defined(WIN32) && !defined(snprintf) && _MSC_VER < 1900
@@ -145,7 +143,6 @@ void PassiveCandidateSink(ILibWrapper_WebRTC_Connection connection, struct socka
 	free(encodedOffer);
 	SimpleRendezvousServer_Respond(sender, token, 1, h1, strlen(h1), ILibAsyncSocket_MemoryOwnership_CHAIN); // Send the SDP to the remote side
 }
-
 void OnWebSocket(SimpleRendezvousServerToken sender, int InterruptFlag, struct packetheader *header, char *bodyBuffer, int bodyBufferLen, SimpleRendezvousServer_WebSocket_DataTypes bodyBufferType, SimpleRendezvousServer_DoneFlag done)
 {	
 	if(done == SimpleRendezvousServer_DoneFlag_NotDone)
@@ -330,25 +327,9 @@ void BreakSink(int s)
 	ILibStopChain(chain); // Shutdown the Chain
 }
 #endif
-void Run()
-{
-	char temp[1024];
-	char* line;
-
-	while(ILibIsChainBeingDestroyed(chain)==0)
-	{
-		line = fgets(temp, 1024, stdin);
-
-		if (mDataChannel != NULL && line!=NULL)
-		{
-			ILibWrapper_WebRTC_DataChannel_Close(mDataChannel);
-			//ILibWrapper_WebRTC_DataChannel_SendString(mDataChannel, line, strlen(line)); // Send string data over the WebRTC Data Channel
-		}
-	}
-}
 
 #if defined(WIN32)
-int _tmain(int argc, _TCHAR* argv[])
+int main(int argc, char* argv[])
 #else
 int main(int argc, char **argv)
 #endif
@@ -376,11 +357,7 @@ int main(int argc, char **argv)
 	}
 #endif
 	
-#if defined(WIN32)
-	if (argc>1 && _tcscmp(argv[1], L"STUN")==0)
-#else
 	if (argc>1 && strcmp(argv[1],"STUN")==0)
-#endif
 	{
 		useStun = 1;
 		printf("USING STUN!\r\n");
@@ -405,29 +382,9 @@ int main(int argc, char **argv)
 	printf("Debug logging listening url: http://127.0.0.1:%u\r\n", ILibStartDefaultLogger(chain, 7775));
 #endif
 	printf("\r\n(Press Ctrl-C to exit)\r\n");
-	/* This is to test TLS and TLS Detect
-	// Init Certs
-	util_mkCert(NULL, &selfcert, 2048, 10000, "localhost", CERTIFICATE_ROOT, NULL);
-	util_mkCert(&selfcert, &selftlscert, 2048, 10000, "10.0.0.240", CERTIFICATE_TLS_SERVER, NULL);
-	// Init TLS
-	ctx = SSL_CTX_new(TLSv1_method());
-	SSL_CTX_use_certificate(ctx, selftlscert.x509);
-	SSL_CTX_use_PrivateKey(ctx, selftlscert.pkey);
-	SimpleRendezvousServer_SetSSL(mServer, ctx);
-	*/
 
-	;
 
-	ILibSpawnNormalThread(&Run, NULL); // Spawn a thread to listen for user input
 	ILibStartChain(chain); // This will start the Microstack Chain... It will block until ILibStopChain is called
-
-	
-
-	/* This is to test TLS and TLS Detect
-	SSL_CTX_free(ctx);
-	util_freecert(&selfcert);
-	util_freecert(&selftlscert);
-	*/
 
 
 	// This won't execute until the Chain was stopped

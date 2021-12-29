@@ -1,11 +1,11 @@
 /*   
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-   http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -56,10 +56,12 @@ struct ILibAsyncUDPSocket_Data
 void ILibAsyncUDPSocket_OnDataSink(ILibAsyncSocket_SocketModule socketModule, char* buffer, int *p_beginPointer, int endPointer, ILibAsyncSocket_OnInterrupt* OnInterrupt, void **user, int *PAUSE)
 {
 	struct ILibAsyncUDPSocket_Data *data = (struct ILibAsyncUDPSocket_Data*)*user;
-	struct sockaddr_in6 RemoteAddress;
+	char RemoteAddress[8 + sizeof(struct sockaddr_in6)];
 	UNREFERENCED_PARAMETER( OnInterrupt );
 	UNREFERENCED_PARAMETER( RemoteAddress );
 	ILibAsyncSocket_GetRemoteInterface(socketModule, (struct sockaddr*)&RemoteAddress);
+	((int*)(RemoteAddress + sizeof(struct sockaddr_in6)))[0] = 4;
+	((int*)(RemoteAddress + sizeof(struct sockaddr_in6)))[1] = 0;
 
 	if (data->OnData != NULL)
 	{
@@ -67,7 +69,7 @@ void ILibAsyncUDPSocket_OnDataSink(ILibAsyncSocket_SocketModule socketModule, ch
 			socketModule,
 			buffer, 
 			endPointer,
-			&RemoteAddress,
+			(struct sockaddr_in6*)&RemoteAddress,
 			data->user1, 
 			data->user2, 
 			PAUSE);
@@ -165,6 +167,26 @@ SOCKET ILibAsyncUDPSocket_GetSocket(ILibAsyncUDPSocket_SocketModule module)
 	return *((SOCKET*)ILibAsyncSocket_GetSocket(module));
 }
 
+
+void ILibAsyncUDPSocket_DropMulticastGroupV4(ILibAsyncUDPSocket_SocketModule module, struct sockaddr_in *multicastAddr, struct sockaddr *localAddr)
+{
+	struct ip_mreq mreq;
+#if defined(WIN32) || defined(_WIN32_WCE)
+	SOCKET s = *((SOCKET*)ILibAsyncSocket_GetSocket(module));
+#else
+	int s = *((int*)ILibAsyncSocket_GetSocket(module));
+#endif
+
+	// We start with the multicast structure
+	memcpy_s(&mreq.imr_multiaddr, sizeof(mreq.imr_multiaddr), &(((struct sockaddr_in*)multicastAddr)->sin_addr), sizeof(mreq.imr_multiaddr));
+#ifdef WIN32
+	mreq.imr_interface.s_addr = ((struct sockaddr_in*)localAddr)->sin_addr.S_un.S_addr;
+#else
+	mreq.imr_interface.s_addr = ((struct sockaddr_in*)localAddr)->sin_addr.s_addr;
+#endif
+	setsockopt(s, IPPROTO_IP, IP_DROP_MEMBERSHIP, (char*)&mreq, sizeof(mreq));
+}
+
 /*! \fn int ILibAsyncUDPSocket_JoinMulticastGroup(ILibAsyncUDPSocket_SocketModule module, int localInterface, int remoteInterface)
 	\brief Joins a multicast group
 	\param module The ILibAsyncUDPSocket_SocketModule to join the multicast group
@@ -182,7 +204,7 @@ void ILibAsyncUDPSocket_JoinMulticastGroupV4(ILibAsyncUDPSocket_SocketModule mod
 #endif
 
 	// We start with the multicast structure
-	memcpy(&mreq.imr_multiaddr, &(((struct sockaddr_in*)multicastAddr)->sin_addr), sizeof(mreq.imr_multiaddr));
+	memcpy_s(&mreq.imr_multiaddr, sizeof(mreq.imr_multiaddr), &(((struct sockaddr_in*)multicastAddr)->sin_addr), sizeof(mreq.imr_multiaddr));
 #ifdef WIN32
 	mreq.imr_interface.s_addr = ((struct sockaddr_in*)localAddr)->sin_addr.S_un.S_addr;
 #else
@@ -200,11 +222,24 @@ void ILibAsyncUDPSocket_JoinMulticastGroupV6(ILibAsyncUDPSocket_SocketModule mod
 	int s = *((int*)ILibAsyncSocket_GetSocket(module));
 #endif
 
-	memcpy(&mreq6.ipv6mr_multiaddr, &(((struct sockaddr_in6*)multicastAddr)->sin6_addr), sizeof(mreq6.ipv6mr_multiaddr));
+	memcpy_s(&mreq6.ipv6mr_multiaddr, sizeof(mreq6.ipv6mr_multiaddr), &(((struct sockaddr_in6*)multicastAddr)->sin6_addr), sizeof(mreq6.ipv6mr_multiaddr));
     mreq6.ipv6mr_interface = ifIndex;
     setsockopt(s, IPPROTO_IPV6, IPV6_JOIN_GROUP, (char*)&mreq6, sizeof(mreq6));		// IPV6_ADD_MEMBERSHIP
 }
 
+void ILibAsyncUDPSocket_DropMulticastGroupV6(ILibAsyncUDPSocket_SocketModule module, struct sockaddr_in6 *multicastAddr, int ifIndex)
+{
+	struct ipv6_mreq mreq6;
+#if defined(WIN32) || defined(_WIN32_WCE)
+	SOCKET s = *((SOCKET*)ILibAsyncSocket_GetSocket(module));
+#else
+	int s = *((int*)ILibAsyncSocket_GetSocket(module));
+#endif
+
+	memcpy_s(&mreq6.ipv6mr_multiaddr, sizeof(mreq6.ipv6mr_multiaddr), &(((struct sockaddr_in6*)multicastAddr)->sin6_addr), sizeof(mreq6.ipv6mr_multiaddr));
+	mreq6.ipv6mr_interface = ifIndex;
+	setsockopt(s, IPPROTO_IPV6, IPV6_LEAVE_GROUP, (char*)&mreq6, sizeof(mreq6));		// IPV6_ADD_MEMBERSHIP
+}
 /*! \fn int ILibAsyncUDPSocket_SetMulticastInterface(ILibAsyncUDPSocket_SocketModule module, int localInterface)
 	\brief Sets the local interface to use, when multicasting
 	\param module The ILibAsyncUDPSocket_SocketModule handle to set the interface on

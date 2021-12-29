@@ -1,5 +1,5 @@
 /*   
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,10 +19,7 @@ limitations under the License.
 
 #include "ILibParsers.h"
 #include "ILibAsyncSocket.h"
-
-#ifndef MICROSTACK_NOTLS
-#include <openssl/x509v3.h>
-#endif
+#include "ILibCrypto.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,6 +52,24 @@ extern "C" {
 #endif
 #endif
 
+#define WEBSOCKET_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#define WEBSOCKET_FIN		0x08000
+#define WEBSOCKET_RSV1		0x04000
+#define WEBSOCKET_RSV2		0x02000
+#define WEBSOCKET_RSV3		0x01000
+#define WEBSOCKET_OPCODE	0x00F00
+#define WEBSOCKET_MASK		0x00080
+#define WEBSOCKET_PLEN		0x0007F
+
+#define WEBSOCKET_MAX_OUTPUT_FRAMESIZE 4096
+
+#define WEBSOCKET_OPCODE_FRAMECONT		0x0
+#define WEBSOCKET_OPCODE_TEXTFRAME		0x1
+#define WEBSOCKET_OPCODE_BINARYFRAME	0x2
+#define WEBSOCKET_OPCODE_CLOSE			0x8
+#define WEBSOCKET_OPCODE_PING			0x9
+#define WEBSOCKET_OPCODE_PONG			0xA
+
 enum ILibWebClient_DoneCode
 {
 	ILibWebClient_DoneCode_NoErrors = 1,
@@ -73,7 +88,10 @@ enum ILibWebClient_Range_Result
 typedef enum
 {
 	ILibWebClient_ReceiveStatus_MoreDataToBeReceived = 0,
-	ILibWebClient_ReceiveStatus_Complete = 1
+	ILibWebClient_ReceiveStatus_Complete = 1,
+	ILibWebClient_ReceiveStatus_Partial = 10,
+	ILibWebClient_ReceiveStatus_LastPartial = 11,
+	ILibWebClient_ReceiveStatus_Connection_Established = 12
 }ILibWebClient_ReceiveStatus;
 
 /*! \typedef ILibWebClient_RequestToken
@@ -124,6 +142,7 @@ typedef void(*ILibWebClient_OnDisconnect)(ILibWebClient_StateObject sender, ILib
 
 #ifndef MICROSTACK_NOTLS
 typedef int(*ILibWebClient_OnSslConnection)(ILibWebClient_StateObject sender, STACK_OF(X509) *certs, struct sockaddr_in6 *address, void *user);
+typedef int(*ILibWebClient_OnHttpsConnection)(ILibWebClient_RequestToken sender, int preverify_ok, STACK_OF(X509) *certs, struct sockaddr_in6 *address);
 #endif
 
 //
@@ -149,6 +168,7 @@ typedef int(*ILibWebClient_OnSslConnection)(ILibWebClient_StateObject sender, ST
 */
 #define INITIAL_BUFFER_SIZE 65535
 
+extern const int ILibMemory_WebClient_RequestToken_CONTAINERSIZE;
 
 ILibWebClient_RequestManager ILibCreateWebClient(int PoolSize, void *Chain);
 ILibWebClient_StateObject ILibCreateWebClientEx(ILibWebClient_OnResponse OnResponse, ILibAsyncSocket_SocketModule socketModule, void *user1, void *user2);
@@ -181,12 +201,12 @@ ILibWebClient_RequestToken ILibWebClient_PipelineRequest(
 	void *user1,
 	void *user2);
 
-int ILibWebClient_StreamRequestBody(
+ILibTransport_DoneState ILibWebClient_StreamRequestBody(
 									 ILibWebClient_RequestToken token, 
 									 char *body,
 									 int bodyLength, 
 									 enum ILibAsyncSocket_MemoryOwnership MemoryOwnership,
-									 int done
+									 ILibTransport_DoneState done
 									 );
 ILibWebClient_RequestToken ILibWebClient_PipelineStreamedRequest(
 									ILibWebClient_RequestManager WebClient,
@@ -197,6 +217,19 @@ ILibWebClient_RequestToken ILibWebClient_PipelineStreamedRequest(
 									void *user1,
 									void *user2);
 
+typedef enum ILibWebClient_WebSocket_DataTypes
+{
+	ILibWebClient_WebSocket_DataType_UNKNOWN = 0x0,
+	ILibWebClient_WebSocket_DataType_REQUEST = 0xFF,
+	ILibWebClient_WebSocket_DataType_BINARY = 0x2,
+	ILibWebClient_WebSocket_DataType_TEXT = 0x1
+}ILibWebClient_WebSocket_DataTypes;
+
+typedef enum ILibWebClient_WebSocket_FragmentFlags
+{
+	ILibWebClient_WebSocket_FragmentFlag_Incomplete = 0,
+	ILibWebClient_WebSocket_FragmentFlag_Complete = 1
+}ILibWebClient_WebSocket_FragmentFlags;
 
 void ILibWebClient_FinishedResponse_Server(ILibWebClient_StateObject wcdo);
 void ILibWebClient_DeleteRequests(ILibWebClient_RequestManager WebClientToken, struct sockaddr* addr);
@@ -207,6 +240,7 @@ void ILibWebClient_CancelRequest(ILibWebClient_RequestToken RequestToken);
 void ILibWebClient_ResetUserObjects(ILibWebClient_StateObject webstate, void *user1, void *user2);
 ILibWebClient_RequestToken ILibWebClient_GetRequestToken_FromStateObject(ILibWebClient_StateObject WebStateObject);
 ILibWebClient_StateObject ILibWebClient_GetStateObjectFromRequestToken(ILibWebClient_RequestToken token);
+void **ILibWebClient_RequestToken_GetUserObjects(ILibWebClient_RequestToken tok);
 
 void ILibWebClient_Parse_ContentRange(char *contentRange, int *Start, int *End, int *TotalLength);
 enum ILibWebClient_Range_Result ILibWebClient_Parse_Range(char *Range, long *Start, long *Length, long TotalLength);
@@ -215,14 +249,50 @@ void ILibWebClient_SetMaxConcurrentSessionsToServer(ILibWebClient_RequestManager
 void ILibWebClient_SetUser(ILibWebClient_RequestManager manager, void *user);
 void* ILibWebClient_GetUser(ILibWebClient_RequestManager manager);
 void* ILibWebClient_GetChain(ILibWebClient_RequestManager manager);
+void* ILibWebClient_GetChainFromWebStateObject(ILibWebClient_StateObject wcdo);
+
+
+typedef enum ILibWebClient_RequestToken_HTTPS
+{
+#ifndef MICROSTACK_NOTLS
+	ILibWebClient_RequestToken_USE_HTTPS = 0,
+#endif
+	ILibWebClient_RequestToken_USE_HTTP = 1
+}ILibWebClient_RequestToken_HTTPS;
 
 #ifndef MICROSTACK_NOTLS
 void ILibWebClient_SetTLS(ILibWebClient_RequestManager manager, void *ssl_ctx, ILibWebClient_OnSslConnection OnSslConnection);
+int ILibWebClient_EnableHTTPS(ILibWebClient_RequestManager manager, struct util_cert* leafCert, X509* nonLeafCert, ILibWebClient_OnHttpsConnection OnHttpsConnection);
+void ILibWebClient_Request_SetHTTPS(ILibWebClient_RequestToken reqToken, ILibWebClient_RequestToken_HTTPS requestMode);
 #endif
 
 // Added methods
 int ILibWebClient_GetLocalInterface(void* socketModule, struct sockaddr *localAddress);
 int ILibWebClient_GetRemoteInterface(void* socketModule, struct sockaddr *remoteAddress);
+int ILibWebClient_Digest_NeedAuthenticate(ILibWebClient_StateObject state);
+char* ILibWebClient_Digest_GetRealm(ILibWebClient_StateObject state);
+void ILibWebClient_GenerateAuthenticationHeader(ILibWebClient_StateObject state, ILibHTTPPacket *packet, char* username, char* password);
+#ifdef MICROSTACK_PROXY
+struct sockaddr_in6* ILibWebClient_SetProxy(ILibWebClient_RequestToken token, char *proxyHost, unsigned short proxyPort, char *username, char *password);
+void ILibWebClient_SetProxyEx(ILibWebClient_RequestToken token, struct sockaddr_in6* proxyServer, char *username, char *password);
+#endif
+
+// WebSocket Methods
+typedef enum ILibWebClient_WebSocket_PingResponse
+{
+	ILibWebClient_WebSocket_PingResponse_Respond = 0,
+	ILibWebClient_WebSocket_PingResponse_None = 1
+}ILibWebClient_WebSocket_PingResponse;
+typedef ILibWebClient_WebSocket_PingResponse(*ILibWebClient_WebSocket_PingHandler)(ILibWebClient_StateObject state, void *user);
+typedef void(*ILibWebClient_WebSocket_PongHandler)(ILibWebClient_StateObject state, void *user);
+void ILibWebClient_AddWebSocketRequestHeaders(ILibHTTPPacket *packet, int FragmentReassemblyMaxBufferSize, ILibWebClient_OnSendOK OnSendOK);
+ILibAsyncSocket_SendStatus ILibWebClient_WebSocket_Send(ILibWebClient_StateObject state, ILibWebClient_WebSocket_DataTypes bufferType, char* buffer, int bufferLen, ILibAsyncSocket_MemoryOwnership userFree, ILibWebClient_WebSocket_FragmentFlags bufferFragment);
+void ILibWebClient_WebSocket_SetPingPongHandler(ILibWebClient_StateObject state, ILibWebClient_WebSocket_PingHandler pingHandler, ILibWebClient_WebSocket_PongHandler pongHandler, void *user);
+#define ILibWebClient_WebSocket_Ping(stateObject) ILibWebClient_WebSocket_Send((stateObject), (ILibWebClient_WebSocket_DataTypes)WEBSOCKET_OPCODE_PING, NULL, 0, ILibAsyncSocket_MemoryOwnership_STATIC, ILibWebServer_WebSocket_FragmentFlag_Complete)
+#define ILibWebClient_WebSocket_Pong(stateObject) ILibWebClient_WebSocket_Send((stateObject), (ILibWebClient_WebSocket_DataTypes)WEBSOCKET_OPCODE_PONG, NULL, 0, ILibAsyncSocket_MemoryOwnership_STATIC, ILibWebServer_WebSocket_FragmentFlag_Complete)
+
+typedef void(*ILibWebClient_TimeoutHandler)(ILibWebClient_StateObject state, void *user);
+void ILibWebClient_SetTimeout(ILibWebClient_StateObject state, int timeoutSeconds, ILibWebClient_TimeoutHandler handler, void *user);
 
 // OpenSSL supporting code
 #ifndef MICROSTACK_NOTLS
