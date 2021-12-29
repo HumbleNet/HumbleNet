@@ -1,5 +1,5 @@
 /*   
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -56,22 +56,22 @@ extern "C" {
 
 #define ILibTransports_AsyncSocket 0x40
 
-enum ILibAsyncSocket_SendStatus
+typedef enum ILibAsyncSocket_SendStatus
 {
 	ILibAsyncSocket_ALL_DATA_SENT = 1, /*!< All of the data has already been sent */
 	ILibAsyncSocket_NOT_ALL_DATA_SENT_YET = 0, /*!< Not all of the data could be sent, but is queued to be sent as soon as possible */
 	ILibAsyncSocket_SEND_ON_CLOSED_SOCKET_ERROR	= -4 /*!< A send operation was attmepted on a closed socket */
-};
+}ILibAsyncSocket_SendStatus;
 
 /*! \enum ILibAsyncSocket_MemoryOwnership
 \brief Enumeration values for Memory Ownership of variables
 */
-enum ILibAsyncSocket_MemoryOwnership
+typedef enum ILibAsyncSocket_MemoryOwnership
 {
 	ILibAsyncSocket_MemoryOwnership_CHAIN = 0, /*!< The Microstack will own this memory, and free it when it is done with it */
 	ILibAsyncSocket_MemoryOwnership_STATIC = 1, /*!< This memory is static, so the Microstack will not free it, and assume it will not go away, so it won't copy it either */
 	ILibAsyncSocket_MemoryOwnership_USER = 2 /*!< The Microstack doesn't own this memory, so if necessary the memory will be copied */
-};
+}ILibAsyncSocket_MemoryOwnership;
 
 /*! \typedef ILibAsyncSocket_SocketModule
 \brief The handle for an ILibAsyncSocket module
@@ -136,11 +136,17 @@ typedef void(*ILibAsyncSocket_OnSendOK)(ILibAsyncSocket_SocketModule socketModul
 */
 typedef void(*ILibAsyncSocket_OnBufferReAllocated)(ILibAsyncSocket_SocketModule AsyncSocketToken, void *user, ptrdiff_t newOffset);
 
+/*! \defgroup TLSGroup TLS Related Methods
+* @{
+*/
 #ifndef MICROSTACK_NOTLS
 #ifdef MICROSTACK_TLS_DETECT
 int ILibAsyncSocket_IsUsingTls(ILibAsyncSocket_SocketModule AsyncSocketToken);
 #endif
 #endif
+/*! @} */
+
+extern const int ILibMemory_ASYNCSOCKET_CONTAINERSIZE;
 
 void ILibAsyncSocket_SetReAllocateNotificationCallback(ILibAsyncSocket_SocketModule AsyncSocketToken, ILibAsyncSocket_OnBufferReAllocated Callback);
 void *ILibAsyncSocket_GetUser(ILibAsyncSocket_SocketModule socketModule);
@@ -149,8 +155,10 @@ void *ILibAsyncSocket_GetUser2(ILibAsyncSocket_SocketModule socketModule);
 void ILibAsyncSocket_SetUser2(ILibAsyncSocket_SocketModule socketModule, void* user);
 int ILibAsyncSocket_GetUser3(ILibAsyncSocket_SocketModule socketModule);
 void ILibAsyncSocket_SetUser3(ILibAsyncSocket_SocketModule socketModule, int user);
+void ILibAsyncSocket_UpdateOnData(ILibAsyncSocket_SocketModule module, ILibAsyncSocket_OnData OnData);
 
-ILibAsyncSocket_SocketModule ILibCreateAsyncSocketModule(void *Chain, int initialBufferSize, ILibAsyncSocket_OnData, ILibAsyncSocket_OnConnect OnConnect, ILibAsyncSocket_OnDisconnect OnDisconnect, ILibAsyncSocket_OnSendOK OnSendOK);
+#define ILibCreateAsyncSocketModule(Chain, initialBufferSize, OnData, OnConnect, OnDisconnect, OnSendOK) ILibCreateAsyncSocketModuleWithMemory(Chain, initialBufferSize, OnData, OnConnect, OnDisconnect, OnSendOK, 0)
+ILibAsyncSocket_SocketModule ILibCreateAsyncSocketModuleWithMemory(void *Chain, int initialBufferSize, ILibAsyncSocket_OnData OnData, ILibAsyncSocket_OnConnect OnConnect, ILibAsyncSocket_OnDisconnect OnDisconnect, ILibAsyncSocket_OnSendOK OnSendOK, int UserMappedMemorySize);
 
 void *ILibAsyncSocket_GetSocket(ILibAsyncSocket_SocketModule module);
 
@@ -186,16 +194,18 @@ void ILibAsyncSocket_UseThisSocket(ILibAsyncSocket_SocketModule socketModule, in
 
 #ifndef MICROSTACK_NOTLS
 
-typedef enum
+//! TLS Mode for OpenSSL Configuration
+/*! \ingroup TLSGroup */
+typedef enum ILibAsyncSocket_TLS_Mode
 {
-	ILibAsyncSocket_TLS_Mode_Client = 0,
-	ILibAsyncSocket_TLS_Mode_Server = 1,
+	ILibAsyncSocket_TLS_Mode_Client = 0,						//!< Client Mode
+	ILibAsyncSocket_TLS_Mode_Server = 1,						//!< Server Mode
 #ifdef MICROSTACK_TLS_DETECT
-	ILibAsyncSocket_TLS_Mode_Server_with_TLSDetectLogic = 2,
+	ILibAsyncSocket_TLS_Mode_Server_with_TLSDetectLogic = 2,	//!< Server Mode with TLS Detection logic enabled
 #endif
 }ILibAsyncSocket_TLS_Mode;
 
-void ILibAsyncSocket_SetSSLContext(ILibAsyncSocket_SocketModule socketModule, SSL_CTX *ssl_ctx, ILibAsyncSocket_TLS_Mode server);
+SSL* ILibAsyncSocket_SetSSLContext(ILibAsyncSocket_SocketModule socketModule, SSL_CTX *ssl_ctx, ILibAsyncSocket_TLS_Mode server);
 SSL_CTX *ILibAsyncSocket_GetSSLContext(ILibAsyncSocket_SocketModule socketModule);
 #endif
 
@@ -209,11 +219,15 @@ int ILibAsyncSocket_GetRemoteInterface(ILibAsyncSocket_SocketModule socketModule
 unsigned short ILibAsyncSocket_GetLocalPort(ILibAsyncSocket_SocketModule socketModule);
 
 void ILibAsyncSocket_Resume(ILibAsyncSocket_SocketModule socketModule);
+void ILibAsyncSocket_Pause(ILibAsyncSocket_SocketModule socketModule);
 int ILibAsyncSocket_WasClosedBecauseBufferSizeExceeded(ILibAsyncSocket_SocketModule socketModule);
 void ILibAsyncSocket_SetMaximumBufferSize(ILibAsyncSocket_SocketModule module, int maxSize, ILibAsyncSocket_OnBufferSizeExceeded OnBufferSizeExceededCallback, void *user);
 void ILibAsyncSocket_SetSendOK(ILibAsyncSocket_SocketModule module, ILibAsyncSocket_OnSendOK OnSendOK);
 int ILibAsyncSocket_IsIPv6LinkLocal(struct sockaddr *LocalAddress);
 int ILibAsyncSocket_IsModuleIPv6LinkLocal(ILibAsyncSocket_SocketModule module);
+
+typedef void(*ILibAsyncSocket_TimeoutHandler)(ILibAsyncSocket_SocketModule module, void *user);
+void ILibAsyncSocket_SetTimeout(ILibAsyncSocket_SocketModule module, int timeoutSeconds, ILibAsyncSocket_TimeoutHandler timeoutHandler);
 
 #ifndef MICROSTACK_NOTLS
 X509 *ILibAsyncSocket_SslGetCert(ILibAsyncSocket_SocketModule socketModule);

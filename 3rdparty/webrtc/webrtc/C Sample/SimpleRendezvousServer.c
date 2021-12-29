@@ -20,9 +20,9 @@ limitations under the License.
 #endif
 
 #include "SimpleRendezvousServer.h"
-#include "Microstack/ILibParsers.h"
-#include "Microstack/ILibWebServer.h"
-#include "Microstack/ILibAsyncSocket.h"
+#include "../../microstack/ILibParsers.h"
+#include "../../microstack/ILibWebServer.h"
+#include "../../microstack/ILibAsyncSocket.h"
 
 #if defined(WIN32) && !defined(_WIN32_WCE)
 #define _CRTDBG_MAP_ALLOC
@@ -59,7 +59,7 @@ void OnSessionReceive(struct ILibWebServer_Session *sender, int InterruptFlag, s
 		if(header->DirectiveLength == 3 && strncasecmp(header->Directive, "GET", 3)==0 && server->OnGetHandler!=NULL)
 		{
 			// GET Reqeust
-			ILibAsyncSocket_GetLocalInterface(sender->Reserved2, (struct sockaddr*)&local);
+			ILibWebServer_GetLocalInterface(sender, (struct sockaddr*)&local);
 			ILibInet_ntop2((struct sockaddr*)&local, temp, 255);
 
 			pr = ILibParseString(temp, 0, strlen(temp), "::ffff:", 7); 

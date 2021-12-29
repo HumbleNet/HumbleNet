@@ -14,6 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+
+#ifndef __SHA1H__
+#define __SHA1H__
+
 #include <stdint.h>
 
 #define HASH_LENGTH 20
@@ -36,3 +40,4 @@ void SHA1_Init(SHA_CTX*);
 #define SHA1_Update(pctx, pkeyResult, keyResultLen) sha1_write(pctx, pkeyResult, keyResultLen)
 #define SHA1_Final(shavalue, pctx) memcpy(shavalue, sha1_result(pctx), 20);
 
+#endif

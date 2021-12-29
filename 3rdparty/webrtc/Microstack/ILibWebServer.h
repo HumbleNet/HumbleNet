@@ -1,5 +1,5 @@
 /*   
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ limitations under the License.
 #define __ILibWebServer__
 #include "ILibParsers.h"
 #include "ILibAsyncServerSocket.h"
+#include "ILibCrypto.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,6 +30,8 @@ extern "C" {
 
 #define ILibTransports_WebServer 0x10
 #define ILibTransports_WebSocket 0x20
+
+extern const int ILibMemory_WEBSERVERSESSION_CONTAINERSIZE;
 
 typedef enum 
 {
@@ -58,14 +61,14 @@ typedef enum
 	\{
 */
 
-enum ILibWebServer_Status
+typedef enum ILibWebServer_Status
 {
 	ILibWebServer_ALL_DATA_SENT						= 1,	/*!< All of the data has already been sent */
 	ILibWebServer_NOT_ALL_DATA_SENT_YET				= 0,	/*!< Not all of the data could be sent, but is queued to be sent as soon as possible */
 	ILibWebServer_SEND_RESULTED_IN_DISCONNECT		= -2,	/*!< A send operation resulted in the socket being closed */
 	ILibWebServer_INVALID_SESSION					= -3,	/*!< The specified ILibWebServer_Session was invalid */
 	ILibWebServer_TRIED_TO_SEND_ON_CLOSED_SOCKET	= -4,	/*!< A send operation was attmepted on a closed socket */
-};
+}ILibWebServer_Status;
 /*! \typedef ILibWebServer_ServerToken
 	\brief The handle for an ILibWebServer module
 */
@@ -105,6 +108,11 @@ typedef	void (*ILibWebServer_Session_OnSendOK)(struct ILibWebServer_Session *sen
 */
 typedef struct ILibWebServer_Session
 {
+	ILibTransport Reserved_Transport;
+	//
+	// DO NOT MODIFY STRUCTURE DEFINITION ABOVE THIS COMMENT LINE (ILibTransport)
+	//
+
 	/*! \var OnReceive
 		\brief A Function Pointer that is triggered whenever data is received
 	*/
@@ -116,16 +124,7 @@ typedef struct ILibWebServer_Session
 	/*! \var OnSendOK
 		\brief A Function Pointer that is triggered when the send buffer is emptied
 	*/
-	ILibWebServer_Session_OnSendOK OnSendOK;
-	void *Reserved_Chain;
-	ILibTransport_SendPtr sendPtr;
-	ILibTransport_ClosePtr closePtr;	
-	ILibTransport_PendingBytesToSendPtr pendingPtr;
-	unsigned int Reserved_Flags;
-	//
-	// DO NOT MODIFY STRUCTURE DEFINITION ABOVE THIS COMMENT LINE (ILibTransport)
-	//
-	
+	ILibWebServer_Session_OnSendOK OnSendOK;	
 	void *Parent;
 
 	/*! \var User
@@ -148,35 +147,11 @@ typedef struct ILibWebServer_Session
 	char* CertificateHashPtr; // Points to the certificate hash (next field) if set
 	char CertificateHash[32]; // Used by the Mesh to store NodeID of this session
 
-	void *Reserved1;	// AsyncServerSocket
-	void *Reserved2;	// ConnectionToken
-	void *Reserved3;	// WebClientDataObject
-	void *Reserved7;	// VirtualDirectory
-	int   Reserved4;	// Request Answered Flag (set by send)
-	int   Reserved8;	// RequestAnswered Method Called
-	int   Reserved5;	// Request Made Flag
-	int   Reserved6;	// Close Override Flag
-	int   Reserved9;	// Reserved for future use
-	void *Reserved10;	// DisconnectFlagPointer
-
-	sem_t Reserved11;	// Session Lock
-	int   Reserved12;	// Reference Counter;
-	int   Reserved13;	// Override VirDir Struct
-	int   Reserved15;   // WebSocketFragmentFlag
-	int   Reserved16;	// WebSocketDataFrameType
-	char* Reserved17;	// WebSocketFragmentBuffer
-	int   Reserved18;	// WebSocketFragmentIndex;
-	int	  Reserved19;	// WebSocketFragmentBufferSize;
-	int	  Reserved20;	// WebSocketFragmentMaxBufferSize;
-	char  Reserved21;	// WebSocketCouldNotAutoReassemble
-	char  Reserved22;	// WebSocketCloseFrameSent
-	void* Reserved_DigestTable;
-	void* Reserved_WebSocket_Request;
-
 	char *buffer;
 	int bufferLength;
 	int done;
 	int SessionInterrupted;
+	void *ParentExtraMemory;
 }ILibWebServer_Session;
 
 
@@ -202,9 +177,13 @@ typedef void (*ILibWebServer_Session_OnSession)(struct ILibWebServer_Session *Se
 typedef void (*ILibWebServer_VirtualDirectory)(struct ILibWebServer_Session *session, struct packetheader *header, char *bodyBuffer, int *beginPointer, int endPointer, int done, void *user);
 
 #ifndef MICROSTACK_NOTLS
+typedef int(*ILibWebServer_OnHttpsConnection)(ILibWebServer_ServerToken sender, int preverify_ok, STACK_OF(X509) *certs, struct sockaddr_in6* addr);
+int ILibWebServer_EnableHTTPS(ILibWebServer_ServerToken object, struct util_cert* leafCert, X509* nonLeafCert, int requestClientCert, ILibWebServer_OnHttpsConnection onHTTPS);
+X509 *ILibWebServer_Session_SslGetCert(ILibWebServer_Session* session);
+STACK_OF(X509) *ILibWebServer_Session_SslGetCerts(ILibWebServer_Session* session);
 #ifdef MICROSTACK_TLS_DETECT
 void ILibWebServer_SetTLS(ILibWebServer_ServerToken object, void *ssl_ctx, int enableTLSDetect);
-#define ILibWebServer_IsUsingTLS(session) ILibAsyncSocket_IsUsingTls(session->Reserved2)
+#define ILibWebServer_IsUsingTLS(session) ILibAsyncSocket_IsUsingTls(ILibWebServer_Session_GetConnectionToken(session))
 #else
 void ILibWebServer_SetTLS(ILibWebServer_ServerToken object, void *ssl_ctx);
 #endif
@@ -212,33 +191,40 @@ void ILibWebServer_SetTLS(ILibWebServer_ServerToken object, void *ssl_ctx);
 
 void ILibWebServer_SetTag(ILibWebServer_ServerToken WebServerToken, void *Tag);
 void *ILibWebServer_GetTag(ILibWebServer_ServerToken WebServerToken);
+void *ILibWebServer_Session_GetConnectionToken(ILibWebServer_Session *session);
 
 ILibWebServer_ServerToken ILibWebServer_CreateEx(void *Chain, int MaxConnections, unsigned short PortNumber, int loopbackFlag, ILibWebServer_Session_OnSession OnSession, void *User);
+ILibExportMethod ILibWebServer_ServerToken ILibWebServer_CreateEx2(void *Chain, int MaxConnections, unsigned short PortNumber, int loopbackFlag, ILibWebServer_Session_OnSession OnSession, int ExtraMemorySize, void *User);
 #define ILibWebServer_Create(Chain, MaxConnections, PortNumber, OnSession, User) ILibWebServer_CreateEx(Chain, MaxConnections, PortNumber, INADDR_ANY, OnSession, User)
+#define ILibWebServer_Create2(Chain, MaxConnections, PortNumber, OnSession, ExtraMemorySize, User) ILibWebServer_CreateEx2(Chain, MaxConnections, PortNumber, INADDR_ANY, OnSession, ExtraMemorySize, User)
+
+void ILibWebServer_StopListener(ILibWebServer_ServerToken server);
+void ILibWebServer_RestartListener(ILibWebServer_ServerToken server);
 
 int ILibWebServer_RegisterVirtualDirectory(ILibWebServer_ServerToken WebServerToken, char *vd, int vdLength, ILibWebServer_VirtualDirectory OnVirtualDirectory, void *user);
 int ILibWebServer_UnRegisterVirtualDirectory(ILibWebServer_ServerToken WebServerToken, char *vd, int vdLength);
 
 // Checks if the Web Request is uses digest authentication. Returns non zero if the request is using digest authentication
-int ILibWebServer_Digest_IsAuthenticated(struct ILibWebServer_Session *session, char* realm, int realmLen);
+ILibExportMethod int ILibWebServer_Digest_IsAuthenticated(struct ILibWebServer_Session *session, char* realm, int realmLen);
 // Gets the username that the client used to authenticate
-char* ILibWebServer_Digest_GetUsername(struct ILibWebServer_Session *session);
+ILibExportMethod char* ILibWebServer_Digest_GetUsername(struct ILibWebServer_Session *session);
 // Validates the client's digest authentication response. Returns 0 on failure, 1 on success
-int ILibWebServer_Digest_ValidatePassword(struct ILibWebServer_Session *session, char* password, int passwordLen);
+ILibExportMethod int ILibWebServer_Digest_ValidatePassword(struct ILibWebServer_Session *session, char* password, int passwordLen);
 // Send un-autorized response
-void ILibWebServer_Digest_SendUnauthorized(struct ILibWebServer_Session *session, char* realm, int realmLen, char* html, int htmllen);
+ILibExportMethod void ILibWebServer_Digest_SendUnauthorized(struct ILibWebServer_Session *session, char* realm, int realmLen, char* html, int htmllen);
 
 // Returns NULL if the request was not CrossSite, otherwise returns the contents of the Origin header
-char* ILibWebServer_IsCrossSiteRequest(ILibWebServer_Session* session);
+ILibExportMethod char* ILibWebServer_IsCrossSiteRequest(ILibWebServer_Session* session);
 
-int ILibWebServer_UpgradeWebSocket(struct ILibWebServer_Session *session, int autoFragmentReassemblyMaxBufferSize);
-enum ILibWebServer_Status ILibWebServer_WebSocket_Send(struct ILibWebServer_Session *session, char* buffer, int bufferLen, ILibWebServer_WebSocket_DataTypes bufferType, enum ILibAsyncSocket_MemoryOwnership userFree, ILibWebServer_WebSocket_FragmentFlags fragmentStatus);
-void ILibWebServer_WebSocket_Close(struct ILibWebServer_Session *session);
+ILibExportMethod int ILibWebServer_UpgradeWebSocket(struct ILibWebServer_Session *session, int autoFragmentReassemblyMaxBufferSize);
+ILibExportMethod enum ILibWebServer_Status ILibWebServer_WebSocket_Send(struct ILibWebServer_Session *session, char* buffer, int bufferLen, ILibWebServer_WebSocket_DataTypes bufferType, enum ILibAsyncSocket_MemoryOwnership userFree, ILibWebServer_WebSocket_FragmentFlags fragmentStatus);
+ILibExportMethod void ILibWebServer_WebSocket_Close(struct ILibWebServer_Session *session);
+
 /* Gets the WebSocket DataFrame type from the ILibWebServer_Session object 'x' */
-#define ILibWebServer_WebSocket_GetDataType(x) ((ILibWebServer_WebSocket_DataTypes)x->Reserved16)
+ILibExportMethod ILibWebServer_WebSocket_DataTypes ILibWebServer_WebSocket_GetDataType(ILibWebServer_Session *session);
 
-enum ILibWebServer_Status ILibWebServer_Send(struct ILibWebServer_Session *session, struct packetheader *packet);
-enum ILibWebServer_Status ILibWebServer_Send_Raw(struct ILibWebServer_Session *session, char *buffer, int bufferSize, enum ILibAsyncSocket_MemoryOwnership userFree, ILibWebServer_DoneFlag done);
+ILibExportMethod enum ILibWebServer_Status ILibWebServer_Send(struct ILibWebServer_Session *session, struct packetheader *packet);
+ILibExportMethod enum ILibWebServer_Status ILibWebServer_Send_Raw(struct ILibWebServer_Session *session, char *buffer, int bufferSize, enum ILibAsyncSocket_MemoryOwnership userFree, ILibWebServer_DoneFlag done);
 
 /*! \def ILibWebServer_Session_GetPendingBytesToSend
 	\brief Returns the number of outstanding bytes to be sent
@@ -269,8 +255,8 @@ enum ILibWebServer_Status ILibWebServer_StreamBody(struct ILibWebServer_Session 
 enum ILibWebServer_Status ILibWebServer_StreamHeader_Raw(struct ILibWebServer_Session *session, int StatusCode, char *StatusData, char *ResponseHeaders, enum ILibAsyncSocket_MemoryOwnership ResponseHeaders_FREE);
 void ILibWebServer_DisconnectSession(struct ILibWebServer_Session *session);
 
-void ILibWebServer_Pause(struct ILibWebServer_Session *session);
-void ILibWebServer_Resume(struct ILibWebServer_Session *session);
+ILibExportMethod void ILibWebServer_Pause(struct ILibWebServer_Session *session);
+ILibExportMethod void ILibWebServer_Resume(struct ILibWebServer_Session *session);
 
 void ILibWebServer_OverrideReceiveHandler(struct ILibWebServer_Session *session, ILibWebServer_Session_OnReceive OnReceive);
 

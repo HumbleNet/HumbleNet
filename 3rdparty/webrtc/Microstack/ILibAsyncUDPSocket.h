@@ -1,11 +1,11 @@
 /*   
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-   http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -39,11 +39,11 @@ limitations under the License.
 extern "C" {
 #endif
 
-enum ILibAsyncUDPSocket_Reuse
+typedef enum ILibAsyncUDPSocket_Reuse
 {
 	ILibAsyncUDPSocket_Reuse_EXCLUSIVE = 0,	/*!< A socket is to be bound for exclusive access */
 	ILibAsyncUDPSocket_Reuse_SHARED = 1		/*!< A socket is to be bound for shared access */
-};
+}ILibAsyncUDPSocket_Reuse;
 
 /*! \typedef ILibAsyncUDPSocket_SocketModule
 	\brief The handle for an ILibAsyncUDPSocket module
@@ -92,6 +92,8 @@ ILibAsyncUDPSocket_SocketModule ILibAsyncUDPSocket_CreateEx(void *Chain, int Buf
 
 void ILibAsyncUDPSocket_JoinMulticastGroupV4(ILibAsyncUDPSocket_SocketModule module, struct sockaddr_in *multicastAddr, struct sockaddr *localAddr);
 void ILibAsyncUDPSocket_JoinMulticastGroupV6(ILibAsyncUDPSocket_SocketModule module, struct sockaddr_in6 *multicastAddr, int ifIndex);
+void ILibAsyncUDPSocket_DropMulticastGroupV4(ILibAsyncUDPSocket_SocketModule module, struct sockaddr_in *multicastAddr, struct sockaddr *localAddr);
+void ILibAsyncUDPSocket_DropMulticastGroupV6(ILibAsyncUDPSocket_SocketModule module, struct sockaddr_in6 *multicastAddr, int ifIndex);
 void ILibAsyncUDPSocket_SetMulticastInterface(ILibAsyncUDPSocket_SocketModule module, struct sockaddr *localInterface);
 void ILibAsyncUDPSocket_SetMulticastTTL(ILibAsyncUDPSocket_SocketModule module, int TTL);
 void ILibAsyncUDPSocket_SetMulticastLoopback(ILibAsyncUDPSocket_SocketModule module, int loopback);

@@ -6,6 +6,8 @@
 *
 */
 
+#ifdef MICROSTACK_NOTLS
+
 
 #include <stdint.h>
 #include <string.h>
@@ -32,14 +34,7 @@
 #define HASH_LENGTH 20
 #define BLOCK_LENGTH 64
 
-typedef struct sha1nfo {
-	uint32_t buffer[BLOCK_LENGTH/4];
-	uint32_t state[HASH_LENGTH/4];
-	uint32_t byteCount;
-	uint8_t bufferOffset;
-	uint8_t keyBuffer[BLOCK_LENGTH];
-	uint8_t innerHash[HASH_LENGTH];
-} sha1nfo;
+#include "sha1.h"
 
 /* public API - prototypes - TODO: doxygen*/
 
@@ -161,12 +156,13 @@ void sha1_pad(sha1nfo *s) {
 }
 
 uint8_t* sha1_result(sha1nfo *s) {
+	int i;
 	// Pad to complete the last block
 	sha1_pad(s);
 
 #ifndef SHA_BIG_ENDIAN
 	// Swap byte order back
-	int i;
+	
 	for (i=0; i<5; i++) {
 		s->state[i]=
 			  (((s->state[i])<<24)& 0xff000000)
@@ -326,3 +322,4 @@ int main (int argc, char **argv) {
 	return 0;
 }
 #endif /* self-test */
+#endif

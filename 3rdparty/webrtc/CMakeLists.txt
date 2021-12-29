@@ -13,6 +13,8 @@ DIRS
 	Microstack
 EXCLUDE
 	Microstack/sha1.c
+	Microstack/md5.c
+	Microstack/SHA256.c
 INCLUDES
 	PUBLIC
 		core

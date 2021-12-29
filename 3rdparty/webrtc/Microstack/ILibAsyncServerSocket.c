@@ -1,5 +1,5 @@
 /*   
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,20 +35,18 @@ limitations under the License.
 
 #define INET_SOCKADDR_LENGTH(x) ((x==AF_INET6?sizeof(struct sockaddr_in6):sizeof(struct sockaddr_in)))
 
-struct ILibAsyncServerSocketModule
+typedef struct ILibAsyncServerSocketModule
 {
-	void (*PreSelect)(void* object,fd_set *readset, fd_set *writeset, fd_set *errorset, int* blocktime);
-	void (*PostSelect)(void* object,int slct, fd_set *readset, fd_set *writeset, fd_set *errorset);
-	void (*Destroy)(void* object);
-	void *Chain;
+	ILibChain_Link ChainLink;
 
 	int MaxConnection;
 	void **AsyncSockets;
 	ILibServerScope scope;
 
 	SOCKET ListenSocket;
-	unsigned short portNumber;
+	unsigned short portNumber, initialPortNumber;
 	int listening;
+	int loopbackFlag;
 
 	ILibAsyncServerSocket_OnReceive OnReceive;
 	ILibAsyncServerSocket_OnConnect OnConnect;
@@ -59,18 +57,21 @@ struct ILibAsyncServerSocketModule
 	void *Tag;
 	int Tag2;
 	#ifndef MICROSTACK_NOTLS
+	ILibAsyncServerSocket_OnSSL OnSSLContext;
 	SSL_CTX *ssl_ctx;
 #ifdef MICROSTACK_TLS_DETECT
 	int TLSDetectEnabled;
 #endif
 	#endif
-};
+}ILibAsyncServerSocketModule;
 struct ILibAsyncServerSocket_Data
 {
 	struct ILibAsyncServerSocketModule *module;
 	ILibAsyncServerSocket_BufferReAllocated Callback;
 	void *user;
 };
+
+const int ILibMemory_ASYNCSERVERSOCKET_CONTAINERSIZE = (const int)sizeof(ILibAsyncServerSocketModule);
 
 
 /*! \fn ILibAsyncServerSocket_GetTag(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule)
@@ -173,7 +174,7 @@ void ILibAsyncServerSocket_PreSelect(void* socketModule, fd_set *readset, fd_set
 		#pragma warning( pop )
 		#endif
 	}
-	else
+	else if (module->ListenSocket != ~0)
 	{
 		// Only put the ListenSocket in the readset, if we are able to handle a new socket
 		for(i = 0; i < module->MaxConnection; ++i)
@@ -316,10 +317,11 @@ void ILibAsyncServerSocket_PostSelect(void* socketModule, int slct, fd_set *read
 					{
 						// Accept a new TLS connection
 #ifdef MICROSTACK_TLS_DETECT
-						ILibAsyncSocket_SetSSLContext(module->AsyncSockets[i], module->ssl_ctx, module->TLSDetectEnabled == 0 ? ILibAsyncSocket_TLS_Mode_Server : ILibAsyncSocket_TLS_Mode_Server_with_TLSDetectLogic);
+						SSL* ctx = ILibAsyncSocket_SetSSLContext(module->AsyncSockets[i], module->ssl_ctx, module->TLSDetectEnabled == 0 ? ILibAsyncSocket_TLS_Mode_Server : ILibAsyncSocket_TLS_Mode_Server_with_TLSDetectLogic);
 #else
-						ILibAsyncSocket_SetSSLContext(module->AsyncSockets[i], module->ssl_ctx, ILibAsyncSocket_TLS_Mode_Server);
+						SSL* ctx = ILibAsyncSocket_SetSSLContext(module->AsyncSockets[i], module->ssl_ctx, ILibAsyncSocket_TLS_Mode_Server);
 #endif
+						if (ctx != NULL && module->OnSSLContext != NULL) { module->OnSSLContext(module, module->AsyncSockets[i], ctx, &(data->user)); }
 					}
 					else
 					#endif	
@@ -343,14 +345,17 @@ void ILibAsyncServerSocket_Destroy(void *socketModule)
 	struct ILibAsyncServerSocketModule *module =(struct ILibAsyncServerSocketModule*)socketModule;
 
 	free(module->AsyncSockets);
+	if (module->ListenSocket != (SOCKET)~0)
+	{
 #ifdef _WIN32_WCE
-	closesocket(module->ListenSocket);
+		closesocket(module->ListenSocket);
 #elif WIN32
-	closesocket(module->ListenSocket);
+		closesocket(module->ListenSocket);
 #elif _POSIX
-	close(module->ListenSocket);
+		close(module->ListenSocket);
 #endif
-	module->ListenSocket = (SOCKET)~0;
+		module->ListenSocket = (SOCKET)~0;
+	}
 }
 
 //
@@ -417,7 +422,7 @@ void ILibAsyncServerSocket_OnDisconnectSink(ILibAsyncSocket_SocketModule socketM
 	if (data->module->OnDisconnect != NULL) data->module->OnDisconnect(data->module, socketModule, data->user);
 
 	// If the chain is shutting down, we need to free some resources
-	if (ILibIsChainBeingDestroyed(data->module->Chain) == 0) free(data);
+	if (ILibIsChainBeingDestroyed(data->module->ChainLink.ParentChain) == 0) free(data);
 }
 // 
 // Internal method dispatched by the OnSendOK event of the underlying ILibAsyncSocket
@@ -451,6 +456,10 @@ void ILibAsyncServerSocket_OnBufferReAllocated(ILibAsyncSocket_SocketModule Conn
 }
 
 #ifndef MICROSTACK_NOTLS
+void* ILibAsyncServerSocket_GetSSL_CTX(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule)
+{
+	return(((struct ILibAsyncServerSocketModule*)ILibAsyncSocketModule)->ssl_ctx);
+}
 #ifdef MICROSTACK_TLS_DETECT
 void ILibAsyncServerSocket_SetSSL_CTX(ILibAsyncServerSocket_ServerModule ILibAsyncSocketModule, void *ssl_ctx, int enableTLSDetect)
 #else
@@ -468,20 +477,139 @@ void ILibAsyncServerSocket_SetSSL_CTX(ILibAsyncServerSocket_ServerModule ILibAsy
 }
 #endif
 
+void ILibAsyncServerSocket_ResumeListeningSink(void *chain, void* user)
+{
+	ILibAsyncServerSocketModule *m = (ILibAsyncServerSocketModule*)user;
+
+	int ra = 1;
+	int off = 0;
+	int receivingAddressLength = sizeof(struct sockaddr_in6);
+	struct sockaddr_in6 localif;
+	struct sockaddr_in6 localAddress;
+
+	UNREFERENCED_PARAMETER(chain);
+
+	memset(&localif, 0, sizeof(struct sockaddr_in6));
+	if (m->loopbackFlag != 2 && ILibDetectIPv6Support())
+	{
+		// Setup the IPv6 any or loopback address, this socket will also work for IPv4 traffic on IPv6 stack
+		localif.sin6_family = AF_INET6;
+		localif.sin6_addr = (m->loopbackFlag != 0 ? in6addr_loopback : in6addr_any);
+		localif.sin6_port = htons(m->initialPortNumber);
+	}
+	else
+	{
+		// IPv4-only detected
+		localif.sin6_family = AF_INET;
+#ifdef WINSOCK2
+		((struct sockaddr_in*)&localif)->sin_addr.S_un.S_addr = htonl((m->loopbackFlag != 0 ? INADDR_LOOPBACK : INADDR_ANY));
+#else 
+		((struct sockaddr_in*)&localif)->sin_addr.s_addr = htonl((m->loopbackFlag != 0 ? INADDR_LOOPBACK : INADDR_ANY));
+#endif
+		((struct sockaddr_in*)&localif)->sin_port = htons(m->initialPortNumber);
+	}
+
+	// Get our listening socket
+	if ((m->ListenSocket = socket(localif.sin6_family, SOCK_STREAM, IPPROTO_TCP)) == -1) { m->ListenSocket = (SOCKET)~0;  return; }
+
+	// Setup the IPv6 & IPv4 support on same socket
+	if (localif.sin6_family == AF_INET6) if (setsockopt(m->ListenSocket, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&off, sizeof(off)) != 0) ILIBCRITICALERREXIT(253);
+
+#ifdef SO_NOSIGPIPE
+	setsockopt(m->ListenSocket, SOL_SOCKET, SO_NOSIGPIPE, (void*)&ra, sizeof(int));  // Turn off SIGPIPE if writing to disconnected socket
+#endif
+
+#if defined(WIN32)
+	// On Windows. Lets make sure no one else can bind to this addr/port. This stops socket hijacking (not a problem on Linux).
+	if (setsockopt(m->ListenSocket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (char*)&ra, sizeof(int)) != 0) ILIBCRITICALERREXIT(253);
+#else
+	// On Linux. Setting the re-use on a TCP socket allows reuse of the socket even in timeout state. Allows for fast stop/start (Not a problem on Windows).
+	if (setsockopt(m->ListenSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&ra, sizeof(int)) != 0) ILIBCRITICALERREXIT(253);
+#endif
+
+	// Bind the socket
+#if defined(WIN32)
+	if (bind(m->ListenSocket, (struct sockaddr*)&localif, INET_SOCKADDR_LENGTH(localif.sin6_family)) != 0) { closesocket(m->ListenSocket); m->ListenSocket = (SOCKET)~0; return; }
+#else
+	if (bind(m->ListenSocket, (struct sockaddr*)&localif, INET_SOCKADDR_LENGTH(localif.sin6_family)) != 0) { close(m->ListenSocket); m->ListenSocket = (SOCKET)~0; return; }
+#endif
+
+	// Fetch the local port number
+#if defined(WINSOCK2)
+	getsockname(m->ListenSocket, (struct sockaddr*)&localAddress, (int*)&receivingAddressLength);
+#else
+	getsockname(m->ListenSocket, (struct sockaddr*)&localAddress, (socklen_t*)&receivingAddressLength);
+#endif
+	if (localAddress.sin6_family == AF_INET6) m->portNumber = ntohs(localAddress.sin6_port); else m->portNumber = ntohs(((struct sockaddr_in*)&localAddress)->sin_port);
+	m->listening = 0;
+}
+void ILibAsyncServerSocket_StopListeningSink(void *chain, void* user)
+{
+	ILibAsyncServerSocketModule *m = (ILibAsyncServerSocketModule*)user;
+	UNREFERENCED_PARAMETER(chain);
+
+	if (m->ListenSocket != (SOCKET)~0)
+	{
+#ifdef WIN32
+		closesocket(m->ListenSocket);
+#else
+		close(m->ListenSocket);
+#endif
+		m->ListenSocket = (SOCKET)~0;
+	}
+}
+//! Take the server socket out of listening mode, rejecting new incoming connection requests
+/*!
+	\param module ILibAsyncServerSocket_ServerModule Server Listening Module
+*/
+void ILibAsyncServerSocket_StopListening(ILibAsyncServerSocket_ServerModule module)
+{
+	ILibAsyncServerSocketModule *m = (ILibAsyncServerSocketModule*)module;
+	ILibChain_RunOnMicrostackThread(m->ChainLink.ParentChain, ILibAsyncServerSocket_StopListeningSink, m);
+}
+//! Put the server socket back in listening mode, to allow new incoming connection requests
+/*!
+	\param module ILibAsyncServerSocket_ServerModule Server Listening Module
+*/
+void ILibAsyncServerSocket_ResumeListening(ILibAsyncServerSocket_ServerModule module)
+{
+	ILibAsyncServerSocketModule *m = (ILibAsyncServerSocketModule*)module;
+	ILibChain_RunOnMicrostackThread(m->ChainLink.ParentChain, ILibAsyncServerSocket_ResumeListeningSink, m);
+}
+
+void ILibAsyncServerSocket_RemoveFromChainSink(void *chain, void *user)
+{
+	ILibAsyncServerSocketModule *module = (ILibAsyncServerSocketModule*)user;
+	int i;
+
+	for (i = 0; i < module->MaxConnection; ++i)
+	{
+		ILibChain_SafeRemoveEx(chain, module->AsyncSockets[i]);
+	}
+	ILibChain_SafeRemoveEx(chain, module);
+}
+void ILibAsyncServerSocket_RemoveFromChain(ILibAsyncServerSocket_ServerModule serverModule)
+{
+	ILibChain_RunOnMicrostackThreadEx(((ILibAsyncServerSocketModule*)serverModule)->ChainLink.ParentChain, ILibAsyncServerSocket_RemoveFromChainSink, serverModule);
+}
+
 /*! \fn ILibCreateAsyncServerSocketModule(void *Chain, int MaxConnections, int PortNumber, int initialBufferSize, ILibAsyncServerSocket_OnConnect OnConnect,ILibAsyncServerSocket_OnDisconnect OnDisconnect,ILibAsyncServerSocket_OnReceive OnReceive,ILibAsyncServerSocket_OnInterrupt OnInterrupt, ILibAsyncServerSocket_OnSendOK OnSendOK)
 \brief Instantiates a new ILibAsyncServerSocket
 \param Chain The chain to add this module to. (Chain must <B>not</B> be running)
 \param MaxConnections The max number of simultaneous connections that will be allowed
 \param PortNumber The port number to bind to. 0 will select a random port
 \param initialBufferSize The initial size of the receive buffer
+\param loopbackFlag 0 to bind to ANY, 1 to bind to IPv6 loopback first, 2 to bind to IPv4 loopback first.
 \param OnConnect Function Pointer that triggers when a connection is established
 \param OnDisconnect Function Pointer that triggers when a connection is closed
 \param OnReceive Function Pointer that triggers when data is received
 \param OnInterrupt Function Pointer that triggers when connection interrupted
 \param OnSendOK Function Pointer that triggers when pending sends are complete
+\param ServerAutoFreeMemorySize Size of AutoFreeMemory on Server to co-allocate
+\param SessionAutoFreeMemorySize Size of AutoFreeMemory on Session to co-allocate
 \returns An ILibAsyncServerSocket module
 */
-ILibAsyncServerSocket_ServerModule ILibCreateAsyncServerSocketModule(void *Chain, int MaxConnections, unsigned short PortNumber, int initialBufferSize, int loopbackFlag, ILibAsyncServerSocket_OnConnect OnConnect, ILibAsyncServerSocket_OnDisconnect OnDisconnect, ILibAsyncServerSocket_OnReceive OnReceive, ILibAsyncServerSocket_OnInterrupt OnInterrupt, ILibAsyncServerSocket_OnSendOK OnSendOK)
+ILibAsyncServerSocket_ServerModule ILibCreateAsyncServerSocketModuleWithMemory(void *Chain, int MaxConnections, unsigned short PortNumber, int initialBufferSize, int loopbackFlag, ILibAsyncServerSocket_OnConnect OnConnect, ILibAsyncServerSocket_OnDisconnect OnDisconnect, ILibAsyncServerSocket_OnReceive OnReceive, ILibAsyncServerSocket_OnInterrupt OnInterrupt, ILibAsyncServerSocket_OnSendOK OnSendOK, int ServerUserMappedMemorySize, int SessionUserMappedMemorySize)
 {
 	int i;
 	int ra = 1;
@@ -512,13 +640,12 @@ ILibAsyncServerSocket_ServerModule ILibCreateAsyncServerSocketModule(void *Chain
 	}
 
 	// Instantiate a new AsyncServer module
-	RetVal = (struct ILibAsyncServerSocketModule*)malloc(sizeof(struct ILibAsyncServerSocketModule));
-	if (RetVal == NULL) { ILIBMARKPOSITION(253); return NULL; }
-	memset(RetVal, 0, sizeof(struct ILibAsyncServerSocketModule));
-	RetVal->PreSelect = &ILibAsyncServerSocket_PreSelect;
-	RetVal->PostSelect = &ILibAsyncServerSocket_PostSelect;
-	RetVal->Destroy = &ILibAsyncServerSocket_Destroy;
-	RetVal->Chain = Chain;
+	RetVal = (struct ILibAsyncServerSocketModule*)ILibChain_Link_Allocate(sizeof(struct ILibAsyncServerSocketModule), ServerUserMappedMemorySize);
+	
+	RetVal->ChainLink.PreSelectHandler = &ILibAsyncServerSocket_PreSelect;
+	RetVal->ChainLink.PostSelectHandler = &ILibAsyncServerSocket_PostSelect;
+	RetVal->ChainLink.DestroyHandler = &ILibAsyncServerSocket_Destroy;
+	RetVal->ChainLink.ParentChain = Chain;
 	RetVal->OnConnect = OnConnect;
 	RetVal->OnDisconnect = OnDisconnect;
 	RetVal->OnInterrupt = OnInterrupt;
@@ -528,6 +655,8 @@ ILibAsyncServerSocket_ServerModule ILibCreateAsyncServerSocketModule(void *Chain
 	RetVal->AsyncSockets = (void**)malloc(MaxConnections * sizeof(void*));
 	if (RetVal->AsyncSockets == NULL) { free(RetVal); ILIBMARKPOSITION(253); return NULL; }
 	RetVal->portNumber = (unsigned short)PortNumber;
+	RetVal->loopbackFlag = loopbackFlag;
+	RetVal->initialPortNumber = PortNumber;
 
 	// Get our listening socket
 	if ((RetVal->ListenSocket = socket(localif.sin6_family, SOCK_STREAM, IPPROTO_TCP)) == -1) { free(RetVal->AsyncSockets); free(RetVal); return 0; }
@@ -565,7 +694,7 @@ ILibAsyncServerSocket_ServerModule ILibCreateAsyncServerSocketModule(void *Chain
 	// Create our socket pool
 	for(i = 0; i < MaxConnections; ++i)
 	{
-		RetVal->AsyncSockets[i] = ILibCreateAsyncSocketModule(Chain, initialBufferSize, &ILibAsyncServerSocket_OnData, &ILibAsyncServerSocket_OnConnectSink, &ILibAsyncServerSocket_OnDisconnectSink, &ILibAsyncServerSocket_OnSendOKSink);
+		RetVal->AsyncSockets[i] = ILibCreateAsyncSocketModuleWithMemory(Chain, initialBufferSize, &ILibAsyncServerSocket_OnData, &ILibAsyncServerSocket_OnConnectSink, &ILibAsyncServerSocket_OnDisconnectSink, &ILibAsyncServerSocket_OnSendOKSink, SessionUserMappedMemorySize);
 		//
 		// We want to know about any buffer reallocations, because anything above us may want to know
 		//
@@ -585,4 +714,9 @@ unsigned short ILibAsyncServerSocket_GetPortNumber(ILibAsyncServerSocket_ServerM
 {
 	return(((struct ILibAsyncServerSocketModule*)ServerSocketModule)->portNumber);
 }
-
+#ifndef MICROSTACK_NOTLS
+void ILibAsyncServerSocket_SSL_SetSink(ILibAsyncServerSocket_ServerModule AsyncServerSocketModule, ILibAsyncServerSocket_OnSSL handler)
+{
+	((struct ILibAsyncServerSocketModule*)AsyncServerSocketModule)->OnSSLContext = handler;
+}
+#endif

@@ -17,8 +17,8 @@ limitations under the License.
 #ifndef ___SimpleRendezvousServer___
 #define ___SimpleRendezvousServer___
 
-#include "Microstack/ILibParsers.h"
-#include "Microstack/ILibAsyncSocket.h"
+#include "../../microstack/ILibParsers.h"
+#include "../../microstack/ILibAsyncSocket.h"
 
 typedef enum 
 {

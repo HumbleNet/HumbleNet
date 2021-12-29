@@ -1,11 +1,11 @@
 /*
-Copyright 2014 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
+#if !defined(MICROSTACK_NOTLS)
 
 // This is a version of the WebRTC stack with Initiator, TURN and proper retry logic.
 
@@ -33,8 +35,7 @@ limitations under the License.
 #include "ILibAsyncSocket.h"
 #include "ILibAsyncUDPSocket.h"
 #include "ILibWebRTC.h"
-#include "../core/utils.h"
-
+#include "ILibCrypto.h"
 
 #include "ILibRemoteLogging.h"
 #ifdef _REMOTELOGGINGSERVER
@@ -42,13 +43,12 @@ limitations under the License.
 	#define ILibWebRTC_LoggingServerPort 0
 #endif
 
-#if defined( SSL_CTX_set_ecdh_auto )
-// use it
-#else
-#define SSL_CTX_set_ecdh_auto( ctx, IGNORED ) \
-SSL_CTX_set_tmp_ecdh(ctx, EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
+#ifdef OPENSSL_IS_BORINGSSL
+#define HMAC_CTX_free HMAC_CTX_cleanup
+inline HMAC_CTX* HMAC_CTX_new() { HMAC_CTX* ctx;  HMAC_CTX_init(ctx); return ctx; }
 #endif
 
+#define STUN_NUM_ADDR 5
 #define ILibStunClient_TIMEOUT 2
 #define ILibRUDP_WindowSize 32000
 #define ILibRUDP_StartBufferSize 2048
@@ -68,6 +68,7 @@ SSL_CTX_set_tmp_ecdh(ctx, EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
 #define ILibSTUN_MaxOfferAgeSeconds 60			// Offers are only valid for this amount of time
 #define ILibSCTP_FastRetry_GAP 3
 
+#define ILibSCTP_UnorderedFlag 0x04
 
 //
 // NAT Keep Alive Interval. We'll use a random value between these two values
@@ -100,6 +101,12 @@ SSL_CTX_set_tmp_ecdh(ctx, EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
 #define NAT_MAPPING_DETECTION(TransactionID) (TransactionID[11])
 #define DTLS_PAUSE_FLAG 0x01
 #define DTLS_RESUME_FLAG 0x02
+
+#define ILibTURN_FLAGS_DATA_INDICATION 0x10000
+#define ILibTURN_FLAGS_CHANNEL_DATA 0x20000
+#define ILibTURN_MASK_CHANNEL_DATA 0xFFFF
+#define ILibTURN_CHANNEL_BINDING_REFRESH_INTERVAL 480
+#define ILibTURN_PERMISSION_REFRESH_INTERVAL 210
 
 #define ReceiveHoldBuffer_Increment(list, value) {union{int i;void*p;}u; u.p = ILibLinkedList_GetTag(list); u.i += value; ILibLinkedList_SetTag(list, u.p);}
 #define ReceiveHoldBuffer_Decrement(list, value) {union{int i;void*p;}u; u.p = ILibLinkedList_GetTag(list); u.i -= value; ILibLinkedList_SetTag(list, u.p);}
@@ -163,6 +170,7 @@ typedef enum STUN_STATUS
 	STUN_STATUS_CHECKING_SYMETRIC_NAT = 2,
 	STUN_STATUS_CHECKING_RESTRICTED_NAT = 3,
 	STUN_STATUS_COMPLETE = 5,
+	STUN_STATUS_NOT_TESTED = 0xFFFF,
 } STUN_STATUS;
 
 typedef enum STUN_TYPE
@@ -242,6 +250,12 @@ typedef enum STUN_ATTRIBUTES
 	TURN_TCP_CONNECTION_ID = 0x002A
 } STUN_ATTRIBUTES;
 
+typedef enum SCTP_COMMON_HEADER_FLAGS
+{
+	SCTP_COMMON_HEADER_FLAGS_DATA = 0x01,
+	SCTP_COMMON_HEADER_FLAGS_CONTROL = 0x02,
+	SCTP_COMMON_HEADER_FLAGS_REORDER = 0x04
+} SCTP_COMMON_HEADER_FLAGS;
 typedef enum RCTP_CHUNK_TYPES
 {
 	RCTP_CHUNK_TYPE_DATA = 0x0000,
@@ -258,8 +272,9 @@ typedef enum RCTP_CHUNK_TYPES
 	RCTP_CHUNK_TYPE_COOKIEACK = 0x000B,
 	RCTP_CHUNK_TYPE_ECNE = 0x000C,
 	RCTP_CHUNK_TYPE_RECONFIG = 0x0082,
+	RCTP_CHUNK_TYPE_FWDTSN = 0x00C0,
 	RCTP_CHUNK_TYPE_ASCONF = 0x00C1,
-	RCTP_CHUNK_TYPE_ASCONFACK = 0x0080,
+	RCTP_CHUNK_TYPE_ASCONFACK = 0x0080
 } RCTP_CHUNK_TYPES;
 
 typedef enum SCTP_ERROR_CAUSE_CODES
@@ -291,6 +306,7 @@ typedef enum SCTP_RECONFIG_TYPES
 
 typedef enum SCTP_INIT_PARAMS
 {
+	SCTP_INIT_PARAM_STATE_COOKIE = 0x0007,
 	SCTP_INIT_PARAM_UNRELIABLE_STREAM = 0xC000,
 	SCTP_INIT_PARAM_PARTIAL_CHECKSUM = 0xC004,
 	SCTP_INIT_PARAM_RANDOM = 0x8002,
@@ -398,12 +414,20 @@ typedef struct ILibSCTP_Reconfig_Response
 	unsigned int RESSEQNum;
 	unsigned int Result;
 }ILibSCTP_Reconfig_Response;
-typedef struct ILibSCTP_HoldQueuePacket
+
+typedef struct ILibSCTP_RPACKET
 {
-	char** NextPacket;
-	unsigned short PacketLength;
-	char Packet[];
-}ILibSCTP_HoldQueuePacket;
+	struct ILibSCTP_RPACKET* NextPacket;
+	unsigned short PacketSize;
+	unsigned char PacketResendCounter;
+	unsigned char PacketGAPCounter;
+	unsigned short Reliability;
+	unsigned int CreationTimeStamp;
+	unsigned int LastSentTimeStamp;
+	char GAP[12];
+	char Data[];
+}ILibSCTP_RPACKET;
+
 typedef struct ILibSCTP_DataPayload
 {
 	unsigned char type;
@@ -415,6 +439,19 @@ typedef struct ILibSCTP_DataPayload
 	unsigned int ProtocolID;
 	char UserData[];
 }ILibSCTP_DataPayload;
+typedef struct ILibSCTP_FwdTSNPayload_Stream
+{
+	unsigned int StreamNumber;
+	unsigned int StreamSequence;
+}ILibSCTP_FwdTSNPayload_Stream;
+typedef struct ILibSCTP_FwdTSNPayload
+{
+	unsigned char type;
+	unsigned char flags;
+	unsigned short length;
+	unsigned int NewTSN;
+	ILibSCTP_FwdTSNPayload_Stream SkippedStreams[];
+}ILibSCTP_FwdTSNPayload;
 typedef union ILibSCTP_PendingTSN_Data
 {
 	struct 
@@ -425,6 +462,17 @@ typedef union ILibSCTP_PendingTSN_Data
 	}Data;
 	void* Raw;
 }ILibSCTP_PendingTSN_Data;
+typedef struct ILibICE_PeriodicState
+{
+	struct sockaddr_in6 addr;
+	char flags;
+	void *ptr;
+}ILibICE_PeriodicState;
+typedef struct ILibTURN_TransactionData
+{
+	void *Handler;
+	void *user;
+}ILibTURN_TransactionData;
 #ifdef WIN32
 #pragma warning( pop )
 #endif
@@ -624,24 +672,22 @@ struct ILibStun_IceState
 	long long creationTime;
 	int useTurn;
 	void *userObject;
+	struct sockaddr_in6 ReceivedAddr[STUN_NUM_ADDR];
 };
 
-struct ILibStun_dTlsSession
+typedef struct ILibStun_dTlsSession
 {
+	ILibTransport Transport;
+	// DO NOT MODIFY ABOVE FIELDS (ILibTransport)
+
 	struct ILibStun_Module* parent;
 	SSL* ssl;
 	void* User;
-	void* Chain;	
-	ILibTransport_SendPtr sendPtr;
-	ILibTransport_ClosePtr closePtr;
-	ILibTransport_PendingBytesToSendPtr pendingPtr;
-	unsigned int IdentifierFlags;
-	// DO NOT MODIFY ABOVE FIELDS (ILibTransport)
-
 	int sessionId;
 	int iceStateSlot;
-	struct sockaddr_in6 remoteInterface;
-	
+	struct sockaddr_in6* remoteInterface;
+	long channelBindingRefresh;
+
 	unsigned short inport;
 	unsigned short outport;
 	unsigned int tag;
@@ -673,6 +719,7 @@ struct ILibStun_dTlsSession
 	unsigned int zeroWindowProbeTime;
 	unsigned int lastSackTime;
 	unsigned int lastRetransmitTime;
+	unsigned int fwdTsnDelayTime;
 
 	int timervalue;
 	unsigned short pendingCount;
@@ -691,7 +738,6 @@ struct ILibStun_dTlsSession
 	int rpacketsize;
 
 	long freshnessTimestampStart;
-	
 	void* User2;
 	int User3;
 	int User4;
@@ -720,23 +766,17 @@ struct ILibStun_dTlsSession
 	int RTTVAR;
 	int RTO;
 	unsigned int T3RTXTIME;
-};
+}ILibStun_dTlsSession;
 
-
-#define ILibWebRTC_DTLS_TO_TIMER_OBJECT(d) ((char*)d+16)
-#define ILibWebRTC_DTLS_FROM_TIMER_OBJECT(d) ((struct ILibStun_dTlsSession*)((char*)d-16))
-
-struct ILibStun_Module
+typedef struct ILibStun_Module
 {
-	ILibChain_PreSelect PreSelect;
-	ILibChain_PostSelect PostSelect;
-	ILibChain_Destroy Destroy;
+	ILibChain_Link ChainLink;
 
 	void *UDP;
 	void *UDP6;
 	void *Timer;
-	void *Chain;
-	void *user;
+	ILibLinkedList StunUsers;
+	ILibStun_Results StunResult;
 	ILibStunClient_OnResult OnResult;
 
 	// STUN State
@@ -760,12 +800,11 @@ struct ILibStun_Module
 	ILibSCTP_OnData OnData;
 	ILibSCTP_OnSendOK OnSendOK;
 
+	SSL_CTX* SecurityContext;
 	int IceStatesNextSlot;
 	struct ILibStun_IceState* IceStates[ILibSTUN_MaxSlots];
-	int dTlsAllowedNextSlot;
-	struct sockaddr_in6 dTlsAllowed[ILibSTUN_MaxSlots];
-	SSL_CTX* SecurityContext;
 	struct ILibStun_dTlsSession* dTlsSessions[ILibSTUN_MaxSlots];
+	int dtlsSessionNextSlot;
 	char* CertThumbprint;
 	int CertThumbprintLength;
 
@@ -786,6 +825,8 @@ struct ILibStun_Module
 	int turnPasswordLength;
 	int alwaysUseTurn;
 	int alwaysConnectTurn;
+	int allocationLifetime;
+
 	int consentFreshnessDisabled;
 
 #ifdef _WEBRTCDEBUG
@@ -793,7 +834,7 @@ struct ILibStun_Module
 	int inboundDropPackets;
 	int outboundDropPackets;
 #endif
-};
+}ILibStun_Module;
 
 unsigned int ILibStun_CRC32(char *buf, int len)
 {
@@ -802,9 +843,22 @@ unsigned int ILibStun_CRC32(char *buf, int len)
 	return ~c;
 }
 
-struct ILibStun_Module *g_stunModule = NULL;
+#define ILibWebRTC_DTLS_TO_TIMER_OBJECT(d) ((char*)d+16)
+#define ILibWebRTC_DTLS_FROM_TIMER_OBJECT(d) ((struct ILibStun_dTlsSession*)((char*)d-16))
+#define ILibWebRTC_DTLS_TO_CONSENT_FRESHNESS_TIMER_OBJECT(d) ((char*)d+1)
+#define ILibWebRTC_DTLS_FROM_CONSENT_FRESHNESS_TIMER_OBJECT(d) ((ILibStun_dTlsSession*)((char*)d-1))
+#define ILibWebRTC_DTLS_TO_SCTP_HEARTBEAT_TIMER_OBJECT(d) d
+#define ILibWebRTC_DTLS_FROM_SCTP_HEARTBEAT_TIMER_OBJECT(d) ((ILibStun_dTlsSession*)d)
+#define ILibWebRTC_STUN_TO_CONNECTIVITY_CHECK_TIMER(s) ((char*)s+1)
+#define ILibWebRTC_STUN_FROM_CONNECTIVITY_CHECK_TIMER(s) ((ILibStun_Module*)((char*)s-1))
+int ILibStunClientIndex = -1;
 
 // Function prototypes
+void ILibStun_DTLS_Success_OnCreateTURNChannelBinding(ILibTURN_ClientModule turnModule, unsigned short channelNumber, int success, void* user);
+void ILibStun_DTLS_Success_OnCreateTURNChannelBinding2(ILibTURN_ClientModule turnModule, unsigned short channelNumber, int success, void* user);
+int ILibTURN_GetErrorCode(char* buffer, int length);
+char* ILibTURN_GetErrorReason(char* buffer, int length);
+
 ILibTransport_DoneState ILibStun_SendSctpPacket(struct ILibStun_Module *obj, int session, char* buffer, int bufferLength);
 void ILibStun_OnTimeout(void *object);
 void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* buffer, int bufferLength);
@@ -822,6 +876,13 @@ void ILibTURN_DisconnectFromServer(ILibTURN_ClientModule turnModule);
 ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannelEx2(void *WebRTCModule, unsigned short *streamIds, int streamIdLength);
 void ILibWebRTC_PropagateChannelCloseEx(ILibSparseArray sender, struct ILibStun_dTlsSession* obj);
 ILibSparseArray ILibWebRTC_PropagateChannelClose(struct ILibStun_dTlsSession* obj, char* packet);
+
+typedef enum ILibStunClient_PreviousResults
+{
+	ILibStunClient_PreviousResults_NeverTested = 0,
+	ILibStunClient_PreviousResults_Expired = 1,
+	ILibStunClient_PreviousResults_ValidResults = 2,
+}ILibStunClient_PreviousResults;
 
 typedef enum ILibWebRTC_DTLS_ContentTypes_Def
 {
@@ -844,6 +905,13 @@ typedef enum ILibWebRTC_DTLS_HandshakeTypes_Def
 	ILibWebRTC_DTLSHandshakeType_finished = 20
 }ILibWebRTC_DTLS_HandshakeTypes;
 
+typedef struct ILibSCTP_HoldingQueueFlags
+{
+	char DataPropagated : 1;
+}ILibSCTP_HoldingQueueFlags;
+
+#define ILibSCTP_GetHoldingQueueFlags(node) ((ILibSCTP_HoldingQueueFlags*)ILibLinkedList_GetExtendedMemory(node))
+
 void ILibWebRTC_DTLS_HandshakeDetect(struct ILibStun_Module* obj, char* directionPrefix, char* buffer, int offset, int length)
 {
 	ILibWebRTC_DTLS_ContentTypes contentType = (ILibWebRTC_DTLS_ContentTypes)buffer[offset+0];
@@ -860,49 +928,49 @@ void ILibWebRTC_DTLS_HandshakeDetect(struct ILibStun_Module* obj, char* directio
 	switch(contentType)
 	{
 		case ILibAsyncSocket_TLSPlainText_ContentType_ChangeCipherSpec:
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CHANGE-CIPHER-SPEC]", directionPrefix, versionMajor, versionMinor);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CHANGE-CIPHER-SPEC]", directionPrefix, versionMajor, versionMinor);
 			break;
 		case ILibAsyncSocket_TLSPlainText_ContentType_Alert:
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [ALERT]", directionPrefix, versionMajor, versionMinor);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [ALERT]", directionPrefix, versionMajor, versionMinor);
 			break;
 		case ILibAsyncSocket_TLSPlainText_ContentType_ApplicationData:
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [APP/DATA]", directionPrefix, versionMajor, versionMinor);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [APP/DATA]", directionPrefix, versionMajor, versionMinor);
 			break;
 		case ILibAsyncSocket_TLSPlainText_ContentType_Handshake:
 			switch(tlsHandshakeType)
 			{
 				case ILibWebRTC_DTLSHandshakeType_hello:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [HELLO]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [HELLO]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_clienthello:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CLIENT-HELLO]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CLIENT-HELLO]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_serverhello:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [SERVER-HELLO]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [SERVER-HELLO]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_certificate:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CERTIFICATE]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CERTIFICATE]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_serverkeyexchange:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [SERVER-KEY-EXCHANGE]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [SERVER-KEY-EXCHANGE]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_certificaterequest:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CERTIFICATE-REQUEST]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CERTIFICATE-REQUEST]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_serverhellodone:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [SERVER-HELLO-DONE]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [SERVER-HELLO-DONE]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_certificateverify:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CERTIFICATE-VERIFY]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CERTIFICATE-VERIFY]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_clientkeyexchange:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CLIENT-KEY-EXCHANGE]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [CLIENT-KEY-EXCHANGE]", directionPrefix, versionMajor, versionMinor);
 					break;
 				case ILibWebRTC_DTLSHandshakeType_finished:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [FINISHED]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [FINISHED]", directionPrefix, versionMajor, versionMinor);
 					break;
 				default:
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [UNKNOWN Handshake Type]", directionPrefix, versionMajor, versionMinor);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "%s DTLS v%d.%d [UNKNOWN Handshake Type]", directionPrefix, versionMajor, versionMinor);
 					break;
 		
 			}
@@ -987,6 +1055,12 @@ char* SCTP_ERROR_CAUSE_TO_STRING(ILibSCTP_ErrorCause_Header *cause)
 	}
 }
 
+//! Associate custom user data with a local ICE session
+/*!
+	\param stunModule Stun/ICE Client
+	\param localUsername Username for local ICE Session
+	\param userObject Custom user data to set
+*/
 void ILibWebRTC_SetUserObject(void *stunModule, char* localUsername, void *userObject)
 {
 	struct ILibStun_Module* obj = (struct ILibStun_Module*) stunModule;
@@ -994,6 +1068,12 @@ void ILibWebRTC_SetUserObject(void *stunModule, char* localUsername, void *userO
 	if (SlotNumber >= 0 && SlotNumber < ILibSTUN_MaxSlots && obj->IceStates[SlotNumber] != NULL) { obj->IceStates[SlotNumber]->userObject = userObject; }
 }
 
+//! Get custom user data associated with a local ICE Session
+/*!
+	\param stunModule Stun/ICE client
+	\param localUsername Username for local ICE Session
+	\return Associated custom user data
+*/
 void* ILibWebRTC_GetUserObject(void *stunModule, char* localUsername)
 {
 	struct ILibStun_Module* obj = (struct ILibStun_Module*) stunModule;
@@ -1001,13 +1081,22 @@ void* ILibWebRTC_GetUserObject(void *stunModule, char* localUsername)
 	if (SlotNumber >= 0 && SlotNumber < ILibSTUN_MaxSlots && obj->IceStates[SlotNumber] != NULL) { return(obj->IceStates[SlotNumber]->userObject); }
 	return NULL;
 }
-
+//! Get associated custom user data from an active peer connection session
+/*!
+	\param webRTCSession Peer Connection Session
+	\return Associated custom user data
+*/
 void* ILibWebRTC_GetUserObjectFromDtlsSession(void *webRTCSession)
 {
 	struct ILibStun_dTlsSession* session = (struct ILibStun_dTlsSession*)webRTCSession;
 	return (session->parent->IceStates[session->iceStateSlot] != NULL ? session->parent->IceStates[session->iceStateSlot]->userObject : NULL);
 }
 
+//! Was this DTLS Session initiated locally
+/*!
+	\param dtlsSession Session to query
+	\return Non-Zero = Yes
+*/
 int ILibWebRTC_IsDtlsInitiator(void* dtlsSession)
 {
 	struct ILibStun_dTlsSession* session = (struct ILibStun_dTlsSession*)dtlsSession;
@@ -1024,6 +1113,8 @@ void ILibStun_OnDestroy(void *object)
 {
 	int i, extraClean = 0;
 	struct ILibStun_Module *obj = (struct ILibStun_Module*)object;
+
+	obj->UDP = obj->UDP6 = NULL;
 
 	// Clean up all reliable UDP state && all ICE offers (Use the same loop since both tables are ILibSTUN_MaxSlots long)
 	for (i = 0; i < ILibSTUN_MaxSlots; i++)
@@ -1043,6 +1134,10 @@ void ILibStun_OnDestroy(void *object)
 			obj->IceStates[i] = NULL;
 		}
 	}
+
+	ILibLinkedList_Destroy(obj->StunUsers);
+	if (obj->turnUsername != NULL) { free(obj->turnUsername); obj->turnUsername = NULL; }
+	if (obj->turnPassword != NULL) { free(obj->turnPassword); obj->turnPassword = NULL; }
 
 	if (extraClean == 0) return;
 
@@ -1065,12 +1160,44 @@ void ILibStun_OnDestroy(void *object)
 
 int ILibStun_GetFreeSessionSlot(void *StunModule)
 {
-	int i, j = -1;
+	int i, s, j = -1;
 	struct ILibStun_Module* obj = (struct ILibStun_Module*)StunModule;
 
 	// Find a free dTLS session slot
-	for (i = 0; i < ILibSTUN_MaxSlots; i++) { if (obj->dTlsSessions[i] == NULL || obj->dTlsSessions[i]->state == 0) { j = i; break; } }
+	for (i = 0; i < ILibSTUN_MaxSlots; i++) 
+	{ 
+		s = (obj->dtlsSessionNextSlot + i) % ILibSTUN_MaxSlots;
+		if (obj->dTlsSessions[s] == NULL || obj->dTlsSessions[s]->state == 0) 
+		{ 
+			j = s; break; 
+		} 
+	}
 	return j;
+}
+
+int ILibStun_GetExistingIceOfferIndex(void* stunModule, char *iceOffer, int iceOfferLen)
+{
+	ILibStun_Module* obj = (ILibStun_Module*)stunModule;
+	int rusernamelen = (int)iceOffer[6];
+	char* rusername = iceOffer + 7;
+	int rkeylen = iceOffer[7 + rusernamelen];
+	char *rkey = iceOffer + 7 + rusernamelen + 1;
+	int i;
+
+	UNREFERENCED_PARAMETER(iceOfferLen);
+
+	// Check to see if this iceState is an update to an existing one... Keying by remote username/password
+	for (i = 0; i < ILibSTUN_MaxSlots; ++i)
+	{
+		if (obj->IceStates[i] != NULL)
+		{
+			if (obj->IceStates[i]->rusernamelen == rusernamelen && obj->IceStates[i]->rkeylen == rkeylen && memcmp(obj->IceStates[i]->rusername, rusername, rusernamelen) == 0 && memcmp(obj->IceStates[i]->rkey, rkey, rkeylen) == 0)
+			{
+				return(i); // Index of an existing ice offer with the same remote username and password
+			}
+		}
+	}
+	return(-1); // Not Found
 }
 
 // Returns slot number that was used... -1 on Error
@@ -1086,7 +1213,7 @@ int ILibStun_GetFreeIceStateSlot(struct ILibStun_Module *stunModule, struct ILib
 		{
 			if (oldIceState != NULL) { *oldIceState = stunModule->IceStates[slot]; }
 			stunModule->IceStates[slot] = newIceState;
-			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibStun_GetFreeIceStateSlot: Encoded Slot = %d", slot);
+			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibStun_GetFreeIceStateSlot: Encoded Slot = %d", slot);
 			return slot;
 		}
 	}
@@ -1106,7 +1233,7 @@ int ILibStun_GetFreeIceStateSlot(struct ILibStun_Module *stunModule, struct ILib
 					{
 						if (oldIceState != NULL) { *oldIceState = stunModule->IceStates[i]; }
 						stunModule->IceStates[i] = newIceState;
-						ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibStun_GetFreeIceStateSlot: Update Slot = %d", i);
+						ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibStun_GetFreeIceStateSlot: Update Slot = %d", i);
 						return i;
 					}
 					else
@@ -1122,24 +1249,28 @@ int ILibStun_GetFreeIceStateSlot(struct ILibStun_Module *stunModule, struct ILib
 	for (i = 0; i < ILibSTUN_MaxSlots; ++i)
 	{
 		slot = (stunModule->IceStatesNextSlot + i) % ILibSTUN_MaxSlots;
-		ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibStun_GetFreeIceStateSlot: NextSlot: %d, i: %d, Slot: %d ", stunModule->IceStatesNextSlot, i, slot);
+		ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibStun_GetFreeIceStateSlot: NextSlot: %d, i: %d, Slot: %d ", stunModule->IceStatesNextSlot, i, slot);
 		if (stunModule->IceStates[slot] == NULL || (stunModule->IceStates[slot] != NULL && stunModule->IceStates[slot]->dtlsSession < 0 && ((ILibGetUptime() - stunModule->IceStates[slot]->creationTime) > (ILibSTUN_MaxOfferAgeSeconds * 1000))))
 		{
 			// This slot is either empty, or contains an offer with no DTLS session, and is older than what is allowed
 			if (oldIceState != NULL) { *oldIceState = stunModule->IceStates[slot]; }
 			stunModule->IceStates[slot] = newIceState;
 			stunModule->IceStatesNextSlot = slot + 1;
-			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibStun_GetFreeIceStateSlot: Free Slot = %d", slot);
+			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibStun_GetFreeIceStateSlot: Free Slot = %d", slot);
 			return slot;
 		}
 		else
 		{
-			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Slot Busy[%d]: Dtls: %d, Age: %d", slot, stunModule->IceStates[slot]->dtlsSession, ILibGetUptime() - stunModule->IceStates[slot]->creationTime);
+			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Slot Busy[%d]: Dtls: %d, Age: %d", slot, stunModule->IceStates[slot]->dtlsSession, ILibGetUptime() - stunModule->IceStates[slot]->creationTime);
 		}
 	}
 	return -1;
 }
-
+//! Clear internal ICE State
+/*!
+	\param stunModule Stun Client Module
+	\param iceSlot Slot number to clear
+*/
 void ILibStun_ClearIceState(void *stunModule, int iceSlot)
 {
 	struct ILibStun_IceState* ice;
@@ -1177,17 +1308,27 @@ void ILibSCTP_SetUser3(void* module, int user) { ((struct ILibStun_dTlsSession*)
 int ILibSCTP_GetUser3(void* module) { return ((struct ILibStun_dTlsSession*)module)->User3; }
 void ILibSCTP_SetUser4(void* module, int user) { ((struct ILibStun_dTlsSession*)module)->User4 = user; }
 int ILibSCTP_GetUser4(void* module) { return ((struct ILibStun_dTlsSession*)module)->User4; }
-
-int ILibSCTP_GetPendingBytesToSend(void* module)
+//! Get the number of bytes that are pending in the send buffer
+/*!
+	\param sctpSession The SCTP Session to query
+	\return Number of bytes pending in the send buffer
+*/
+int ILibSCTP_GetPendingBytesToSend(void* sctpSession)
 {
 	int r;
-	sem_wait(&(((struct ILibStun_dTlsSession*)module)->Lock));
-	r = ((struct ILibStun_dTlsSession*)module)->holdingByteCount;
-	sem_post(&(((struct ILibStun_dTlsSession*)module)->Lock));
+	sem_wait(&(((struct ILibStun_dTlsSession*)sctpSession)->Lock));
+	r = ((struct ILibStun_dTlsSession*)sctpSession)->holdingByteCount;
+	sem_post(&(((struct ILibStun_dTlsSession*)sctpSession)->Lock));
 	if (r < 0) return 0 - r;
 	return 0;
 }
-
+//! Set SCTP Callback handlers
+/*!
+	\param StunModule Local Stun/ICE Client
+	\param onconnect Event triggered when SCTP connection state changes
+	\param ondata Event triggered when data is received on the SCTP session
+	\param onsendok Event triggered when buffered send data is flushed
+*/
 void ILibSCTP_SetCallbacks(void* StunModule, ILibSCTP_OnConnect onconnect, ILibSCTP_OnData ondata, ILibSCTP_OnSendOK onsendok)
 {
 	struct ILibStun_Module* stunModule = (struct ILibStun_Module*)StunModule;
@@ -1201,7 +1342,14 @@ void ILibSCTP_SetCallbacks(void* StunModule, ILibSCTP_OnConnect onconnect, ILibS
 		stunModule->OnSendOK = NULL;
 	}
 }
-
+//! Set WebRTC Event Handlers
+/*!
+\param StunModule Local STUN/ICE Client
+\param OnDataChannel New Data Channel Event handler
+\param OnDataChannelClosed Closed Data Channel Event handler
+\param OnDataChannelAck ACK Event handler for when Remote Peer ACK's Data Channel Creation request
+\param OnOfferUpdated Reserved for Future Use
+*/
 void ILibWebRTC_SetCallbacks(void *StunModule, ILibWebRTC_OnDataChannel OnDataChannel, ILibWebRTC_OnDataChannelClosed OnDataChannelClosed, ILibWebRTC_OnDataChannelAck OnDataChannelAck, ILibWebRTC_OnOfferUpdated OnOfferUpdated)
 {
 	struct ILibStun_Module* stunModule = (struct ILibStun_Module*)StunModule;
@@ -1216,8 +1364,8 @@ void ILibStun_ComputeIntegrityKey(char* user, char* secret, char* key)
 {
 	char buf[40];
 	char result[32];
-	memcpy(buf, user, 8);
-	memcpy(buf + 8, secret, 32);
+	memcpy_s(buf, sizeof(buf), user, 8);
+	memcpy_s(buf + 8, sizeof(buf) - 8, secret, 32);
 	util_sha256(buf, 40, result);
 	util_tohex(result, 16, key);
 }
@@ -1239,7 +1387,7 @@ void ILibStun_GenerateUserAndKey(int iceSlot, char* secret, char* result)
 
 int ILibStun_AddMessageIntegrityAttr(char* rbuffer, int ptr, char* integritykey, int integritykeylen)
 {
-	HMAC_CTX hmac;
+	HMAC_CTX* hmac;
 	unsigned int hmaclen = 20;
 
 	((unsigned short*)(rbuffer))[1] = htons((unsigned short)(ptr + 24 - 20));						// Set the length
@@ -1247,11 +1395,11 @@ int ILibStun_AddMessageIntegrityAttr(char* rbuffer, int ptr, char* integritykey,
 	((unsigned short*)(rbuffer + ptr))[1] = htons(20);												// Attribute length
 
 	// Setup and perform HMAC-SHA1
-	HMAC_CTX_init(&hmac);
-	HMAC_Init_ex(&hmac, integritykey, integritykeylen, EVP_sha1(), NULL);
-	HMAC_Update(&hmac, (unsigned char*)rbuffer, ptr);
-	HMAC_Final(&hmac, (unsigned char*)(rbuffer + ptr + 4), &hmaclen); // Put the HMAC in the outgoing result location
-	HMAC_CTX_cleanup(&hmac);
+	hmac = HMAC_CTX_new();
+	HMAC_Init_ex(hmac, integritykey, integritykeylen, EVP_sha1(), NULL);
+	HMAC_Update(hmac, (unsigned char*)rbuffer, ptr);
+	HMAC_Final(hmac, (unsigned char*)(rbuffer + ptr + 4), &hmaclen); // Put the HMAC in the outgoing result location
+	HMAC_CTX_free(hmac);
 	return 24;
 }
 
@@ -1274,7 +1422,7 @@ int ILib_Stun_GetAttributeChangeRequestPacket(int flags, char* TransactionId, ch
 	util_random(12, TransactionId);																// Random used for transaction id
 
 	TransactionId[0] = 255;																		// Set the first byte to 255, so it doesn't collide with IceStateSlot
-	memcpy(rbuffer + 8, TransactionId, 12);
+	memcpy_s(rbuffer + 8, 12, TransactionId, 12);
 
 	((unsigned short*)(rbuffer + rptr))[0] = htons(STUN_ATTRIB_CHANGE_REQUEST);					// Attribute header
 	((unsigned short*)(rbuffer + rptr))[1] = htons(4);											// Attribute length
@@ -1297,7 +1445,7 @@ void ILib_Stun_SendAttributeChangeRequest(void* module, struct sockaddr* StunSer
 
 	StunModule->TransactionId[0] = 255;															// Set the first byte to 255, so it doesn't collide with IceStateSlot
 	NAT_MAPPING_DETECTION(StunModule->TransactionId) = ((flags & 0x8000)==0x8000)?255:0;		// Mapping Detection vs Public Interface Only Detection
-	memcpy(rbuffer + 8, StunModule->TransactionId, 12);
+	memcpy_s(rbuffer + 8, sizeof(rbuffer) - 8, StunModule->TransactionId, 12);
 
 	((unsigned short*)(rbuffer + rptr))[0] = htons(STUN_ATTRIB_CHANGE_REQUEST);					// Attribute header
 	((unsigned short*)(rbuffer + rptr))[1] = htons(4);											// Attribute length
@@ -1331,10 +1479,10 @@ int ILibStun_WebRTC_UpdateOfferResponse(struct ILibStun_IceState *iceState, char
 	if ((*answer = (char*)malloc(rlen + turnRecordSize)) == NULL) ILIBCRITICALEXIT(254);
 	((unsigned short*)(*answer))[0] = 1; // Block version number
 	((unsigned int*)(*answer + 2))[0] = htonl(BlockFlags); // Block flags
-	memcpy(*answer + 6, iceState->userAndKey, 42);
+	memcpy_s(*answer + 6, rlen + turnRecordSize - 6, iceState->userAndKey, 42);
 
 	(*answer)[48] = (char)(iceState->parentStunModule->CertThumbprintLength);
-	memcpy(*answer + 49, iceState->parentStunModule->CertThumbprint, iceState->parentStunModule->CertThumbprintLength); // Set DTLS fingerprint here 
+	memcpy_s(*answer + 49, rlen + turnRecordSize - 49, iceState->parentStunModule->CertThumbprint, iceState->parentStunModule->CertThumbprintLength); // Set DTLS fingerprint here 
 	(*answer)[49 + 32] = (char)LocalInterfaceListV4Len;
 	for (i = 0; i < LocalInterfaceListV4Len; i++)
 	{
@@ -1345,14 +1493,14 @@ int ILibStun_WebRTC_UpdateOfferResponse(struct ILibStun_IceState *iceState, char
 	if (turnRecordSize > 0)
 	{
 		(*answer + rlen)[0] = INET_SOCKADDR_LENGTH(iceState->parentStunModule->mRelayedTransportAddress.sin6_family);
-		memcpy(*answer + rlen + 1, &(iceState->parentStunModule->mRelayedTransportAddress), INET_SOCKADDR_LENGTH(iceState->parentStunModule->mRelayedTransportAddress.sin6_family));
+		memcpy_s(*answer + rlen + 1, turnRecordSize - 1, &(iceState->parentStunModule->mRelayedTransportAddress), INET_SOCKADDR_LENGTH(iceState->parentStunModule->mRelayedTransportAddress.sin6_family));
 	}
 	return (rlen + turnRecordSize);
 }
 
 void ILibStun_WebRTC_ConsentFreshness_Continue(void *object)
 {
-	struct ILibStun_dTlsSession *session = (struct ILibStun_dTlsSession*)object - 1;
+	struct ILibStun_dTlsSession *session = ILibWebRTC_DTLS_FROM_CONSENT_FRESHNESS_TIMER_OBJECT(object);
 	struct timeval tv;
 	char TransactionID[12];
 	int SessionSlot;
@@ -1364,7 +1512,7 @@ void ILibStun_WebRTC_ConsentFreshness_Continue(void *object)
 	if (tv.tv_sec - session->freshnessTimestampStart >= ILibStun_MaxConsentFreshnessTimeoutSeconds)
 	{
 		// We need to disconnect DTLS
-		ILibRemoteLogging_printf(ILibChainGetLogger(session->parent->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_2, "Consent Freshness Timeout, Closing Session: %d", session->sessionId);
+		ILibRemoteLogging_printf(ILibChainGetLogger(session->parent->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_2, "Consent Freshness Timeout, Closing Session: %d", session->sessionId);
 		ILibStun_SctpDisconnect(session->parent, session->sessionId);
 	}
 	else
@@ -1373,17 +1521,17 @@ void ILibStun_WebRTC_ConsentFreshness_Continue(void *object)
 		SessionSlot = session->sessionId;
 		memset(TransactionID, 0, 12);
 		TransactionID[0] = (char)(SessionSlot ^ 0x80);
-		memcpy(TransactionID + 1, &(session->freshnessTimestampStart), sizeof(long) < 11 ? sizeof(long) : 11);
+		memcpy_s(TransactionID + 1, sizeof(TransactionID) - 1, &(session->freshnessTimestampStart), sizeof(long) < 11 ? sizeof(long) : 11);
 
-		ILibRemoteLogging_printf(ILibChainGetLogger(session->parent->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_2, "Probing Consent Freshness for Session: %d with %s:%u", session->sessionId, ILibRemoteLogging_ConvertAddress((struct sockaddr*)&(session->remoteInterface)), htons(session->remoteInterface.sin6_port));
+		ILibRemoteLogging_printf(ILibChainGetLogger(session->parent->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_2, "Probing Consent Freshness for Session: %d with %s:%u", session->sessionId, ILibRemoteLogging_ConvertAddress((struct sockaddr*)(session->remoteInterface)), htons(session->remoteInterface->sin6_port));
 
-		ILibLifeTime_AddEx(session->parent->Timer, session + 1, 500, ILibStun_WebRTC_ConsentFreshness_Continue, NULL);
-		ILibStun_SendIceRequestEx(session->parent->IceStates[session->iceStateSlot], TransactionID, 0, &(session->remoteInterface));
+		ILibLifeTime_AddEx(session->parent->Timer, ILibWebRTC_DTLS_TO_CONSENT_FRESHNESS_TIMER_OBJECT(session), 500, ILibStun_WebRTC_ConsentFreshness_Continue, NULL);
+		ILibStun_SendIceRequestEx(session->parent->IceStates[session->iceStateSlot], TransactionID, 0, session->remoteInterface);
 	}
 }
 void ILibStun_WebRTC_ConsentFreshness_Start(void *object)
 {
-	struct ILibStun_dTlsSession *session = (struct ILibStun_dTlsSession*)object - 1;
+	struct ILibStun_dTlsSession *session = ILibWebRTC_DTLS_FROM_CONSENT_FRESHNESS_TIMER_OBJECT(object);
 	struct timeval tv;
 	char TransactionID[12];
 	int SessionSlot = session->sessionId;
@@ -1394,40 +1542,69 @@ void ILibStun_WebRTC_ConsentFreshness_Start(void *object)
 	gettimeofday(&tv, NULL);
 	session->freshnessTimestampStart = tv.tv_sec;
 
-	TransactionID[0] = ((unsigned char)SessionSlot ^ 0x80);
-	memcpy(TransactionID + 1, &(session->freshnessTimestampStart), sizeof(long) < 11 ? sizeof(long) : 11);
-
-	ILibRemoteLogging_printf(ILibChainGetLogger(session->parent->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_2, "Probing Consent Freshness for Session: %d with %s:%u", session->sessionId, ILibRemoteLogging_ConvertAddress((struct sockaddr*)&(session->remoteInterface)), htons(session->remoteInterface.sin6_port));
-
-	ILibLifeTime_AddEx(session->parent->Timer, session + 1, 500, ILibStun_WebRTC_ConsentFreshness_Continue, NULL);	// Wait 500ms for a response
-	ILibStun_SendIceRequestEx(session->parent->IceStates[session->iceStateSlot], TransactionID, 0, &(session->remoteInterface));
-}
-
-enum ILibAsyncSocket_SendStatus ILibStun_SendPacketEx(struct ILibStun_Module *stunModule, int useTurn, char* buffer, int offset, int length, struct sockaddr_in6* remoteInterface, enum ILibAsyncSocket_MemoryOwnership memoryOwnership)
-{
-	if (useTurn != 0)
+	if ((((int*)ILibMemory_GetExtraMemory(session->remoteInterface, sizeof(struct sockaddr_in6)))[0] & ILibTURN_FLAGS_CHANNEL_DATA) == ILibTURN_FLAGS_CHANNEL_DATA)
 	{
-		if (remoteInterface->sin6_family == 0)
+		// This is using a TURN Channel Binding, so check to see if we need to refresh it
+		if (tv.tv_sec - session->channelBindingRefresh > ILibTURN_CHANNEL_BINDING_REFRESH_INTERVAL)
 		{
-			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_5, "[Sending on TURN Channel Binding: %u]", remoteInterface->sin6_port);
-			return (ILibTURN_SendChannelData(stunModule->mTurnClientModule, remoteInterface->sin6_port, buffer, offset, length));
-		}
-		else
-		{
-			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_5, "[Sending TURN Indication to: %s:%u]", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
-			return (ILibTURN_SendIndication(stunModule->mTurnClientModule, remoteInterface, buffer, offset, length));
+			ILibTURN_CreateChannelBinding(session->parent->mTurnClientModule, (unsigned short)session->sessionId, session->remoteInterface, ILibStun_DTLS_Success_OnCreateTURNChannelBinding, session->parent);
 		}
 	}
 	else
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_5, "[Sending UDP to: %s:%u]", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
-		return (ILibAsyncSocket_SendTo(stunModule->UDP, buffer + offset, length, (struct sockaddr*)remoteInterface, memoryOwnership));
+		if ((((int*)ILibMemory_GetExtraMemory(session->remoteInterface, sizeof(struct sockaddr_in6)))[0] & ILibTURN_FLAGS_DATA_INDICATION) == ILibTURN_FLAGS_DATA_INDICATION)
+		{
+			// This is using a TURN SendIndication, so check to see if we need to refresh it
+			if (tv.tv_sec - session->channelBindingRefresh > ILibTURN_PERMISSION_REFRESH_INTERVAL)
+			{
+				ILibTURN_CreatePermission(session->parent->mTurnClientModule, session->remoteInterface, 1, NULL, NULL);
+				ILibTURN_CreateChannelBinding(session->parent->mTurnClientModule, (unsigned short)session->sessionId, session->remoteInterface, ILibStun_DTLS_Success_OnCreateTURNChannelBinding2, session->parent);
+			}
+		}
 	}
+
+	TransactionID[0] = ((unsigned char)SessionSlot ^ 0x80);
+	memcpy_s(TransactionID + 1, sizeof(TransactionID) - 1, &(session->freshnessTimestampStart), sizeof(long) < 11 ? sizeof(long) : 11);
+
+	ILibRemoteLogging_printf(ILibChainGetLogger(session->parent->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_2, "Probing Consent Freshness for Session: %d with %s:%u", session->sessionId, ILibRemoteLogging_ConvertAddress((struct sockaddr*)(session->remoteInterface)), htons(session->remoteInterface->sin6_port));
+
+	ILibLifeTime_AddEx(session->parent->Timer, ILibWebRTC_DTLS_TO_CONSENT_FRESHNESS_TIMER_OBJECT(session), 500, ILibStun_WebRTC_ConsentFreshness_Continue, NULL);	// Wait 500ms for a response
+	ILibStun_SendIceRequestEx(session->parent->IceStates[session->iceStateSlot], TransactionID, 0, session->remoteInterface);
 }
 
-enum ILibAsyncSocket_SendStatus ILibStun_SendPacket(struct ILibStun_IceState *iceState, char* buffer, int offset, int length, struct sockaddr_in6* remoteInterface, enum ILibAsyncSocket_MemoryOwnership memoryOwnership)
+enum ILibAsyncSocket_SendStatus ILibStun_SendPacket(struct ILibStun_Module *stunModule, char* buffer, int offset, int length, struct sockaddr_in6* remoteInterface, enum ILibAsyncSocket_MemoryOwnership memoryOwnership)
 {
-	return (ILibStun_SendPacketEx(iceState->parentStunModule, iceState->useTurn, buffer, offset, length, remoteInterface, memoryOwnership));
+	int flags = ((int*)ILibMemory_GetExtraMemory(remoteInterface, sizeof(struct sockaddr_in6)))[0];
+	ILibAsyncSocket_SendStatus retVal;
+
+	if (flags == 0)
+	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_5, "[Sending UDP to: %s:%u]", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
+		return (ILibAsyncSocket_SendTo(stunModule->UDP, buffer + offset, length, (struct sockaddr*)remoteInterface, memoryOwnership));
+	}
+	else
+	{
+		if ((flags & ILibTURN_FLAGS_DATA_INDICATION) == ILibTURN_FLAGS_DATA_INDICATION)
+		{
+			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_5, "[Sending TURN Indication to: %s:%u]", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
+			retVal = ILibTURN_SendIndication(stunModule->mTurnClientModule, remoteInterface, buffer, offset, length);
+			if (memoryOwnership == ILibAsyncSocket_MemoryOwnership_CHAIN) { free(buffer); }
+			return(retVal);
+		}
+		else if ((flags & ILibTURN_FLAGS_CHANNEL_DATA) == ILibTURN_FLAGS_CHANNEL_DATA)
+		{
+			unsigned short port = flags & ILibTURN_MASK_CHANNEL_DATA;
+			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_5, "[Sending on TURN Channel Binding: %u]", port);
+			retVal = ILibTURN_SendChannelData(stunModule->mTurnClientModule, port, buffer, offset, length);
+			if (memoryOwnership == ILibAsyncSocket_MemoryOwnership_CHAIN) { free(buffer); }
+			return(retVal);
+		}
+		else
+		{
+			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_5, "*UNKNOWN FLAG* [Sending UDP to: %s:%u]", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
+			return (ILibAsyncSocket_SendTo(stunModule->UDP, buffer + offset, length, (struct sockaddr*)remoteInterface, memoryOwnership));
+		}
+	}
 }
 
 void ILibWebRTC_CloseDataChannel_Timeout(void *obj)
@@ -1443,7 +1620,7 @@ void ILibWebRTC_CloseDataChannel_Timeout(void *obj)
 	{
 		// Too many failures
 		ILibSparseArray dup = ILibWebRTC_PropagateChannelClose(o, o->pendingReconfigPacket);
-		ILibRemoteLogging_printf(ILibChainGetLogger(o->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Exceeded maximum retries for RECONFIG CHUNK on Dtls Session: %d", o->sessionId);
+		ILibRemoteLogging_printf(ILibChainGetLogger(o->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Exceeded maximum retries for RECONFIG CHUNK on Dtls Session: %d", o->sessionId);
 
 		o->pendingReconfigPacket = NULL;
 		o->reconfigFailures = 0;
@@ -1454,10 +1631,33 @@ void ILibWebRTC_CloseDataChannel_Timeout(void *obj)
 	else
 	{
 		// Retransmit the Reconfig Chunk, and set a new timeout
-		ILibRemoteLogging_printf(ILibChainGetLogger(o->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "RECONFIG CHUNK retry attempt %d on Dtls Session: %d", o->reconfigFailures, o->sessionId);
+		ILibRemoteLogging_printf(ILibChainGetLogger(o->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "RECONFIG CHUNK retry attempt %d on Dtls Session: %d", o->reconfigFailures, o->sessionId);
 		ILibLifeTime_AddEx(o->parent->Timer, ILibWebRTC_DTLS_TO_TIMER_OBJECT(o), newTimeout, &ILibWebRTC_CloseDataChannel_Timeout, NULL);
-		ILibStun_SendSctpPacket(o->parent, o->sessionId, o->pendingReconfigPacket, o->rpacket + o->rpacketsize - o->pendingReconfigPacket);
+		ILibStun_SendSctpPacket(o->parent, o->sessionId, o->pendingReconfigPacket, (int)ntohs(((unsigned short*)(o->pendingReconfigPacket + 14))[0]));
 		sem_post(&o->Lock);
+	}
+}
+
+void ILibStun_FireResults(ILibStun_Module *StunModule, ILibStun_Results Result, struct sockaddr_in* PublicIP)
+{
+	void* tempStack;
+	void* node;
+	ILibCreateStack(&tempStack);
+
+	ILibLinkedList_Lock(StunModule->StunUsers);
+	StunModule->StunResult = Result;
+	StunModule->State = STUN_STATUS_COMPLETE;
+	while ((node = ILibLinkedList_GetNode_Tail(StunModule->StunUsers)) != NULL)
+	{
+		ILibPushStack(&tempStack, ILibLinkedList_GetDataFromNode(node));
+		ILibLinkedList_Remove(node);
+	}
+	ILibLinkedList_UnLock(StunModule->StunUsers);
+
+	while (tempStack != NULL)
+	{
+		node = ILibPopStack(&tempStack);
+		if (StunModule->OnResult != NULL) { StunModule->OnResult(StunModule, Result, PublicIP, node); }
 	}
 }
 
@@ -1478,15 +1678,16 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 	int isControlled = 0;
 	int isControlling = 0;
 	unsigned long long tiebreakValue = 0;
+	int ignore = 0;
 
 	// Check the length of the packet & IPv4
-	if (buffer == NULL || bufferLength < 20 || bufferLength > 10000 || remoteInterface->sin6_family != AF_INET) { ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "Skipping: Not a STUN Packet (Packet Length/Address Family)"); return 0; }
+	if (buffer == NULL || bufferLength < 20 || bufferLength > 10000 || remoteInterface->sin6_family != AF_INET) { ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "Skipping: Not a STUN Packet (Packet Length/Address Family)"); return 0; }
 
 	messageType = ntohs(((unsigned short*)buffer)[0]);											// Get the message type
 	messageLength = ntohs(((unsigned short*)buffer)[1]) + 20;									// Get the message length
 
 	// Check the length and magic string
-	if (messageLength != bufferLength || ntohl(((int*)buffer)[1]) != 0x2112A442) { ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "Skipping: Not a STUN Packet (Magic String)"); return 0; }
+	if (messageLength != bufferLength || ntohl(((int*)buffer)[1]) != 0x2112A442) { ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "Skipping: Not a STUN Packet (Magic String)"); return 0; }
 
 	memset(&mappedAddress, 0, sizeof(mappedAddress));
 	memset(&changedAddress, 0, sizeof(changedAddress));
@@ -1494,99 +1695,104 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 	switch(messageType)
 	{
 	case STUN_BINDING_REQUEST:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_BINDING_REQUEST");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_BINDING_REQUEST");
 		break;
 	case STUN_BINDING_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_BINDING_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_BINDING_RESPONSE");
 		break;
 	case STUN_BINDING_ERROR_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_BINDING_ERROR_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_BINDING_ERROR_RESPONSE");
 		break;
 	case STUN_SHAREDSECRET_REQUEST:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_SHARED_SECRET_REQUEST");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_SHARED_SECRET_REQUEST");
 		break;
 	case STUN_SHAREDSECRET_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_SHARED_SECRET_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_SHARED_SECRET_RESPONSE");
 		break;
 	case STUN_SHAREDSECRET_ERROR_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_SHARED_SECRET_ERROR_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: STUN_SHARED_SECRET_ERROR_RESPONSE");
 		break;
 	case TURN_ALLOCATE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_ALLOCATE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_ALLOCATE");
 		break;
 	case TURN_ALLOCATE_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_ALLOCATE_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_ALLOCATE_RESPONSE");
 		break;
 	case TURN_ALLOCATE_ERROR:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_ALLOCATE_ERROR");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_ALLOCATE_ERROR");
 		break;
 	case TURN_REFRESH:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_REFRESH");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_REFRESH");
 		break;
 	case TURN_REFRESH_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_REFRESH_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_REFRESH_RESPONSE");
 		break;
 	case TURN_REFRESH_ERROR:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_REFRESH_ERROR");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_REFRESH_ERROR");
 		break;
 	case TURN_SEND:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_SEND");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_SEND");
 		break;
 	case TURN_DATA:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_DATA");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_DATA");
 		break;
 	case TURN_CREATE_PERMISSION:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CREATE_PERMISSION");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CREATE_PERMISSION");
 		break;
 	case TURN_CREATE_PERMISSION_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CREATE_PERMISSION_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CREATE_PERMISSION_RESPONSE");
 		break;
 	case TURN_CREATE_PERMISSION_ERROR:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CREATE_PERMISSION_ERROR");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CREATE_PERMISSION_ERROR");
 		break;
 	case TURN_CHANNEL_BIND:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CHANNEL_BIND");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CHANNEL_BIND");
 		break;
 	case TURN_CHANNEL_BIND_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CHANNEL_BIND_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CHANNEL_BIND_RESPONSE");
 		break;
 	case TURN_CHANNEL_BIND_ERROR:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CHANNEL_BIND_ERROR");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "R: TURN_CHANNEL_BIND_ERROR");
 		break;
 	case TURN_TCP_CONNECT:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECT");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECT");
 		break;
 	case TURN_TCP_CONNECT_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECT_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECT_RESPONSE");
 		break;
 	case TURN_TCP_CONNECT_ERROR:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECT_ERROR");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECT_ERROR");
 		break;
 	case TURN_TCP_CONNECTION_BIND:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECTION_BIND");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECTION_BIND");
 		break;
 	case TURN_TCP_CONNECTION_BIND_RESPONSE:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECTION_BIND_RESPONSE");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECTION_BIND_RESPONSE");
 		break;
 	case TURN_TCP_CONNECTION_BIND_ERROR:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECTION_BIND_ERROR");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECTION_BIND_ERROR");
 		break;
 	case TURN_TCP_CONNECTION_ATTEMPT:
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECTION_ATTEMPT");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "R: TURN_TCP_CONNECTION_ATTEMPT");
 		break;
 	}
 
 	{
 		char tid[25];
 		util_tohex(buffer+8, 12, tid);
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...TransactionID: %s", tid);
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...TransactionID: %s", tid);
 	}
 
-	while (ptr + 4 <= messageLength)															// Decode each attribute one at a time
+	while (ptr + 4 < messageLength)															// Decode each attribute one at a time
 	{
 		attrType = ntohs(((unsigned short*)(buffer + ptr))[0]);
 		attrLength = ntohs(((unsigned short*)(buffer + ptr))[1]);
-		if (ptr + 4 + attrLength > messageLength) { ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ABORT: Message Length Error");return 0; }
+		if (ptr + 4 + attrLength > messageLength) 
+		{ 
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ABORT: Message Length Error");return 0; 
+		}
+
+		if (ignore != 0 && attrType != STUN_ATTRIB_FINGERPRINT) { ptr = messageLength; break; }
 
 		switch (attrType)
 		{
@@ -1600,7 +1806,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 				
 				util_tohex(buffer+8, 12, tid);
 				ErrorReason[attrLength] = 0;
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ERROR Received: [%s] Code(%d) Reason(%s) from %s:%u", tid, ErrorCode, ErrorReason, ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ERROR Received: [%s] Code(%d) Reason(%s) from %s:%u", tid, ErrorCode, ErrorReason, ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
 				break;
 			}
 
@@ -1612,20 +1818,20 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 			{
 				isControlled = 1;
 				tiebreakValue = ILibNTOHLL(((unsigned long long*)(buffer + ptr + 4))[0]);
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...ICE-CONTROLLED");
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...ICE-CONTROLLED");
 				break;
 			}
 			case STUN_ATTRIB_ICE_CONTROLLING:
 			{
 				isControlling = 1;
 				tiebreakValue = ILibNTOHLL(((unsigned long long*)(buffer + ptr + 4))[0]);
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...ICE-CONTROLLING");
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...ICE-CONTROLLING");
 				break;
 			}
 			case STUN_ATTRIB_MAPPED_ADDRESS:
 			case STUN_ATTRIB_XOR_MAPPED_ADDRESS:
 			{
-				if (buffer[ptr + 5] != 1) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_XOR_MAPPED_ADDRESS/ERROR"); return 0; }
+				if (buffer[ptr + 5] != 1) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_XOR_MAPPED_ADDRESS/ERROR"); break; }
 				mappedAddress.sin_family = AF_INET;
 				mappedAddress.sin_port = ((unsigned short*)(buffer + ptr + 6))[0];
 				mappedAddress.sin_addr.s_addr = ((unsigned int*)(buffer + ptr + 8))[0];
@@ -1635,7 +1841,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 			case STUN_ATTRIB_OTHER_ADDRESS:
 			case STUN_ATTRIB_CHANGED_ADDRESS:
 			{
-				if (buffer[ptr + 5] != 1) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_CHANGED_ADDRESS/ERROR"); return 0; }
+				if (buffer[ptr + 5] != 1) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_CHANGED_ADDRESS/ERROR"); break; }
 				changedAddress.sin_family = AF_INET;
 				changedAddress.sin_port = ((unsigned short*)(buffer + ptr + 6))[0];
 				changedAddress.sin_addr.s_addr = ((unsigned int*)(buffer + ptr + 8))[0];
@@ -1644,29 +1850,34 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 			case STUN_ATTRIB_USERNAME:
 			{
 				// The username must be at least "xxxxxxxx:x", and our username is always 8 bytes long
-				if (attrLength < 9 || buffer[ptr + 4 + 8] != ':') {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_USERNAME/ERROR"); return 0; }
+				if (attrLength < 9 || buffer[ptr + 4 + 8] != ':') {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_USERNAME/ERROR"); break; }
 				username = buffer + ptr + 4;
 				break;
 			}
 			case STUN_ATTRIB_FINGERPRINT:
 			{
 				// Fingerprint must be 4 bytes, must be last attribute.
-				if (attrLength != 4 || (ptr + 8) != messageLength) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_FINGERPRINT/ERROR"); return 0; }
-				
+				if (attrLength != 4 || (ptr + 8) != messageLength)
+				{
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_FINGERPRINT/MISSING_OR_CORRUPT"); 
+					if (attrLength == 0) { return(1); } else { return(0); }
+				}
+			
 				// Check the fingerprint
-				if ((ILibStun_CRC32(buffer, ptr) ^ 0x5354554e) != ntohl(((int*)(buffer + ptr + 4))[0])) 	 {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_FINGERPRINT/MISMATCH"); return 0; }
+				if ((ILibStun_CRC32(buffer, ptr) ^ 0x5354554e) != ntohl(((int*)(buffer + ptr + 4))[0])) 	 {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_FINGERPRINT/MISMATCH"); return(1); }
 
 				break;
 			}
 			case STUN_ATTRIB_MESSAGE_INTEGRITY:
 			{
-				HMAC_CTX hmac;
+				HMAC_CTX* hmac;
 				unsigned int hmaclen = 20;
 				unsigned char hmacresult[20];
 				char* key = NULL;
 				int keylen = 0;
+				ignore = 1;
 
-				if (attrLength != 20) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_MESSAGE_INTEGRITY/LENGTH-ERROR"); return 0; }
+				if (attrLength != 20) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_MESSAGE_INTEGRITY/LENGTH-ERROR"); break; }
 
 				if (username != NULL)
 				{
@@ -1695,7 +1906,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 					}
 					else
 					{
-						ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_MESSAGE_INTEGRITY/FAILED"); 
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_MESSAGE_INTEGRITY/FAILED");
 						return 0; // FAILED (or don't care)
 						// TODO: Bryan: If we really don't care, we may need to return 1, otherwise this packet will get fed into OpenSSL.
 					}
@@ -1708,11 +1919,11 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 				}
 
 				// Setup and perform HMAC-SHA1
-				HMAC_CTX_init(&hmac);
-				HMAC_Init_ex(&hmac, key, keylen, EVP_sha1(), NULL);
-				HMAC_Update(&hmac, (unsigned char*)buffer, ptr);
-				HMAC_Final(&hmac, hmacresult, &hmaclen); // Put the HMAC in the outgoing result location
-				HMAC_CTX_cleanup(&hmac);
+				hmac = HMAC_CTX_new();
+				HMAC_Init_ex(hmac, key, keylen, EVP_sha1(), NULL);
+				HMAC_Update(hmac, (unsigned char*)buffer, ptr);
+				HMAC_Final(hmac, hmacresult, &hmaclen); // Put the HMAC in the outgoing result location
+				HMAC_CTX_free(hmac);
 
 				// Put the length back, if fingerprint was present
 				if (ntohs(((unsigned short*)(buffer + ptr + (4 + FOURBYTEBOUNDARY(attrLength))))[0]) == STUN_ATTRIB_FINGERPRINT)
@@ -1721,7 +1932,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 				}
 
 				// Compare the HMAC result
-				if (hmaclen != 20 || memcmp(hmacresult, buffer + ptr + 4, 20) != 0) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_MESSAGE_INTEGRITY/FAILED(2)"); return 0; }
+				if (hmaclen != 20 || memcmp(hmacresult, buffer + ptr + 4, 20) != 0) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...STUN_ATTRIB_MESSAGE_INTEGRITY/FAILED(2)"); return 0; }
 				break;
 			}
 		}
@@ -1730,9 +1941,9 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 	}
 
 	// Message length must be exact
-	if (ptr != messageLength) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...PTR != messageLength"); return 0; }
+	if (ptr != messageLength) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...PTR != messageLength"); return 0; }
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Successfully Passed Fingerprint/Message-Integrity");
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Successfully Passed Fingerprint/Message-Integrity");
 
 	if (IS_REQUEST(messageType) && integritykeySet == 1)
 	{
@@ -1741,19 +1952,20 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 		char rbuffer[110];																			// Length of this response should be exactly 64 bytes
 		int EncodedSlot;
 
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "[STUN/ICE REQUEST]");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "[STUN/ICE REQUEST]");
 		processed = 1;
 
 		if (username != NULL)
 		{
+			int i = 0;
 			EncodedSlot = ILibStun_CharToSlot(username[0]);
 			if (EncodedSlot < ILibSTUN_MaxSlots && obj->IceStates[EncodedSlot] != NULL)
 			{
 				//
 				// This will be true, if we are CONTROLLED
 				//
-				int i = 0;
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...EncodedSlot: %d", EncodedSlot);
+				
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...EncodedSlot: %d", EncodedSlot);
 				if (remoteInterface->sin6_family == AF_INET) // We currently only support IPv4 candidates
 				{
 					if (obj->IceStates[EncodedSlot]->hostcandidatecount == 0 && obj->IceStates[EncodedSlot]->hostcandidates == NULL)
@@ -1772,8 +1984,8 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 							else if (((struct sockaddr_in6*)obj->IceStates[EncodedSlot]->offerblock)[i].sin6_family == 0)
 							{
 								// Save the interface we are receiving authentiated ICE requests on
-								memcpy(&(((struct sockaddr_in6*)obj->IceStates[EncodedSlot]->offerblock)[i]), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family));
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Received ICE Request from: %s:%u , caching until we receive offer", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
+								memcpy_s(&(((struct sockaddr_in6*)obj->IceStates[EncodedSlot]->offerblock)[i]), sizeof(struct sockaddr_in6), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family));
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Received ICE Request from: %s:%u , caching until we receive offer", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
 								break;
 							}
 						}
@@ -1789,7 +2001,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 									// Matching Candidate
 									if(obj->IceStates[EncodedSlot]->hostcandidateResponseFlag[i] != 1)
 									{
-										ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Ice Slot: %d  Candidate Match [%s:%u]", EncodedSlot, ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
+										ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Ice Slot: %d  Candidate Match [%s:%u]", EncodedSlot, ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
 									}
 									obj->IceStates[EncodedSlot]->hostcandidateResponseFlag[i] = 1;
 
@@ -1800,13 +2012,31 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 					}
 				}
 
+				//
+				// Save the origin
+				//
+				for (i = 0; i < STUN_NUM_ADDR; ++i)
+				{
+					if (obj->IceStates[EncodedSlot]->ReceivedAddr[i].sin6_family == 0)
+					{
+						memcpy_s(&(obj->IceStates[EncodedSlot]->ReceivedAddr[i]), sizeof(struct sockaddr_in6), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family));
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Adding to ReceiveAddr[%d] %s:%u", i, ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
+						break;
+					}
+					else if (obj->IceStates[EncodedSlot]->ReceivedAddr[i].sin6_family == remoteInterface->sin6_family &&
+						memcmp(&(obj->IceStates[EncodedSlot]->ReceivedAddr[i]), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family)) == 0)
+					{
+						break;
+					}
+				}
+
 				// The response is going here, becuase we'll always know what the associated iceState is, because we encoded the ice state in our user name, and we
 				// always check MessageIntegrity of inbound messages
 
 				if (obj->IceStates[EncodedSlot]->rkey == NULL)
 				{
 					// Remote Key is unknown... This means the remote offer was not set yet.
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Remote Offer wasn't set yet, so we won't respond to ICE-REQUESTs");
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Remote Offer wasn't set yet, so we won't respond to ICE-REQUESTs");
 					return 1;
 				}
 
@@ -1815,7 +2045,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 					// Build the reply packet
 					((unsigned short*)rbuffer)[0] = htons(0x0101);												// Response type, skip setting length for now
 					((unsigned int*)rbuffer)[1] = htonl(0x2112A442);											// Set the magic string
-					memcpy(rbuffer + 8, buffer + 8, 12);														// Copy the transaction id
+					memcpy_s(rbuffer + 8, sizeof(rbuffer) - 8, buffer + 8, 12);									// Copy the transaction id
 					((unsigned short*)(rbuffer + 20))[0] = htons(STUN_ATTRIB_XOR_MAPPED_ADDRESS);				// Attribute header
 					((unsigned short*)(rbuffer + 20))[1] = htons(8);											// Attribute length
 					((unsigned short*)(rbuffer + 20))[2] = htons(1);											// reserved + familly (IPv4)
@@ -1825,7 +2055,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 					rptr += ILibStun_AddMessageIntegrityAttr(rbuffer, rptr, integritykey, 32);
 					rptr += ILibStun_AddFingerprint(rbuffer, rptr);												// Set the length in this function
 
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Sending Response to %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Sending Response to %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
 				}
 				else if ((obj->IceStates[EncodedSlot]->peerHasActiveOffer == 1 && isControlled != 0 &&
 					ILibNTOHLL(((unsigned long long*)obj->IceStates[EncodedSlot]->tieBreaker)[0]) < tiebreakValue) ||
@@ -1842,14 +2072,14 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 					rptr += ILibStun_AddMessageIntegrityAttr(rbuffer, rptr, integritykey, 32);
 					rptr += ILibStun_AddFingerprint(rbuffer, rptr);												// Set the length in this function
 
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Responding with Role Conflict");
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WE had a %s tiebreak", (obj->IceStates[EncodedSlot]->peerHasActiveOffer == 1)?"SMALLER":"LARGER");
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Responding with Role Conflict");
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WE had a %s tiebreak", (obj->IceStates[EncodedSlot]->peerHasActiveOffer == 1)?"SMALLER":"LARGER");
 				}
 				else
 				{
 					// We need to switch roles
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Role Conflict, we're switching roles");
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WE had a %s tiebreak", (obj->IceStates[EncodedSlot]->peerHasActiveOffer == 1)?"LARGER":"SMALLER");
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Role Conflict, we're switching roles");
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WE had a %s tiebreak", (obj->IceStates[EncodedSlot]->peerHasActiveOffer == 1)?"LARGER":"SMALLER");
 
 					obj->IceStates[EncodedSlot]->peerHasActiveOffer = obj->IceStates[EncodedSlot]->peerHasActiveOffer == 0 ? 1 : 0;
 					ILibStun_ICE_Start(obj->IceStates[EncodedSlot], EncodedSlot);
@@ -1858,7 +2088,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 
 
 				// Send the data in plain text
-				ILibStun_SendPacket(obj->IceStates[EncodedSlot], rbuffer, 0, rptr, remoteInterface, ILibAsyncSocket_MemoryOwnership_USER);
+				ILibStun_SendPacket(obj, rbuffer, 0, rptr, remoteInterface, ILibAsyncSocket_MemoryOwnership_USER);
 				//ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)remoteInterface, rbuffer, rptr, ILibAsyncSocket_MemoryOwnership_USER);
 
 				// Send an ICE request back. This is needed to unlock Chrome/Opera inbound port for TLS. Don't do more than ILibSTUN_MaxSlots of these.
@@ -1886,7 +2116,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 
 		if(obj->IceStates[(int)buffer[8]]->dtlsSession < 0 || (obj->IceStates[(int)buffer[8]]->dtlsSession >= 0 && obj->dTlsSessions[obj->IceStates[(int)buffer[8]]->dtlsSession]->state != 1))
 		{
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Received Response to ICE-REQUEST, IceSlot: %d from %s:%u", (int)buffer[8], ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Received Response to ICE-REQUEST, IceSlot: %d from %s:%u", (int)buffer[8], ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
 		}
 
 		processed = 1;
@@ -1905,7 +2135,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 				if (candidateInterface.sin_family == remoteInterface->sin6_family && memcmp(remoteInterface, &candidateInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family)) == 0)
 				{
 					// We have a matching ICE Candidate and STUN Response
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Candidate Match [%s:%u]", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Candidate Match [%s:%u]", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
 					obj->IceStates[(int)buffer[8]]->hostcandidateResponseFlag[hx] = 1;
 					break;
 				}
@@ -1953,19 +2183,19 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 		// This is an encoded DTLS Session Slot #
 		int SessionSlot = (unsigned char)buffer[8] ^ 0x80;
 
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_2, "Consent Freshness Updated on IceSlot: %d", SessionSlot);
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_2, "Consent Freshness Updated on IceSlot: %d", SessionSlot);
 
 		processed = 1;
 		// We got a response, so we can reset the timer for Freshness
-		ILibLifeTime_Remove(obj->Timer, obj->dTlsSessions[SessionSlot] + 1);
-		ILibLifeTime_Add(obj->Timer, obj->dTlsSessions[SessionSlot] + 1, ILibStun_MaxConsentFreshnessTimeoutSeconds, ILibStun_WebRTC_ConsentFreshness_Start, NULL);
+		ILibLifeTime_Remove(obj->Timer, ILibWebRTC_DTLS_TO_CONSENT_FRESHNESS_TIMER_OBJECT(obj->dTlsSessions[SessionSlot]));
+		ILibLifeTime_Add(obj->Timer, ILibWebRTC_DTLS_TO_CONSENT_FRESHNESS_TIMER_OBJECT(obj->dTlsSessions[SessionSlot]), ILibStun_MaxConsentFreshnessTimeoutSeconds, ILibStun_WebRTC_ConsentFreshness_Start, NULL);
 	}
 
 	if (IS_SUCCESS_RESP(messageType) && memcmp(buffer + 8, obj->TransactionId, 12) == 0) // NAT Detection Response
 	{
 		int i, result;
 
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "[STUN/RESPONSE]");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "[STUN/RESPONSE]");
 		processed = 1;
 
 		// This is a STUN server response
@@ -1979,22 +2209,21 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 			{
 				if(changedAddress.sin_family == AF_INET)
 				{			
-					memcpy(&(obj->StunServer2_AlternatePort), &(changedAddress), sizeof(struct sockaddr_in));
-					memcpy(&(obj->StunServer2_PrimaryPort), &(changedAddress), sizeof(struct sockaddr_in));
+					memcpy_s(&(obj->StunServer2_AlternatePort), sizeof(struct sockaddr_in6), &(changedAddress), sizeof(struct sockaddr_in));
+					memcpy_s(&(obj->StunServer2_PrimaryPort), sizeof(struct sockaddr_in6), &(changedAddress), sizeof(struct sockaddr_in));
 					((struct sockaddr_in*)(&obj->StunServer2_PrimaryPort))->sin_port = ((struct sockaddr_in*)(&obj->StunServer))->sin_port;
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "RFC-5780 Support Detected: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&changedAddress), ntohs(changedAddress.sin_port));
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "RFC-5780 Support Detected: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&changedAddress), ntohs(changedAddress.sin_port));
 				}
 				else
 				{
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "RFC-5780 Support was NOT detected");
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "RFC-5780 Support was NOT detected");
 				}
-				memcpy(&(obj->Public), &(mappedAddress), sizeof(struct sockaddr_in));
+				memcpy_s(&(obj->Public), sizeof(struct sockaddr_in6), &(mappedAddress), sizeof(struct sockaddr_in));
 			}
 			else
 			{
 				// Problem decoding the packet.
-				if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Unknown, NULL, obj->user); }
-				ILibStun_OnCompleted(obj);
+				ILibStun_FireResults(obj, ILibStun_Results_Unknown, NULL); 
 				return 1;
 			}
 
@@ -2021,15 +2250,13 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 			if (result == 1)
 			{
 				// No Nat
-				if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_No_NAT, (struct sockaddr_in*)&(obj->Public), obj->user); }
-				ILibStun_OnCompleted(obj);
+				ILibStun_FireResults(obj, ILibStun_Results_No_NAT, (struct sockaddr_in*)&(obj->Public)); 
 				break;
 			}
 
 			if(NAT_MAPPING_DETECTION(obj->TransactionId)==0)
 			{
-				if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Public_Interface, (struct sockaddr_in*)&(obj->Public), obj->user); }
-				ILibStun_OnCompleted(obj);
+				ILibStun_FireResults(obj, ILibStun_Results_Public_Interface, (struct sockaddr_in*)&(obj->Public)); 
 			}
 			else if(changedAddress.sin_family == AF_INET)
 			{
@@ -2039,17 +2266,15 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 			}
 			else
 			{
-				if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_RFC5780_NOT_IMPLEMENTED, (struct sockaddr_in*)&(obj->Public), obj->user); }
-				ILibStun_OnCompleted(obj);
+				ILibStun_FireResults(obj, ILibStun_Results_RFC5780_NOT_IMPLEMENTED, (struct sockaddr_in*)&(obj->Public)); 
 			}
 			break;
 		case STUN_STATUS_CHECKING_FULL_CONE_NAT:
-			memcpy(&(obj->Public2), &(mappedAddress), sizeof(struct sockaddr_in));
+			memcpy_s(&(obj->Public2), sizeof(struct sockaddr_in6), &(mappedAddress), sizeof(struct sockaddr_in));
 			if (((struct sockaddr_in*)(&obj->Public))->sin_port == ((struct sockaddr_in*)(&obj->Public2))->sin_port)
 			{
 				// Endpoint-Independent Mapping (Full-Cone)
-				if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Full_Cone_NAT, (struct sockaddr_in*)&(obj->Public), obj->user); }
-				ILibStun_OnCompleted(obj);
+				ILibStun_FireResults(obj, ILibStun_Results_Full_Cone_NAT, (struct sockaddr_in*)&(obj->Public)); 
 			}
 			else
 			{
@@ -2061,24 +2286,21 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 
 			break;
 		case STUN_STATUS_CHECKING_SYMETRIC_NAT:
-			memcpy(&(obj->Public3), &(mappedAddress), sizeof(struct sockaddr_in));
+			memcpy_s(&(obj->Public3), sizeof(struct sockaddr_in6), &(mappedAddress), sizeof(struct sockaddr_in));
 			if (((struct sockaddr_in*)(&obj->Public2))->sin_port == ((struct sockaddr_in*)(&obj->Public3))->sin_port)
 			{
 				// Address Dependent Mapping
-				if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Restricted_NAT, (struct sockaddr_in*)&(obj->Public3), obj->user); }
-				ILibStun_OnCompleted(obj);
+				ILibStun_FireResults(obj, ILibStun_Results_Restricted_NAT, (struct sockaddr_in*)&(obj->Public)); 
 			}
 			else
 			{
 				// Address and Port Dependent Mapping (Symmetric in this case)
-				if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Symetric_NAT, (struct sockaddr_in*)&(obj->Public3), obj->user); }
-				ILibStun_OnCompleted(obj);
+				ILibStun_FireResults(obj, ILibStun_Results_Symetric_NAT, (struct sockaddr_in*)&(obj->Public)); 
 			}
 			break;
 		case STUN_STATUS_CHECKING_RESTRICTED_NAT:
 			// Restricted NAT
-			if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Restricted_NAT, (struct sockaddr_in*)&(obj->Public), obj->user); }
-			ILibStun_OnCompleted(obj);
+			ILibStun_FireResults(obj, ILibStun_Results_Restricted_NAT, (struct sockaddr_in*)&(obj->Public)); 
 			break;
 		default:
 			break;
@@ -2086,7 +2308,7 @@ int ILibStun_ProcessStunPacket(void *j, char* buffer, int bufferLength, struct s
 
 	}
 
-	if (processed == 0) { ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "DID NOT Process Packet of type: %u", messageType);}
+	if (processed == 0) { ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "DID NOT Process Packet of type: %u", messageType);}
 
 	return 1;
 }
@@ -2098,21 +2320,21 @@ void ILibStun_DelaySendIceRequest_OnLifeTimeDestroy(void *object)
 
 void ILibStun_DelaySendIceRequest_OnLifeTime(void *object)
 {
-	struct sockaddr_in dest;
+	char dest[8 + sizeof(struct sockaddr_in6)];
 	int Ptr;
 	char *Packet = (char*)object;
 	struct ILibStun_Module *stun;
-	char *Data;
+	ILibICE_PeriodicState *Data;
 
 	Ptr = ntohs(((unsigned short*)Packet)[1]) + 20;
-	Data = Packet + Ptr;
+	Data = (ILibICE_PeriodicState*)(Packet + Ptr);
+	stun = (struct ILibStun_Module*)Data->ptr;
 
-	dest.sin_family = AF_INET;
-	dest.sin_addr.s_addr = ((unsigned int*)Data)[0];
-	dest.sin_port = ((unsigned short*)Data)[2];
-	stun = (struct ILibStun_Module*)((void**)(Data + 7))[0];
+	((int*)(dest + sizeof(struct sockaddr_in6)))[0] = 4;
+	((int*)(dest + sizeof(struct sockaddr_in6)))[1] = Data->flags << 16;
+	memcpy_s(dest, sizeof(dest), &(Data->addr), sizeof(struct sockaddr_in6));
 
-	ILibStun_SendPacketEx(stun, (int)Data[6], Packet, 0, Ptr, (struct sockaddr_in6*)&dest, ILibAsyncSocket_MemoryOwnership_CHAIN);
+	ILibStun_SendPacket(stun, Packet, 0, Ptr, (struct sockaddr_in6*)&dest, ILibAsyncSocket_MemoryOwnership_CHAIN);
 	//ILibAsyncSocket_SendTo(stun->UDP, Packet, Ptr, (struct sockaddr*)&dest, ILibAsyncSocket_MemoryOwnership_CHAIN);
 }
 
@@ -2127,15 +2349,18 @@ int ILibStun_GenerateIceRequestPacket(struct ILibStun_IceState* module, char* Pa
 	AddressLen = ILibTURN_CreateXORMappedAddress(remote, Address, TransactionID);
 
 	if ((stunUsername = (char*)malloc(10 + module->rusernamelen)) == NULL){ ILIBCRITICALEXIT(254); }
-	memcpy(stunUsername, module->rusername, module->rusernamelen);
-	memcpy(stunUsername + module->rusernamelen, ":", 1);
-	memcpy(stunUsername + module->rusernamelen + 1, module->userAndKey + 1, 8);
+	memcpy_s(stunUsername, 10 + module->rusernamelen, module->rusername, module->rusernamelen);
+	memcpy_s(stunUsername + module->rusernamelen, 10, ":", 1);
+	memcpy_s(stunUsername + module->rusernamelen + 1, 9, module->userAndKey + 1, 8);
 	stunUsername[9 + module->rusernamelen] = 0;
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_2, "Generating ICE Request [%s] Credentials[%s]", ILibRemoteLogging_ConvertToHex(TransactionID, 12), stunUsername);
+	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_2, "Generating ICE Request [%s] Credentials[%s]", ILibRemoteLogging_ConvertToHex(TransactionID, 12), stunUsername);
+	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_2, "...Address = %s", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remote));
 
 	Ptr = ILibTURN_GenerateStunFormattedPacketHeader(Packet, STUN_BINDING_REQUEST, TransactionID);
 	Ptr += ILibTURN_AddAttributeToStunFormattedPacketHeader(Packet, Ptr, STUN_ATTRIB_USERNAME, stunUsername, 9 + module->rusernamelen);
+
+	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...USERNAME >> PTR = %d", Ptr);
 
 	if (useCandidate != 0)
 	{
@@ -2146,22 +2371,26 @@ int ILibStun_GenerateIceRequestPacket(struct ILibStun_IceState* module, char* Pa
 	{
 		// We are CONTROLLING
 		Ptr += ILibTURN_AddAttributeToStunFormattedPacketHeader(Packet, Ptr, STUN_ATTRIB_ICE_CONTROLLING, module->tieBreaker, 8);
+		ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_2, "...CONTROLLING");
 	}
 	else
 	{
 		// We are CONTROLLED
 		Ptr += ILibTURN_AddAttributeToStunFormattedPacketHeader(Packet, Ptr, STUN_ATTRIB_ICE_CONTROLLED, module->tieBreaker, 8);
+		ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_2, "...CONTROLLED");
 	}
 
-
+	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "... >> PTR = %d", Ptr);
 	Ptr += ILibTURN_AddAttributeToStunFormattedPacketHeader(Packet, Ptr, STUN_ATTRIB_XOR_MAPPED_ADDRESS, Address, AddressLen);
+	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "... XORADDR >> PTR = %d", Ptr);
 	Ptr += ILibStun_AddMessageIntegrityAttr(Packet, Ptr, module->rkey, module->rkeylen);
 	Ptr += ILibStun_AddFingerprint(Packet, Ptr);
 	free(stunUsername);
 
-	memcpy(remKey, module->rkey, module->rkeylen);
+	memcpy_s(remKey, sizeof(remKey), module->rkey, module->rkeylen);
 	remKey[module->rkeylen] = 0;
-	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Using Integrity Key: %s", remKey);
+	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Using Integrity Key: %s", remKey);
+	ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_3, "...PTR = %d", Ptr);
 	return Ptr;
 }
 
@@ -2171,7 +2400,7 @@ void ILibStun_SendIceRequestEx(struct ILibStun_IceState *IceState, char* Transac
 	char Packet[512];
 
 	Ptr = ILibStun_GenerateIceRequestPacket(IceState, Packet, TransactionID, useCandidate, remoteInterface);
-	ILibStun_SendPacket(IceState, Packet, 0, Ptr, remoteInterface, ILibAsyncSocket_MemoryOwnership_USER);
+	ILibStun_SendPacket(IceState->parentStunModule, Packet, 0, Ptr, remoteInterface, ILibAsyncSocket_MemoryOwnership_USER);
 	//ILibAsyncSocket_SendTo(IceState->parentStunModule->UDP, Packet, Ptr, (struct sockaddr*)remoteInterface, ILibAsyncSocket_MemoryOwnership_USER);
 }
 
@@ -2186,10 +2415,10 @@ void ILibStun_SendIceRequest(struct ILibStun_IceState *IceState, int SlotNumber,
 void ILibStun_DelaySendIceRequest(struct ILibStun_IceState* module, int selectedSlot, int useCandidate)
 {
 	char TransactionID[12];
-	char *Packet, *Data;
+	char *Packet;
 	int Ptr;
 
-	int i, ii;
+	int i, ii, x;
 	struct sockaddr_in remote;
 	int delay;
 
@@ -2197,35 +2426,54 @@ void ILibStun_DelaySendIceRequest(struct ILibStun_IceState* module, int selected
 	{
 		for (ii = 0; ii < 2; ++ii) // Queue TWO requests for each candidate
 		{
-			char dest[255];
+			for (x = 0; x < 2; ++x)
+			{				
+				if (module->parentStunModule->alwaysUseTurn || (module->dtlsSession >= 0 && module->parentStunModule->dTlsSessions[module->dtlsSession]->remoteInterface->sin6_family == 0)) { x = 1; }
+				memset(&remote, 0, sizeof(struct sockaddr_in));
 
-			memset(&remote, 0, sizeof(struct sockaddr_in));
-			remote.sin_family = AF_INET;
-			remote.sin_port = module->hostcandidates[i].port;
-			remote.sin_addr.s_addr = module->hostcandidates[i].addr;
+				remote.sin_family = AF_INET;
+				remote.sin_port = module->hostcandidates[i].port;
+				remote.sin_addr.s_addr = module->hostcandidates[i].addr;
+				TransactionID[0] = (char)selectedSlot;  // We're going to encode the IceState slot in the Transaction ID, so we can refer to it in the response
+				util_random(11, TransactionID + 1);
 
-			TransactionID[0] = (char)selectedSlot;  // We're going to encode the IceState slot in the Transaction ID, so we can refer to it in the response
-			util_random(11, TransactionID + 1);
+				if ((Packet = (char*)malloc(512)) == NULL) { ILIBCRITICALEXIT(254); }
+				Ptr = ILibStun_GenerateIceRequestPacket(module, Packet, TransactionID, useCandidate, (struct sockaddr_in6*)&remote);
 
-			if ((Packet = (char*)malloc(512)) == NULL){ ILIBCRITICALEXIT(254); }
-			Ptr = ILibStun_GenerateIceRequestPacket(module, Packet, TransactionID, useCandidate, (struct sockaddr_in6*)&remote);
+				ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "IceSlot: %d Sending ICE Request to: %s:%u [Controlling: %s] (PTR: %d)", selectedSlot, ILibRemoteLogging_ConvertAddress((struct sockaddr*)&remote), ntohs(remote.sin_port), (module->peerHasActiveOffer == 0 ? "YES" : "NO"), Ptr);
 
-			ILibInet_ntop2((struct sockaddr*)&remote, dest, 255);
-			ILibRemoteLogging_printf(ILibChainGetLogger(module->parentStunModule->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "IceSlot: %d Sending ICE Request to: %s:%u [Controlling: %s]", selectedSlot, dest, ntohs(remote.sin_port), module->peerHasActiveOffer == 0 ? "YES" : "NO");
+				memset(Packet + Ptr, 0, sizeof(ILibICE_PeriodicState));
+				if (module->dtlsSession >= 0)
+				{
+					memcpy_s(&(((ILibICE_PeriodicState*)(Packet + Ptr))->addr), sizeof(struct sockaddr_in6), module->parentStunModule->dTlsSessions[module->dtlsSession]->remoteInterface, sizeof(struct sockaddr_in6));
+					
+					x = 1;
+				}
+				else
+				{
+					((ILibICE_PeriodicState*)(Packet + Ptr))->addr.sin6_family = AF_INET;
+					((struct sockaddr_in*)&(((ILibICE_PeriodicState*)(Packet + Ptr))->addr))->sin_addr.s_addr = module->hostcandidates[i].addr;
+					((ILibICE_PeriodicState*)(Packet + Ptr))->addr.sin6_port = module->hostcandidates[i].port;
+					((ILibICE_PeriodicState*)(Packet + Ptr))->flags = (char)x;
+				}
 
-			Data = Packet + Ptr;
-			((unsigned int*)Data)[0] = module->hostcandidates[i].addr;
-			((unsigned short*)Data)[2] = module->hostcandidates[i].port;
-			Data[6] = (char)(module->useTurn);
-			((void**)(Data + 7))[0] = module->parentStunModule;
+				((ILibICE_PeriodicState*)(Packet + Ptr))->ptr = module->parentStunModule;
 
-
-			delay = ILibStun_GetNextPeriodicInterval(100, 500);
-			ILibLifeTime_AddEx(module->parentStunModule->Timer, Packet, delay, ILibStun_DelaySendIceRequest_OnLifeTime, ILibStun_DelaySendIceRequest_OnLifeTimeDestroy);
+				delay = ILibStun_GetNextPeriodicInterval(100, 500);
+				ILibLifeTime_AddEx(module->parentStunModule->Timer, Packet, delay, ILibStun_DelaySendIceRequest_OnLifeTime, ILibStun_DelaySendIceRequest_OnLifeTimeDestroy);
+				if (module->useTurn == 0) { break; }
+			}
 		}
 	}
 }
-
+//! Generate a local WebRTC offer (Encoded Offer Block)
+/*!
+	\param StunModule Stun Client Module
+	\param[out] offer Encoded Offer Block
+	\param[in,out] userName Local Username (Minimum 9 bytes / 8 bytes + terminating NULL)
+	\param[in,out] password Local Password (Minimum 33 bytes / 32 bytes + terminating NULL)
+	\return length of encoded offer block
+*/
 int ILibStun_GenerateIceOffer(void* StunModule, char** offer, char* userName, char* password)
 {
 	int slot;
@@ -2236,7 +2484,7 @@ int ILibStun_GenerateIceOffer(void* StunModule, char** offer, char* userName, ch
 	if ((ice = (struct ILibStun_IceState*)malloc(sizeof(struct ILibStun_IceState))) == NULL){ ILIBCRITICALEXIT(254); }
 	memset(ice, 0, sizeof(struct ILibStun_IceState));
 	util_random(8, ice->tieBreaker);
-	ice->useTurn = obj->alwaysUseTurn;
+	ice->useTurn = obj->alwaysConnectTurn;
 	ice->parentStunModule = obj;
 	ice->creationTime = ILibGetUptime();
 	if ((ice->offerblock = (char*)malloc(8 * sizeof(struct sockaddr_in6))) == NULL){ ILIBCRITICALEXIT(254); }
@@ -2255,9 +2503,9 @@ int ILibStun_GenerateIceOffer(void* StunModule, char** offer, char* userName, ch
 
 	// Encoding the slot number into the user name, so we can do some processing when we receive ICE requests
 	ILibStun_GenerateUserAndKey(slot, obj->Secret, userAndKey);
-	memcpy(ice->userAndKey, userAndKey, 43);
-	memcpy(userName, userAndKey + 1, userAndKey[0]);
-	memcpy(password, userAndKey + userAndKey[0] + 2, userAndKey[userAndKey[0] + 1]);
+	memcpy_s(ice->userAndKey, sizeof(ice->userAndKey), userAndKey, 43);
+	memcpy_s(userName, 9, userAndKey + 1, userAndKey[0]);
+	memcpy_s(password, 33, userAndKey + userAndKey[0] + 2, userAndKey[userAndKey[0] + 1]);
 	userName[(int)userAndKey[0]] = 0;
 	password[(int)userAndKey[(int)userAndKey[0] + 1]] = 0;
 
@@ -2266,7 +2514,7 @@ int ILibStun_GenerateIceOffer(void* StunModule, char** offer, char* userName, ch
 
 void ILibStun_ICE_FinalizeConnectivityChecks(void *object)
 {
-	struct ILibStun_Module* obj = (struct ILibStun_Module*)object - 1;
+	struct ILibStun_Module* obj = ILibWebRTC_STUN_FROM_CONNECTIVITY_CHECK_TIMER(object);
 	int i;
 	int x;
 	
@@ -2276,7 +2524,7 @@ void ILibStun_ICE_FinalizeConnectivityChecks(void *object)
 		if (obj->IceStates[i] != NULL && obj->IceStates[i]->isDoingConnectivityChecks != 0)
 		{
 			obj->IceStates[i]->isDoingConnectivityChecks = 0;
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "FINALIZING Connectivity checks on IceSlot: %d", i);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "FINALIZING Connectivity checks on IceSlot: %d", i);
 
 			for (x = 0; x < obj->IceStates[i]->hostcandidatecount; ++x)
 			{
@@ -2296,13 +2544,13 @@ void ILibStun_ICE_FinalizeConnectivityChecks(void *object)
 						if (obj->IceStates[i]->dtlsInitiator != 0)
 						{
 							// Simultaneously initiate DTLS
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Initiating DTLS to: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&dest), ntohs(dest.sin_port));
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Initiating DTLS to: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&dest), ntohs(dest.sin_port));
 							ILibStun_InitiateDTLS(obj->IceStates[i], i, (struct sockaddr_in6*)&dest);
 						}
 						else
 						{
 							// We are DTLS Server, not Client
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Waiting for DTLS from: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&dest), ntohs(dest.sin_port));
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Waiting for DTLS from: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&dest), ntohs(dest.sin_port));
 						}
 						break;
 					}
@@ -2329,7 +2577,7 @@ void ILibStun_PeriodicStunCheck(struct ILibStun_Module* obj)
 		if (obj->IceStates[i] != NULL && obj->IceStates[i]->hostcandidates != NULL && obj->IceStates[i]->dtlsSession < 0 && ((ILibGetUptime() - obj->IceStates[i]->creationTime) < ILibSTUN_MaxOfferAgeSeconds * 1000))
 		{
 			// We will only do periodic stuns for IceOffers that don't have DTLS sessions associated, and are not expired
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_4, "PeriodicStun for IceStateSlot[%d]", i);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_4, "PeriodicStun for IceStateSlot[%d]", i);
 			ILibStun_DelaySendIceRequest(obj->IceStates[i], i, 0);
 			needRecheck = 1;
 		}
@@ -2350,7 +2598,7 @@ void ILibStun_ICE_Start(struct ILibStun_IceState *state, int SelectedSlot)
 	struct ILibStun_Module *obj = state->parentStunModule;
 	if (state->peerHasActiveOffer == 0)
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Starting Connectivity Checks...");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Starting Connectivity Checks...");
 		// Since we're not a STUN-LITE implementation, we need to perform connectivity checks
 		// We'll only do this, if we're the initiator and the peer is passive
 		state->isDoingConnectivityChecks = 1;
@@ -2360,11 +2608,11 @@ void ILibStun_ICE_Start(struct ILibStun_IceState *state, int SelectedSlot)
 		// We'll set a timer for 3 seconds, to finalize the connectivity check
 		// The timer is set on the stunModule, so we don't have a race condition if the ice offer is updated/deleted during
 		// these 3 seconds.
-		ILibLifeTime_Add(obj->Timer, obj + 1, 3, ILibStun_ICE_FinalizeConnectivityChecks, NULL);
+		ILibLifeTime_Add(obj->Timer, ILibWebRTC_STUN_TO_CONNECTIVITY_CHECK_TIMER(obj), 3, ILibStun_ICE_FinalizeConnectivityChecks, NULL);
 	}
 	else
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Skipping Connectivity Checks...");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Skipping Connectivity Checks...");
 		// We are CONTROLLED, so we just need to start the Periodic ICE Request Packets
 		ILibStun_PeriodicStunCheck(obj);
 	}
@@ -2389,7 +2637,7 @@ void ILibStun_SetIceOffer2_TURN_CreatePermissionResponse(ILibTURN_ClientModule t
 			// We'll set a timer for 3 seconds, to finalize the connectivity check
 			// The timer is set on the stunModule, so we don't have a race condition if the ice offer is updated/deleted during
 			// these 3 seconds.
-			ILibLifeTime_Add(obj->Timer, obj + 1, 3, ILibStun_ICE_FinalizeConnectivityChecks, NULL);
+			ILibLifeTime_Add(obj->Timer, ILibWebRTC_STUN_TO_CONNECTIVITY_CHECK_TIMER(obj), 3, ILibStun_ICE_FinalizeConnectivityChecks, NULL);
 		}
 		else
 		{
@@ -2399,6 +2647,51 @@ void ILibStun_SetIceOffer2_TURN_CreatePermissionResponse(ILibTURN_ClientModule t
 	}
 }
 
+void ILibStun_ProcessCandidates(void *StunModule, int iceStateSlot)
+{
+	struct ILibStun_IceState *state = ((ILibStun_Module*)StunModule)->IceStates[iceStateSlot];
+	int i;
+
+	if (state->hostcandidatecount > 0)
+	{
+		// If we are using a TURN server, we need to Create Permissions
+		if (state->useTurn != 0)
+		{
+			struct sockaddr_in6* permission = (struct sockaddr_in6*)malloc(state->hostcandidatecount * sizeof(struct sockaddr_in6));
+			if (permission == NULL) { ILIBCRITICALEXIT(254); }
+			memset(permission, 0, state->hostcandidatecount * sizeof(struct sockaddr_in6));
+			for (i = 0; i < state->hostcandidatecount; ++i)
+			{
+				((struct sockaddr_in*)&(permission[i]))->sin_family = AF_INET;
+				((struct sockaddr_in*)&(permission[i]))->sin_port = state->hostcandidates[i].port;
+				((struct sockaddr_in*)&(permission[i]))->sin_addr.s_addr = state->hostcandidates[i].addr;
+			}
+
+			ILibTURN_CreatePermission(state->parentStunModule->mTurnClientModule, permission, state->hostcandidatecount, ILibStun_SetIceOffer2_TURN_CreatePermissionResponse, (void*)(uintptr_t)iceStateSlot); // We are casting SelectedSlot this way, becuase it will always be < 255
+			
+			free(permission);
+			return;
+			// We are returning here, because if we need to create permissions on the TURN server, we need to wait for it to complete, 
+			// otherwise if we try to send the packets below, they'll get dropped... So we'll send those packets in the callback
+		}
+
+
+		ILibStun_ICE_Start(state, iceStateSlot);
+	}
+}
+
+//! Set an Encoded Offer Block
+/*!
+	\param StunModule Stun client module
+	\param iceOffer Encoded Offer Block
+	\param iceOfferLen Length of encoded offer block
+	\param username local username from original offer
+	\param usernameLength length of username buffer
+	\param password local password from original offer
+	\param passwordLength length of password buffer
+	\param answer Encoded Counter Offer Block
+	\return length of encoded counter offer block
+*/
 int ILibStun_SetIceOffer2(void *StunModule, char* iceOffer, int iceOfferLen, char *username, int usernameLength, char* password, int passwordLength, char** answer)
 {
 	int generateUserAndKey = 1;
@@ -2410,13 +2703,13 @@ int ILibStun_SetIceOffer2(void *StunModule, char* iceOffer, int iceOfferLen, cha
 
 	if (iceOffer == NULL || iceOfferLen == 0) return 0;
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Setting Ice Offer:");
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Setting Ice Offer:");
 #ifdef _REMOTELOGGING
 	if(username!=NULL && usernameLength>0)
 	{
 		char tmp = username[usernameLength];
 		username[usernameLength] = 0;
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...username: %s", username);
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...username: %s", username);
 		username[usernameLength] = tmp;
 	}
 #endif
@@ -2426,12 +2719,12 @@ int ILibStun_SetIceOffer2(void *StunModule, char* iceOffer, int iceOfferLen, cha
 	memset(state, 0, sizeof(struct ILibStun_IceState));
 
 	util_random(8, state->tieBreaker);
-	state->useTurn = obj->alwaysUseTurn;
+	state->useTurn = obj->alwaysConnectTurn;
 	candidateCount = iceOffer[7 + iceOffer[6] + 1 + iceOffer[7 + iceOffer[6]] + 1 + iceOffer[7 + iceOffer[6] + 1 + iceOffer[7+iceOffer[6]]]];
 
 	// We're mallocing this so we can encapsulate the ConnectivityCheck + Turn Candidate
 	if ((state->offerblock = (char*)malloc(iceOfferLen + candidateCount + 1)) == NULL) ILIBCRITICALEXIT(254);
-	memcpy(state->offerblock, iceOffer, iceOfferLen);
+	memcpy_s(state->offerblock, iceOfferLen + candidateCount + 1, iceOffer, iceOfferLen);
 	memset(state->offerblock + iceOfferLen, 0, candidateCount + 1);
 	state->blockversion = ntohs(((unsigned short*)(state->offerblock))[0]);
 	state->blockflags = ntohl(((unsigned int*)(state->offerblock + 2))[0]);
@@ -2451,8 +2744,8 @@ int ILibStun_SetIceOffer2(void *StunModule, char* iceOffer, int iceOfferLen, cha
 	state->dtlsSession = -1;
 	state->creationTime = ILibGetUptime();
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Remote is: [%d] %s", state->blockflags, state->peerHasActiveOffer != 0 ? "Initiator" : "Receiver");
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Certificate: %s", ILibRemoteLogging_ConvertToHex(state->dtlscerthash, state->dtlscerthashlen));
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Remote is: [%d] %s", state->blockflags, state->peerHasActiveOffer != 0 ? "Initiator" : "Receiver");
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Certificate: %s", ILibRemoteLogging_ConvertToHex(state->dtlscerthash, state->dtlscerthashlen));
 
 
 	//
@@ -2462,30 +2755,31 @@ int ILibStun_SetIceOffer2(void *StunModule, char* iceOffer, int iceOfferLen, cha
 	if (username != NULL && password != NULL && usernameLength + passwordLength == 40)
 	{
 		state->userAndKey[0] = (char)usernameLength;
-		memcpy(state->userAndKey + 1, username, usernameLength);
+		memcpy_s(state->userAndKey + 1, sizeof(state->userAndKey) - 1, username, usernameLength);
 		state->userAndKey[1 + usernameLength] = (char)passwordLength;
-		memcpy(state->userAndKey + 2 + usernameLength, password, passwordLength);
+		memcpy_s(state->userAndKey + 2 + usernameLength, sizeof(state->userAndKey) - 2 - usernameLength, password, passwordLength);
 	}
 
 	SelectedSlot = ILibStun_GetFreeIceStateSlot(obj, state, &oldState, 1);
 	if (SelectedSlot < 0)
 	{
 		// We couldn't update/add the new offer
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Unable to update/add offer");
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Unable to update/add offer");
 		free(state->offerblock);
 		free(state);
+		*answer = NULL;
 		return 0;
 	}
 	else
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Offer Added/Updated into Ice Slot: %d", SelectedSlot);
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Offer Added/Updated into Ice Slot: %d", SelectedSlot);
 		if (oldState != NULL)
 		{		
 			// The old object that was in this slot, was just a placeholder that was storing DTLS Allowed Candidates
 			// for the actual offer that we are now putting in it.
 			if (oldState->hostcandidatecount == 0 && oldState->hostcandidates == NULL)
 			{
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "......No previous offer was set, this must be the peer's answer to our original offer");
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "......No previous offer was set, this must be the peer's answer to our original offer");
 				for (i = 0; i < 8; ++i)
 				{
 					if (((struct sockaddr_in6*)oldState->offerblock)[i].sin6_family != 0)
@@ -2501,7 +2795,7 @@ int ILibStun_SetIceOffer2(void *StunModule, char* iceOffer, int iceOfferLen, cha
 
 							if (memcmp(&candidate, &(((struct sockaddr_in6*)oldState->offerblock)[i]), INET_SOCKADDR_LENGTH(candidate.sin_family)) == 0)
 							{
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Candidate: %s:%u was already unlocked", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&candidate), ntohs(candidate.sin_port));
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Candidate: %s:%u was already unlocked", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&candidate), ntohs(candidate.sin_port));
 								state->hostcandidateResponseFlag[j] = 1;
 								break;
 							}
@@ -2510,8 +2804,11 @@ int ILibStun_SetIceOffer2(void *StunModule, char* iceOffer, int iceOfferLen, cha
 				}
 			}
 			// We need to copy UserAndKey, because we will be using the same username and password
-			memcpy(state->userAndKey, oldState->userAndKey, sizeof(state->userAndKey));
+			memcpy_s(state->userAndKey, sizeof(state->userAndKey), oldState->userAndKey, sizeof(state->userAndKey));
 			generateUserAndKey = 0;
+
+			state->userObject = oldState->userObject; // Copy the user object
+
 			free(oldState->offerblock);
 			free(oldState);
 			oldState = NULL;
@@ -2525,39 +2822,40 @@ int ILibStun_SetIceOffer2(void *StunModule, char* iceOffer, int iceOfferLen, cha
 
 	// Generate an return answer
 	rlen = ILibStun_WebRTC_UpdateOfferResponse(state, answer);
-
-	// If we are using a TURN server, we need to Create Permissions
-	if (state->useTurn != 0)
-	{
-		struct sockaddr_in6* permission = (struct sockaddr_in6*)malloc(state->hostcandidatecount * sizeof(struct sockaddr_in6));
-		if (permission == NULL){ ILIBCRITICALEXIT(254); }
-		memset(permission, 0, state->hostcandidatecount * sizeof(struct sockaddr_in6));
-		for (i = 0; i < state->hostcandidatecount; ++i)
-		{
-			((struct sockaddr_in*)&(permission[i]))->sin_family = AF_INET;
-			((struct sockaddr_in*)&(permission[i]))->sin_port = state->hostcandidates[i].port;
-			((struct sockaddr_in*)&(permission[i]))->sin_addr.s_addr = state->hostcandidates[i].addr;
-		}
-		ILibTURN_CreatePermission(state->parentStunModule->mTurnClientModule, permission, state->hostcandidatecount, ILibStun_SetIceOffer2_TURN_CreatePermissionResponse, (void*)(uintptr_t)SelectedSlot); // We are casting SelectedSlot this way, becuase it will always be < 255
-		free(permission);
-		return rlen;
-		// We are returning here, because if we need to create permissions on the TURN server, we need to wait for it to complete, 
-		// otherwise if we try to send the packets below, they'll get dropped... So we'll send those packets in the callback
-	}
-
-
-	ILibStun_ICE_Start(state, SelectedSlot);
-
+	
+	ILibStun_ProcessCandidates(StunModule, SelectedSlot);
 
 	return rlen;
 }
 
-// Decode and save an ICE offer block, then return an answer block
+//! Decode and save an ICE offer block, then return an answer block
+/*!
+	\param StunModule Stun Client Module
+	\param iceOffer Encoded ICE Offer Block
+	\param iceOfferLen Length of encoded ICE offer block
+	\param answer The resultant encoded ICE offer block
+	\return Length of the resultant ICE Offer Block
+*/
 int ILibStun_SetIceOffer(void* StunModule, char* iceOffer, int iceOfferLen, char** answer)
 {
 	// Initial offers are required to be Active or ActPass, so peerHasActiveOffer is set to 1
 	// We need to save the username/password from our generated offer, when we pass in an offer. If we didn't generate the initial offer, pass in NULL
 	return ILibStun_SetIceOffer2(StunModule, iceOffer, iceOfferLen, NULL, 0, NULL, 0, answer);
+}
+
+void ILibORTC_GetLocalParameters(void *stunModule, char* username, char** password, int *passwordLength, char** certHash, int* certHashLength)
+{
+	struct ILibStun_Module* obj = (struct ILibStun_Module*)stunModule;
+	int slot = ILibStun_CharToSlot(username[0]);
+	int localUserNameLen;
+	
+	if (slot < 0 || slot >= ILibSTUN_MaxSlots) { ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_GetLocalParameters called with invalid local username"); return; }
+	localUserNameLen = obj->IceStates[slot]->userAndKey[0];
+	*passwordLength = obj->IceStates[slot]->userAndKey[localUserNameLen + 1];
+	*password = obj->IceStates[slot]->userAndKey + 1 + localUserNameLen + 1;
+
+	*certHash = obj->CertThumbprint;
+	*certHashLength = obj->CertThumbprintLength;
 }
 
 void ILibORTC_SetRemoteParameters(void* stunModule, char *username, int usernameLen, char *password, int passwordLen, char *certHash, int certHashLen, char *localUserName)
@@ -2572,37 +2870,66 @@ void ILibORTC_SetRemoteParameters(void* stunModule, char *username, int username
 	int localPasswordLen;
 	int slot;
 
-	if(offerLen > sizeof(offer)) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_SetRemoteParameters called, but passed data is > %d bytes", (int)sizeof(offer)); return;}
+	if(offerLen > sizeof(offer)) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_SetRemoteParameters called, but passed data is > %d bytes", (int)sizeof(offer)); return;}
 	slot = ILibStun_CharToSlot(localUserName[0]);
-	if(slot < 0 || slot >= ILibSTUN_MaxSlots) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_SetRemoteParameters called with invalid local username"); return;}
+	if(slot < 0 || slot >= ILibSTUN_MaxSlots) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_SetRemoteParameters called with invalid local username"); return;}
 
 	localUserNameLen = obj->IceStates[slot]->userAndKey[0];
 	localPasswordLen = obj->IceStates[slot]->userAndKey[localUserNameLen+1];
 	localPassword = obj->IceStates[slot]->userAndKey + 1 + localUserNameLen + 1;
 
-	((unsigned short*)offer)[0] = htons(1); // Block Version
-	((unsigned int*)offer+2)[0] = htons(0); // Block Version
-	offer[6] = usernameLen;					// Username Length
-	memcpy(offer+7, username, usernameLen);	// Username
-	offer[7+usernameLen] = passwordLen;		// Password Length
-	memcpy(offer+7+usernameLen+1, password, passwordLen);	// Password
-	offer[7 + usernameLen + 1 + passwordLen] = certHashLen;	// Cert Fingerprint Length
-	memcpy(offer + 7 + usernameLen + 1 + passwordLen + 1, certHash, certHashLen);	// Cert Fingerprint
-	offer[7 + usernameLen + 1 + passwordLen + 1 + certHashLen] = 0;					// No Candidates yet
+	((unsigned short*)offer)[0] = htons((short)1);													// Block Version
+	((unsigned int*)offer+2)[0] = htons(0);															// Block Version
+	offer[6] = (char)usernameLen;																	// Username Length
+	memcpy_s(offer+7, sizeof(offer) - 7, username, usernameLen);									// Username
+	offer[7+usernameLen] = (char)passwordLen;														// Password Length
+	memcpy_s(offer+7+usernameLen+1, sizeof(offer) - 7 - usernameLen - 1, password, passwordLen);	// Password
+	offer[7 + usernameLen + 1 + passwordLen] = (char)certHashLen;									// Cert Fingerprint Length
+	memcpy_s(offer + 7 + usernameLen + 1 + passwordLen + 1, sizeof(offer) - 9 - usernameLen - passwordLen, certHash, certHashLen);	// Cert Fingerprint
+	offer[7 + usernameLen + 1 + passwordLen + 1 + certHashLen] = 0;									// No Candidates yet
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_SetRemoteParameters -> ILibStun_SetIceOffer2");
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_SetRemoteParameters -> ILibStun_SetIceOffer2");
 	ILibStun_SetIceOffer2(stunModule, offer, offerLen, localUserName, localUserNameLen, localPassword, localPasswordLen, &answer);
 	free(answer);
 }
 
-void ILibORTC_AddCandidate(void *stunModule, char* localUsername, struct sockaddr_in6 *candidate)
+void ILibORTC_AddRemoteCandidate(void *stunModule, char* localUsername, struct sockaddr_in6 *candidate)
 {
+	int blockSize;
+	char *newBlock;
+
+	struct ILibStun_IceState* state;
 	int slot = ILibStun_CharToSlot(localUsername[0]);
 
-	if (slot < 0 || slot > ILibSTUN_MaxSlots) { ILibRemoteLogging_printf(ILibChainGetLogger(((struct ILibStun_Module*)stunModule)->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_AddCandidate called with invalid local username"); return; }
-	ILibRemoteLogging_printf(ILibChainGetLogger(((struct ILibStun_Module*)stunModule)->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_AddCandidate: %s", ILibRemoteLogging_ConvertAddress((struct sockaddr*)candidate));
+	if (slot < 0 || slot > ILibSTUN_MaxSlots) { ILibRemoteLogging_printf(ILibChainGetLogger(((struct ILibStun_Module*)stunModule)->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_AddCandidate called with invalid local username"); return; }
+	ILibRemoteLogging_printf(ILibChainGetLogger(((struct ILibStun_Module*)stunModule)->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibORTC_AddCandidate: %s", ILibRemoteLogging_ConvertAddress((struct sockaddr*)candidate));
 	
 
+	state = ((ILibStun_Module*)stunModule)->IceStates[slot];	// MS Static Analyser erroniously reports slot could be out of range, becuase it was too dumb to see the check above
+	blockSize = (int)(state->hostcandidateResponseFlag - state->offerblock);
+
+	newBlock = ILibMemory_Allocate(blockSize + state->hostcandidatecount + 8, 0, NULL, NULL);	// Same as old block, plus 7 more bytes for another candidate
+
+	memcpy_s(newBlock, blockSize + state->hostcandidatecount + 8, state->offerblock, blockSize); // Copy Everything, up to the existing candidates
+	newBlock[7 + state->rusernamelen + 1 + state->rkeylen + 1 + state->dtlscerthashlen] = (char)(state->hostcandidatecount + 1);
+	((struct ILibStun_IceStateCandidate*)(newBlock + blockSize))->addr = ((struct sockaddr_in*)candidate)->sin_addr.s_addr;
+	((struct ILibStun_IceStateCandidate*)(newBlock + blockSize))->port = ((struct sockaddr_in*)candidate)->sin_port;
+
+	memcpy_s(newBlock + blockSize + sizeof(struct ILibStun_IceStateCandidate), state->hostcandidatecount + 8 - sizeof(struct ILibStun_IceStateCandidate), state->offerblock + blockSize, state->hostcandidatecount);
+	newBlock[blockSize + sizeof(struct ILibStun_IceStateCandidate) + state->hostcandidatecount] = 0x00;
+
+	state->rusername = newBlock + 7;
+	state->rkey = newBlock + 7 + state->rusernamelen + 1;
+	state->dtlscerthash = newBlock + 7 + state->rusernamelen + 1 + state->rkeylen + 1;
+	state->hostcandidatecount += 1;
+	state->hostcandidates = (struct ILibStun_IceStateCandidate*)(newBlock + 7 + state->rusernamelen + 1 + state->rkeylen + 1 + state->dtlscerthashlen + 1);
+	state->hostcandidateResponseFlag = newBlock + blockSize + (state->hostcandidatecount*sizeof(struct ILibStun_IceStateCandidate));
+	
+	state->creationTime = ILibGetUptime();
+
+	free(state->offerblock);
+	state->offerblock = newBlock;
+	ILibStun_ProcessCandidates(stunModule, slot);
 }
 
 ILibTransport_DoneState ILibStun_SendDtls(struct ILibStun_Module *obj, int session, char* buffer, int bufferLength)
@@ -2610,7 +2937,7 @@ ILibTransport_DoneState ILibStun_SendDtls(struct ILibStun_Module *obj, int sessi
 	ILibTransport_DoneState r = ILibTransport_DoneState_ERROR;
 	char exBuffer[4096];
 	int j;
-	if (obj == NULL || session < 0 || session > (ILibSTUN_MaxSlots-1) || obj->dTlsSessions[session] == NULL || SSL_state(obj->dTlsSessions[session]->ssl) != 3) return ILibTransport_DoneState_ERROR;
+	if (obj == NULL || session < 0 || session > (ILibSTUN_MaxSlots-1) || obj->dTlsSessions[session] == NULL || SSL_get_state(obj->dTlsSessions[session]->ssl) != TLS_ST_OK) return ILibTransport_DoneState_ERROR;
 
 #ifdef _WEBRTCDEBUG
 	// Simulated Inbound Packet Loss
@@ -2624,19 +2951,38 @@ ILibTransport_DoneState ILibStun_SendDtls(struct ILibStun_Module *obj, int sessi
 		j = BIO_read(SSL_get_wbio(obj->dTlsSessions[session]->ssl), exBuffer, 4096);
 		if (obj->IceStates[obj->dTlsSessions[session]->iceStateSlot]->useTurn != 0)
 		{
-			if (ILibTURN_GetPendingBytesToSend(obj->mTurnClientModule) == 0)
+			if ((((int*)ILibMemory_GetExtraMemory(obj->dTlsSessions[session]->remoteInterface, sizeof(struct sockaddr_in6)))[0] & ILibTURN_FLAGS_CHANNEL_DATA) == ILibTURN_FLAGS_CHANNEL_DATA)
 			{
-				r = (ILibTransport_DoneState)ILibTURN_SendChannelData(obj->mTurnClientModule, (unsigned short)session, exBuffer, 0, j);
+				if (ILibTURN_GetPendingBytesToSend(obj->mTurnClientModule) == 0)
+				{
+					r = (ILibTransport_DoneState)ILibTURN_SendChannelData(obj->mTurnClientModule, (unsigned short)session, exBuffer, 0, j);
+				}
+				else
+				{
+					// If the TCP socket is overflowing, just drop the packet... SCTP will take care of retrying this later
+					r = ILibTransport_DoneState_INCOMPLETE; // ToDo: Make Sure SendOK is getting called
+				}
+			}
+			else if ((((int*)ILibMemory_GetExtraMemory(obj->dTlsSessions[session]->remoteInterface, sizeof(struct sockaddr_in6)))[0] & ILibTURN_FLAGS_DATA_INDICATION) == ILibTURN_FLAGS_DATA_INDICATION)
+			{
+				if (ILibTURN_GetPendingBytesToSend(obj->mTurnClientModule) == 0)
+				{
+					r = (ILibTransport_DoneState)ILibTURN_SendIndication(obj->mTurnClientModule, obj->dTlsSessions[session]->remoteInterface, exBuffer, 0, j);
+				}
+				else
+				{
+					// If the TCP socket is overflowing, just drop the packet... SCTP will take care of retrying this later
+					r = ILibTransport_DoneState_INCOMPLETE; // ToDo: Make Sure SendOK is getting called
+				}
 			}
 			else
 			{
-				// If the TCP socket is overflowing, just drop the packet... SCTP will take care of retrying this later
-				r = ILibTransport_DoneState_INCOMPLETE; // ToDo: Make Sure SendOK is getting called
+				r = (ILibTransport_DoneState)ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)obj->dTlsSessions[session]->remoteInterface, exBuffer, j, ILibAsyncSocket_MemoryOwnership_USER);
 			}
 		}
 		else
 		{
-			r = (ILibTransport_DoneState)ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)&(obj->dTlsSessions[session]->remoteInterface), exBuffer, j, ILibAsyncSocket_MemoryOwnership_USER);
+			r = (ILibTransport_DoneState)ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)obj->dTlsSessions[session]->remoteInterface, exBuffer, j, ILibAsyncSocket_MemoryOwnership_USER);
 		}
 	}
 	return r;
@@ -2662,6 +3008,25 @@ ILibTransport_DoneState ILibStun_SendSctpPacket(struct ILibStun_Module *obj, int
 
 int ILibStun_AddSctpChunkHeader(char* buffer, int ptr, unsigned char chunktype, unsigned char chunkflags, unsigned short chunklength)
 {
+	if (ptr >= 12 && ((int*)buffer)[0] == 0 && ((int*)buffer)[1] == 0)
+	{
+		// This buffer contains a common buffer area, that has control flags
+		if (chunktype == RCTP_CHUNK_TYPE_DATA)
+		{ 
+			// Data Chunk
+			((int*)buffer)[2] |= SCTP_COMMON_HEADER_FLAGS_DATA;
+		}
+		else
+		{
+			// Control Chunk
+			((int*)buffer)[2] |= SCTP_COMMON_HEADER_FLAGS_CONTROL;
+			if ((((int*)buffer)[2] & SCTP_COMMON_HEADER_FLAGS_DATA) == SCTP_COMMON_HEADER_FLAGS_DATA)
+			{
+				// Writing Control Chunk after Data Chunk was already written
+				((int*)buffer)[2] |= SCTP_COMMON_HEADER_FLAGS_REORDER;
+			}
+		}
+	}
 	buffer[ptr] = chunktype;
 	buffer[ptr + 1] = chunkflags;
 	((unsigned short*)(buffer + ptr))[1] = htons(chunklength);
@@ -2673,7 +3038,7 @@ int ILibStun_AddSctpChunkArg(char* buffer, int ptr, unsigned short otype, char* 
 	ptr = ILibAlignOnFourByteBoundary(buffer, ptr);
 	((unsigned short*)(buffer + ptr))[0] = ntohs(otype);
 	((unsigned short*)(buffer + ptr))[1] = ntohs((unsigned short)(4 + datalen));
-	if (datalen != 0) memcpy(buffer + ptr + 4, data, datalen);
+	if (datalen != 0) memcpy_s(buffer + ptr + 4, datalen, data, datalen);
 	return ptr + 4 + datalen;
 }
 
@@ -2713,7 +3078,7 @@ int ILibStun_SctpAddSackChunk(struct ILibStun_Module *obj, int session, char* pa
 			((unsigned short*)(packet + ptr + clen))[0] = htons((unsigned short)(gstart - tsn));			// Start	
 			((unsigned short*)(packet + ptr + clen))[1] = htons((unsigned short)(gend - tsn));				// End
 			RCTPRCVDEBUG(printf("SACK %u + %u to %u\r\n", tsn, gstart, gend);)
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d SENT [SACK] %u + %u to %u", session, tsn, gstart, gend);
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d SENT [SACK] %u + %u to %u", session, tsn, gstart, gend);
 				clen += 4;
 		}
 	}
@@ -2726,37 +3091,46 @@ int ILibStun_SctpAddSackChunk(struct ILibStun_Module *obj, int session, char* pa
 	((unsigned short*)(packet + ptr + 12))[0] = htons(((unsigned short)clen - 16) / 4);		// Number of Gap Ack Blocks
 	((unsigned short*)(packet + ptr + 14))[0] = htons(0);									// Number of Duplicate TSNs
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d SENT [SACK] a_rwnd: %u Cumalative TSN: %u", session, ILibSCTP_MaxReceiverCredits - bytecount, obj->dTlsSessions[session]->intsn);
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d SENT [SACK] a_rwnd: %u Cumalative TSN: %u", session, ILibSCTP_MaxReceiverCredits - bytecount, obj->dTlsSessions[session]->intsn);
 
 	return (ptr + clen);
 }
 
 ILibTransport_DoneState ILibStun_SctpSendDataEx(struct ILibStun_Module *obj, int session, unsigned char flags, unsigned short streamid, unsigned short streamnum, int pid, char* data, int datalen)
 {
-	int len;
-	int rptr = sizeof(char*) + 8 + 12;
-	char* rpacket;
+	ILibSCTP_StreamAttributes sattr;
+	ILibSCTP_StreamAttributes_Data sattrData;
+	int rptr = sizeof(ILibSCTP_RPACKET);
+	ILibSCTP_RPACKET *rpacket;
 	unsigned int tsn = obj->dTlsSessions[session]->outtsn;
 	obj->dTlsSessions[session]->outtsn++;
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d] ILibStun_SctpSendDataEx -> outtsn = %u", session, tsn + 1);
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d] ILibStun_SctpSendDataEx -> outtsn = %u", session, tsn);
 
 	// Create data packet, allow for a header in front.
-	len = sizeof(char*) + 8 + 12 + 16 + datalen;
-	if ((rpacket = (char*)malloc(len)) == NULL) ILIBCRITICALEXIT(254);
-	((char**)(rpacket))[0] = NULL;																				// Pointer to the next packet (Used for queuing)
-	((unsigned short*)(rpacket + sizeof(char*)))[0] = (unsigned short)(12 + 16 + datalen);						// Size of the packet (Used for queuing)
-	((unsigned short*)(rpacket + sizeof(char*)))[1] = 0;														// Number of times the packet was resent (Used for retry)
-	((unsigned int*)(rpacket + sizeof(char*)))[1] = 0;															// Last time the packet was sent (Used for retry)
-	
+	if ((rpacket = (ILibSCTP_RPACKET*)malloc(sizeof(ILibSCTP_RPACKET) + datalen + 16)) == NULL) ILIBCRITICALERREXIT(254);
+	rpacket->Reliability = 0;																					// Full Reliable Mode (Default)
+	rpacket->NextPacket = NULL;																					// Pointer to the next packet (Used for queuing)
+	rpacket->PacketSize = (unsigned short)(12 + 16 + datalen);													// Size of the packet (Used for queuing)					
+	rpacket->PacketGAPCounter = rpacket->PacketResendCounter = 0;												// Number of times the packet was resent (Used for retry)
+	rpacket->LastSentTimeStamp = 0;																				// Last time the packet was sent (Used for retry)
+	rpacket->CreationTimeStamp = (unsigned int)ILibGetUptime();
+
+	sattr.Raw = ILibSparseArray_Get(obj->dTlsSessions[session]->DataChannelMetaDeta, streamid);
+	sattrData.Raw = ILibSparseArray_Get(obj->dTlsSessions[session]->DataChannelMetaDetaValues, streamid);
+	rpacket->Reliability |= ((sattr.Data.ReliabilityFlags & ILibWebRTC_DataChannel_ReliabilityMode_RELIABLE_UNORDERED) << 8);	// Top BIT is Ordered BIT
+	rpacket->Reliability |= (sattr.Data.ReliabilityFlags << 13);																// Next TWO BITS is Reliability Mode
+	rpacket->Reliability |= (sattrData.Data.ReliabilityValue & 0x1FFF);															// Remaining BITS will be Reliability Value
+
 	// There is a 12 byte GAP here to accomodate SCTP Common Header, if necessary
 
-	ILibStun_AddSctpChunkHeader(rpacket, rptr, RCTP_CHUNK_TYPE_DATA, flags, (unsigned short)(16 + datalen));	// Setup the data chunk header
-	((unsigned int*)(rpacket + rptr + 4))[0] = htonl(tsn);														// Cumulative TSN Ack
-	((unsigned short*)(rpacket + rptr + 8))[0] = htons(streamid);												// Stream Identifier
-	((unsigned short*)(rpacket + rptr + 10))[0] = htons(streamnum);												// Stream Sequence Number
-	((unsigned int*)(rpacket + rptr + 12))[0] = htonl(pid);														// Payload Protocol Identifier
-	memcpy(rpacket + rptr + 16, data, datalen);																	// Copy the user data
+	ILibStun_AddSctpChunkHeader(rpacket->Data, 0, RCTP_CHUNK_TYPE_DATA, flags, (unsigned short)(16 + datalen));	// Setup the data chunk header
+	
+	((ILibSCTP_DataPayload*)rpacket->Data)->TSN = htonl(tsn);													// Cumulative TSN Ack
+	((ILibSCTP_DataPayload*)rpacket->Data)->StreamID = htons(streamid);											// Stream Identifier
+	((ILibSCTP_DataPayload*)rpacket->Data)->StreamSequenceNumber = htons(streamnum);							// Stream Sequence Number
+	((ILibSCTP_DataPayload*)rpacket->Data)->ProtocolID = htonl(pid);											// Payload Protocol Identifier
+	memcpy_s(((ILibSCTP_DataPayload*)rpacket->Data)->UserData, datalen + 16, data, datalen);									// Copy the user data
 	rptr += (16 + datalen);
 
 	RCTPDEBUG(printf("OUT DATA_CHUNK FLAGS: %d, TSN: %u, ID: %d, SEQ: %d, PID: %u, SIZE: %d\r\n", flags, tsn, streamid, streamnum, pid, datalen);)
@@ -2764,10 +3138,12 @@ ILibTransport_DoneState ILibStun_SctpSendDataEx(struct ILibStun_Module *obj, int
 	// Check the credits
 	if ((obj->dTlsSessions[session]->receiverCredits < datalen) || datalen > obj->dTlsSessions[session]->senderCredits || (obj->dTlsSessions[session]->holdingCount != 0))
 	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_2, "...To Holding Queue");
+		
 		// Add this packet to the holding queue
-		if (obj->dTlsSessions[session]->holdingQueueTail == NULL) { obj->dTlsSessions[session]->holdingQueueHead = rpacket; }
-		else { ((char**)(obj->dTlsSessions[session]->holdingQueueTail))[0] = rpacket; }
-		obj->dTlsSessions[session]->holdingQueueTail = rpacket;
+		if (obj->dTlsSessions[session]->holdingQueueTail == NULL) { obj->dTlsSessions[session]->holdingQueueHead = (char*)rpacket; }
+		else { ((char**)(obj->dTlsSessions[session]->holdingQueueTail))[0] = (char*)rpacket; }
+		obj->dTlsSessions[session]->holdingQueueTail = (char*)rpacket;
 		obj->dTlsSessions[session]->holdingCount++;
 		obj->dTlsSessions[session]->holdingByteCount += datalen;
 		// if (obj->dTlsSessions[session]->holdingCount == 1) printf("HOLD\r\n");
@@ -2776,27 +3152,32 @@ ILibTransport_DoneState ILibStun_SctpSendDataEx(struct ILibStun_Module *obj, int
 #endif
 		return ILibTransport_DoneState_INCOMPLETE; // Hold, we don't have anymore credits
 	}
-
+	
 	// Update the packet retry data
-	((unsigned int*)(rpacket + sizeof(char*)))[1] = (unsigned int)ILibGetUptime();								// Last time the packet was sent (Used for retry)
+	rpacket->LastSentTimeStamp = rpacket->CreationTimeStamp;								// Last time the packet was sent (Used for retry)
 	if (obj->dTlsSessions[session]->T3RTXTIME == 0)
 	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_2, "...Start T3RTX Timer");
+
 		// Only set the T3RTX timer if it is not already running
-		obj->dTlsSessions[session]->T3RTXTIME = ((unsigned int*)(rpacket + sizeof(char*)))[1];
+		obj->dTlsSessions[session]->T3RTXTIME = rpacket->LastSentTimeStamp;
 #ifdef _WEBRTCDEBUG
 		if (obj->dTlsSessions[session]->onT3RTX != NULL){ obj->dTlsSessions[session]->onT3RTX(obj, "OnT3RTX", obj->dTlsSessions[session]->RTO); }
 #endif
 	}
 
 	// Add this packet to the pending ack queue
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_2, "...Added to Pending ACK Queue");
+
 	obj->dTlsSessions[session]->receiverCredits -= datalen; // Receiver Window
 	obj->dTlsSessions[session]->senderCredits -= datalen;   // Congestion Window
 
-	if (obj->dTlsSessions[session]->pendingQueueTail == NULL) { obj->dTlsSessions[session]->pendingQueueHead = rpacket; }
-	else { ((char**)(obj->dTlsSessions[session]->pendingQueueTail))[0] = rpacket; }
-	obj->dTlsSessions[session]->pendingQueueTail = rpacket;
+	if (obj->dTlsSessions[session]->pendingQueueTail == NULL) { obj->dTlsSessions[session]->pendingQueueHead = (char*)rpacket; }
+	else { ((char**)(obj->dTlsSessions[session]->pendingQueueTail))[0] = (char*)rpacket; }
+	obj->dTlsSessions[session]->pendingQueueTail = (char*)rpacket;
 	obj->dTlsSessions[session]->pendingCount++;
-	obj->dTlsSessions[session]->pendingByteCount += (((unsigned short*)(rpacket + sizeof(char*)))[0] - (12 + 16));
+	
+	obj->dTlsSessions[session]->pendingByteCount += (rpacket->PacketSize - (12 + 16));
 
 #ifdef _WEBRTCDEBUG
 	// Debug Event
@@ -2806,20 +3187,29 @@ ILibTransport_DoneState ILibStun_SctpSendDataEx(struct ILibStun_Module *obj, int
 	// Send the packet now
 	if ((flags & 0x03) == 0x03 && obj->dTlsSessions[session]->rpacketptr > 0 && obj->dTlsSessions[session]->rpacketsize > (obj->dTlsSessions[session]->rpacketptr + 16 + datalen + 4))
 	{
+		int st;
 		// Merge this data chunk in packet that is going to be sent
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_2, "...Merging");
 
 		// Align/Pad on 32bit aligned pointer
+		st = obj->dTlsSessions[session]->rpacketptr;
 		obj->dTlsSessions[session]->rpacketptr = ILibAlignOnFourByteBoundary(obj->dTlsSessions[session]->rpacket, obj->dTlsSessions[session]->rpacketptr);
 
-		memcpy(obj->dTlsSessions[session]->rpacket + obj->dTlsSessions[session]->rpacketptr, rpacket + sizeof(char*) + 8 + 12, 16 + datalen);
-		obj->dTlsSessions[session]->rpacketptr += (16 + datalen);
+		if (st != obj->dTlsSessions[session]->rpacketptr)
+		{
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_2, "...Aligning on 4 byte boundary [%d => %d]", st, obj->dTlsSessions[session]->rpacketptr);
+		}
+		memcpy_s(obj->dTlsSessions[session]->rpacket + obj->dTlsSessions[session]->rpacketptr, 16 + datalen, rpacket->Data, 16 + datalen);
+		obj->dTlsSessions[session]->rpacketptr += FOURBYTEBOUNDARY(16 + datalen);	
+		((int*)obj->dTlsSessions[session]->rpacket)[2] |= SCTP_COMMON_HEADER_FLAGS_DATA;
 	}
 	else
 	{
 		// Send in a seperate packet
-		return ILibStun_SendSctpPacket(obj, session, rpacket + sizeof(char*) + 8, rptr - sizeof(char*) - 8); // Problem sending
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_2, "...Sending");
+		return ILibStun_SendSctpPacket(obj, session, rpacket->Data - 12, rptr - sizeof(ILibSCTP_RPACKET) + 12); // Problem sending
 	}
-
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_2, "...Complete");
 	return ILibTransport_DoneState_COMPLETE; // Everything is ok
 }
 
@@ -2869,16 +3259,32 @@ ILibTransport_DoneState ILibStun_SctpSendData(struct ILibStun_Module *obj, int s
 	return r;
 }
 
-// Public method used to send data on RCTP stream
-ILibTransport_DoneState ILibSCTP_Send(void* module, unsigned short streamId, char* data, int datalen)
+//! Send binary data on an SCTP stream
+/*!
+	\param sctpSession SCTP Session object
+	\param streamId Stream Identifier of the stream to utilize for the send operation
+	\param data Binary data to send
+	\param datalen Length of data to send
+	\return Send status of the operation
+*/
+ILibTransport_DoneState ILibSCTP_Send(void* sctpSession, unsigned short streamId, char* data, int datalen)
 {
-	return ILibSCTP_SendEx(module, streamId, data, datalen, 53);
+	return ILibSCTP_SendEx(sctpSession, streamId, data, datalen, 53);
 }
 
-ILibTransport_DoneState ILibSCTP_SendEx(void* module, unsigned short streamId, char* data, int datalen, int dataType)
+//! Send raw data on an SCTP stream
+/*!
+\param sctpSession SCTP Session object
+\param streamId Stream Identifier of the stream to utilize for the send operation
+\param data Binary data to send
+\param datalen Length of data to send
+\param dataType Type of the data to send (Eg: 51 = string, 53 = binary, etc)
+\return Send status of the operation
+*/
+ILibTransport_DoneState ILibSCTP_SendEx(void* sctpSession, unsigned short streamId, char* data, int datalen, int dataType)
 {
 	ILibTransport_DoneState r;
-	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)module;
+	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)sctpSession;
 	if (obj->state != 2) return ILibTransport_DoneState_ERROR; // Error
 	sem_wait(&(obj->Lock));
 	r = ILibStun_SctpSendData(obj->parent, obj->sessionId, streamId, dataType, data, datalen);
@@ -2910,7 +3316,7 @@ void ILibStun_SctpProcessStreamData(struct ILibStun_Module *obj, int session, un
 					attributes.Data.StatusFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_ASSIGNED;
 					ILibSparseArray_Add(obj->dTlsSessions[session]->DataChannelMetaDeta, streamId, attributes.Raw);		
 
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Data Channel ACK on session: %u for StreamId: %u", session, streamId);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Data Channel ACK on session: %u for StreamId: %u", session, streamId);
 
 					sem_post(&(obj->dTlsSessions[session]->Lock));
 					if (obj->OnWebRTCDataChannelAck != NULL) { obj->OnWebRTCDataChannelAck(obj, obj->dTlsSessions[session], streamId); }
@@ -2927,12 +3333,12 @@ void ILibStun_SctpProcessStreamData(struct ILibStun_Module *obj, int session, un
 					ILibSCTP_StreamAttributes_Data attributesData;		
 
 					channelName[channelNameLength] = 0;
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Data Channel Open request on session: %u for StreamId: %u [%s]", session, streamId, channelName);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Data Channel Open request on session: %u for StreamId: %u [%s]", session, streamId, channelName);
 
 					if((attributes.Data.StatusFlags & ILibSCTP_StreamAttributesData_Assigned_Status_ASSIGNED) == ILibSCTP_StreamAttributesData_Assigned_Status_ASSIGNED)
 					{
 						// This data channel already exists
-						ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...This stream ID already exists!");
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...This stream ID already exists!");
 						break;
 					}
 					attributes.Raw = 0x00;
@@ -2943,30 +3349,30 @@ void ILibStun_SctpProcessStreamData(struct ILibStun_Module *obj, int session, un
 					switch((ILibWebRTC_DataChannel_ReliabilityModes)((unsigned char)data[1]))
 					{
 						case ILibWebRTC_DataChannel_ReliabilityMode_RELIABLE:	
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Reliable");
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Reliable");
 							break;
 						case ILibWebRTC_DataChannel_ReliabilityMode_RELIABLE_UNORDERED:
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Reliable / UNORDERED");
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Reliable / UNORDERED");
 							attributes.Data.ReliabilityFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_UNORDERED;
 							break;
 						case ILibWebRTC_DataChannel_ReliabilityMode_PARTIAL_RELIABLE_REXMIT:
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Partial-Reliable / REXMIT");
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Partial-Reliable / REXMIT");
 							attributes.Data.ReliabilityFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_REXMIT;
 							attributesData.Data.ReliabilityValue = (unsigned short)(ntohl(((unsigned int*)(data+4))[0]));
 							break;
 						case ILibWebRTC_DataChannel_ReliabilityMode_PARTIAL_RELIABLE_REXMIT_UNORDERED:
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Partial-Reliable / UNORDERED + REXMIT");
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Partial-Reliable / UNORDERED + REXMIT");
 							attributes.Data.ReliabilityFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_UNORDERED;
 							attributes.Data.ReliabilityFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_REXMIT;
 							attributesData.Data.ReliabilityValue = (unsigned short)(ntohl(((unsigned int*)(data+4))[0]));
 							break;
 						case ILibWebRTC_DataChannel_ReliabilityMode_PARTIAL_RELIABLE_TIMED:
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Partial-Reliable / TIMED");
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Partial-Reliable / TIMED");
 							attributes.Data.ReliabilityFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_TIMED;
 							attributesData.Data.ReliabilityValue = (unsigned short)(ntohl(((unsigned int*)(data+4))[0]));
 							break;
 						case ILibWebRTC_DataChannel_ReliabilityMode_PARTIAL_RELIABLE_TIMED_UNORDERED:
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Partial-Reliable / TIMED + UNORDERED");
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Partial-Reliable / TIMED + UNORDERED");
 							attributes.Data.ReliabilityFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_TIMED;
 							attributes.Data.ReliabilityFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_UNORDERED;
 							attributesData.Data.ReliabilityValue = (unsigned short)(ntohl(((unsigned int*)(data+4))[0]));
@@ -2982,6 +3388,7 @@ void ILibStun_SctpProcessStreamData(struct ILibStun_Module *obj, int session, un
 					if (sendAck == 0)
 					{
 						// Respond with DATA_CHANNEL_ACK
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Responding with DataChannel ACK");
 						ILibStun_SctpSendData(obj, session, streamId, 50, &DATA_CHANNEL_ACK, 1);
 					}
 				}
@@ -2993,16 +3400,6 @@ void ILibStun_SctpProcessStreamData(struct ILibStun_Module *obj, int session, un
 		// Other
 		if ((chunkflags & 0x03) == 0x03)
 		{
-			// This isn't needed, becuase ConsentFreshness algorithm will shut down the connection if the other side disappears. 
-			//
-			//// This is a full data block, check if this is a close signal
-			//if (obj->dTlsSessions[session]->state == 2 && pid == 51 && datalen == 5 && memcmp(data, "close", 5) == 0)
-			//{
-			//	sem_post(&(obj->dTlsSessions[session]->Lock));
-			//	ILibStun_SctpDisconnect(obj, session);
-			//	return;
-			//}
-
 			// This is a full data block
 			if (obj->OnData != NULL && obj->dTlsSessions[session]->state == 2)
 			{
@@ -3017,33 +3414,41 @@ void ILibStun_SctpProcessStreamData(struct ILibStun_Module *obj, int session, un
 		{
 			// Start of a data accumulation
 			ILibSCTP_Accumulator *acc = (ILibSCTP_Accumulator*)ILibSparseArray_Get(obj->dTlsSessions[session]->DataAccumulator, streamId);
-			if(acc == NULL) {acc = ILibSCTP_CreateAccumulator();}
-
-			if (chunkflags & 0x02) { acc->bufferPtr = 0; }
-
-			// Accumulate data
-			if (acc->bufferPtr + datalen > acc->bufferLen)
+			if(acc == NULL)
 			{
-				// Realloc the accumulation buffer if needed
-				if ((acc->buffer = (char*)realloc(acc->buffer, acc->bufferPtr + datalen)) == NULL) ILIBCRITICALEXIT(254);
-				acc->bufferLen = acc->bufferPtr + datalen;
+				if (chunkflags & 0x02) { acc = ILibSCTP_CreateAccumulator(); } // Only create, if we received a 'Begin' fragment
 			}
-			memcpy(acc->buffer + acc->bufferPtr, data, datalen);
-			acc->bufferPtr += datalen;
 
-			ILibSparseArray_Add(obj->dTlsSessions[session]->DataAccumulator, streamId, acc);
-
-			// End of data accumulation
-			if (chunkflags & 0x01)
+			if (acc != NULL)
 			{
-				if (obj->OnData != NULL && obj->dTlsSessions[session]->state == 2)
+				if (chunkflags & 0x02) { acc->bufferPtr = 0; }	// Set to Zero when a 'BeginFragment' is received
+				if (acc->bufferPtr >= 0)						// If this is < 0, it means we never received a 'BeginFragment'
 				{
-					sem_post(&(obj->dTlsSessions[session]->Lock));
-					obj->OnData(obj, obj->dTlsSessions[session], streamId, pid, acc->buffer, acc->bufferPtr, &(obj->dTlsSessions[session]->User));
-					if (obj->dTlsSessions[session] == NULL || obj->dTlsSessions[session]->state != 2) return;
-					sem_wait(&(obj->dTlsSessions[session]->Lock));
+					// Accumulate data
+					if (acc->bufferPtr + datalen > acc->bufferLen)
+					{
+						// Realloc the accumulation buffer if needed
+						if ((acc->buffer = (char*)realloc(acc->buffer, acc->bufferPtr + datalen)) == NULL) ILIBCRITICALEXIT(254); // MS Static Analyser erronesouly reports a leak here
+						acc->bufferLen = acc->bufferPtr + datalen;
+					}
+					memcpy_s(acc->buffer + acc->bufferPtr, acc->bufferLen - acc->bufferPtr, data, datalen);
+					acc->bufferPtr += datalen;
+
+					ILibSparseArray_Add(obj->dTlsSessions[session]->DataAccumulator, streamId, acc);
+
+					// End of data accumulation
+					if (chunkflags & 0x01)
+					{
+						if (obj->OnData != NULL && obj->dTlsSessions[session]->state == 2)
+						{
+							sem_post(&(obj->dTlsSessions[session]->Lock));
+							obj->OnData(obj, obj->dTlsSessions[session], streamId, pid, acc->buffer, acc->bufferPtr, &(obj->dTlsSessions[session]->User));
+							if (obj->dTlsSessions[session] == NULL || obj->dTlsSessions[session]->state != 2) return;
+							sem_wait(&(obj->dTlsSessions[session]->Lock));
+						}
+						acc->bufferPtr = -1;
+					}
 				}
-				//ILibStun_SctpSendData(obj, session, streamId, pid, obj->dTlsSessions[session]->dataAssembly, obj->dTlsSessions[session]->dataAssemblyPtr); // ECHO
 			}
 		}
 	}
@@ -3061,7 +3466,7 @@ void ILibStun_SctpProcessStreamData(struct ILibStun_Module *obj, int session, un
 			char tmp[4096];
 			if(streamIdCount * 2 * sizeof(unsigned short) <= 4096) // Only do this if we have enough memory to copy the streamId values
 			{
-				if(streamIdCount > 0) {memcpy(tmp, o->rpacket + o->rpacketsize - offset + 4, streamIdCount * sizeof(unsigned short));}
+				if(streamIdCount > 0) {memcpy_s(tmp, sizeof(tmp), o->rpacket + o->rpacketsize - offset + 4, streamIdCount * sizeof(unsigned short));}
 				o->pendingReconfigPacket = NULL;
 				ILibWebRTC_CloseDataChannelEx2(o, (unsigned short*)tmp, streamIdCount);
 			}
@@ -3083,12 +3488,14 @@ void ILibStun_SctpDisconnect_Final(void *obj)
 	char* packet;
 	void *node;
 
+	ILibRemoteLogging_printf(ILibChainGetLogger(o->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SctpDisconnect_Final dispatched on: Session %d [0x%p]", o->sessionId, obj);
+
 	// Free the SSL state
 	if (o->ssl != NULL) { SSL_free(o->ssl); o->ssl = NULL; }
 
 	if (o->holdingByteCount > 0)
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(o->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP(%d) Was closed while %d bytes are pending in HoldingQueue", o->sessionId, o->holdingByteCount);
+		ILibRemoteLogging_printf(ILibChainGetLogger(o->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP(%d) Was closed while %d bytes are pending in HoldingQueue", o->sessionId, o->holdingByteCount);
 	}
 
 	// Free the rpacket buffer
@@ -3097,7 +3504,7 @@ void ILibStun_SctpDisconnect_Final(void *obj)
 	// Free all packets pending ACK queue
 	while (o->pendingQueueHead != NULL)
 	{
-		packet = ((char**)(o->pendingQueueHead))[0];
+		packet = ((char**)(o->pendingQueueHead))[0]; // MS Static Analyser reports that this may not be initialized, but it will be NULL if it is not
 		free(o->pendingQueueHead);
 		o->pendingQueueHead = packet;
 	}
@@ -3105,7 +3512,7 @@ void ILibStun_SctpDisconnect_Final(void *obj)
 	// Free all packets in holding queue
 	while (o->holdingQueueHead != NULL)
 	{
-		packet = ((char**)(o->holdingQueueHead))[0];
+		packet = ((char**)(o->holdingQueueHead))[0]; // MS Static Analyser reports that this may not be initialized, but it will be NULL if it is not
 		free(o->holdingQueueHead);
 		o->holdingQueueHead = packet;
 	}
@@ -3126,21 +3533,23 @@ void ILibStun_SctpDisconnect_Final(void *obj)
 	sem_post(&(o->Lock));
 	sem_destroy(&(o->Lock));
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(o->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Cleaning up Dtls Session Object for session: %d", o->sessionId);
+	ILibRemoteLogging_printf(ILibChainGetLogger(o->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Cleaning up Dtls Session Object for session: %d", o->sessionId);
 	ILibLifeTime_Remove(o->parent->Timer, ILibWebRTC_DTLS_TO_TIMER_OBJECT(o));
 }
 
-void ILibStun_SctpDisconnect_Continue(void *j)
+void ILibStun_SctpDisconnect_Continue(void *chain, void *j)
 {
 	char exBuffer[4096];
 	int i;
-	struct ILibStun_dTlsSession* o = (struct ILibStun_dTlsSession*)j - 5;
+	struct ILibStun_dTlsSession* o = (struct ILibStun_dTlsSession*)j;
 	struct ILibStun_Module* obj = o != NULL ? o->parent : NULL;
+
+	UNREFERENCED_PARAMETER(chain);
 
 	// Now that we are on the microstack thread, we can continue the disconnet
 	RCTPDEBUG(if (o != NULL) printf("ILibStun_SctpDisconnect state=%d\r\n", o->state);)
 
-	if (o == NULL || o->state == 0) return;
+	if (o == NULL || o->state == 0 || o->state == 3) return;
 
 	ILibWebRTC_CloseDataChannel_ALL(o);
 
@@ -3155,6 +3564,10 @@ void ILibStun_SctpDisconnect_Continue(void *j)
 		obj->OnConnect(obj, o, 0);
 		sem_wait(&(o->Lock));
 	}
+	else
+	{
+		o->state = 3;
+	}
 
 	// Rather then sending an Abort/Shutdown, I changed this to just send an SSL/Close, which is what Chrome/Firefox do
 
@@ -3168,7 +3581,7 @@ void ILibStun_SctpDisconnect_Continue(void *j)
 
 	if (o->rpacketptr > 0)
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(o->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP(%d) trying to close, flushing %d bytes from RPACKET", o->sessionId, o->rpacketptr);
+		ILibRemoteLogging_printf(ILibChainGetLogger(o->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP(%d) trying to close, flushing %d bytes from RPACKET", o->sessionId, o->rpacketptr);
 		ILibStun_SendSctpPacket(obj, o->sessionId, o->rpacket, o->rpacketptr);
 	}
 
@@ -3182,20 +3595,31 @@ void ILibStun_SctpDisconnect_Continue(void *j)
 			i = BIO_read(SSL_get_wbio(o->ssl), exBuffer, 4096);
 			if (obj->IceStates[o->iceStateSlot]->useTurn != 0)
 			{
-				ILibTURN_SendChannelData(obj->mTurnClientModule, (unsigned short)(o->sessionId), exBuffer, 0, i);
+				if ((((int*)ILibMemory_GetExtraMemory(o->remoteInterface, sizeof(struct sockaddr_in6)))[0] & ILibTURN_FLAGS_CHANNEL_DATA) == ILibTURN_FLAGS_CHANNEL_DATA)
+				{
+					ILibTURN_SendChannelData(obj->mTurnClientModule, (unsigned short)(o->sessionId), exBuffer, 0, i);
+				}
+				else if ((((int*)ILibMemory_GetExtraMemory(o->remoteInterface, sizeof(struct sockaddr_in6)))[0] & ILibTURN_FLAGS_DATA_INDICATION) == ILibTURN_FLAGS_DATA_INDICATION)
+				{
+					ILibTURN_SendIndication(obj->mTurnClientModule, o->remoteInterface, exBuffer, 0, i);
+				}
+				else
+				{
+					ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)o->remoteInterface, exBuffer, i, ILibAsyncSocket_MemoryOwnership_USER);
+				}
 			}
 			else
 			{
-				ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)&(o->remoteInterface), exBuffer, i, ILibAsyncSocket_MemoryOwnership_USER);
+				ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)o->remoteInterface, exBuffer, i, ILibAsyncSocket_MemoryOwnership_USER);
 			}
 		}
 	}
 
 	// Lets abort Consent-Freshness Checks
-	ILibLifeTime_Remove(obj->Timer, o + 1);
+	ILibLifeTime_Remove(obj->Timer, ILibWebRTC_DTLS_TO_CONSENT_FRESHNESS_TIMER_OBJECT(o));
 
 	// Remove the SCTP Heartbeat timer
-	ILibLifeTime_Remove(o->parent->Timer, o);
+	ILibLifeTime_Remove(o->parent->Timer, ILibWebRTC_DTLS_TO_SCTP_HEARTBEAT_TIMER_OBJECT(o));
 
 	// Start by clearing the IceState Object
 	ILibStun_ClearIceState(obj, o->iceStateSlot);
@@ -3210,7 +3634,7 @@ void ILibStun_SctpDisconnect_Continue(void *j)
 	//
 	// Note:
 	//
-	// Klocwork will report a spurious error here that o->Lock has been locked in line xxx was not unlocked
+	// Klocwork and MS Static Analyser will report a spurious error here that o->Lock has been locked in line xxx was not unlocked
 	// This is not an issue, because it is actually unlocked and destroyed within ILibStun_SctpDisconnect_Final(), which
 	// will get called above...
 	//
@@ -3222,35 +3646,103 @@ void ILibStun_SctpDisconnect(struct ILibStun_Module *obj, int session)
 {
 	struct ILibStun_dTlsSession* o = obj->dTlsSessions[session];
 
-	ILibLifeTime_Remove(o->parent->Timer, o); // Stop SCTP Heartbeats
+	ILibLifeTime_Remove(o->parent->Timer, ILibWebRTC_DTLS_TO_SCTP_HEARTBEAT_TIMER_OBJECT(o)); // Stop SCTP Heartbeats
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(o->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Disconnect Requested on Session: %d", session);
+	ILibRemoteLogging_printf(ILibChainGetLogger(o->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Disconnect Requested on Session: %d", session);
 
-	if (ILibIsRunningOnChainThread(obj->Chain) == 0)
+	// Need to context switch to MicrostackChain thread
+	ILibChain_RunOnMicrostackThread(obj->ChainLink.ParentChain, ILibStun_SctpDisconnect_Continue, o);
+}
+//! Close an SCTP association and any associated data channels
+/*!
+	\param sctpSession Sctp Session to Close
+*/
+void ILibSCTP_Close(void* sctpSession)
+{
+	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)sctpSession;
+	if (obj != NULL) { ILibStun_SctpDisconnect(obj->parent, obj->sessionId); }
+}
+
+int ILibSCTP_FWDTSN_Check(struct ILibStun_dTlsSession *obj, char* buffer)
+{
+	ILibSCTP_RPACKET *packet = (ILibSCTP_RPACKET*)obj->pendingQueueHead;
+	ILibSCTP_RPACKET *tmp, *tmp2;
+	unsigned int FWDTSN = 0; // Network Order
+	int ptr = 0;
+	ILibSCTP_FwdTSNPayload *chunk = (ILibSCTP_FwdTSNPayload*)buffer;
+
+	while (packet != NULL)
 	{
-		// Need to context switch to MicrostackChain thread
-		ILibLifeTime_Add(obj->Timer, o + 5, 0, &ILibStun_SctpDisconnect_Continue, NULL);
+		if (obj->intsn < ntohl(((ILibSCTP_DataPayload*)packet->Data)->TSN))
+		{
+			// These packets are not covered with the Cumulative TSN
+			if (packet->PacketGAPCounter == 0xFD )
+			{ 
+				chunk->SkippedStreams[ptr].StreamNumber = ((ILibSCTP_DataPayload*)packet->Data)->StreamID;				
+				chunk->SkippedStreams[ptr].StreamSequence = (((ILibSCTP_DataPayload*)packet->Data)->flags & ILibSCTP_UnorderedFlag) != ILibSCTP_UnorderedFlag ? ((ILibSCTP_DataPayload*)packet->Data)->StreamSequenceNumber : 0x00;
+				while (packet != NULL && ((((ILibSCTP_DataPayload*)packet->Data)->flags & 0x01) != 0x01))
+				{
+					if (packet->NextPacket != NULL && (((ILibSCTP_DataPayload*)packet->Data)->flags & ILibSCTP_UnorderedFlag) != ILibSCTP_UnorderedFlag)
+					{
+						chunk->SkippedStreams[ptr].StreamSequence = ((ILibSCTP_DataPayload*)packet->NextPacket->Data)->StreamSequenceNumber;
+					}
+					packet = packet->NextPacket;
+				}
+				if (packet != NULL)
+				{
+					FWDTSN = ((ILibSCTP_DataPayload*)packet->Data)->TSN;	// Advance the FWD-TSN as far as we can, encompassing an entire fragment if fragmented
+				}
+				else
+				{
+					FWDTSN = ((ILibSCTP_DataPayload*)((ILibSCTP_RPACKET*)obj->pendingQueueTail)->Data)->TSN; // Don't have the whole fragment, so everything needs to be abandoned
+				}
+				++ptr;
+			}
+			else
+			{
+				break; // Can't advance FWD-TSN any further, becuase this packet is not abandoned
+			}
+		}
+		packet = packet != NULL ? packet->NextPacket : NULL;
+	}
+
+	if (FWDTSN != 0)
+	{
+		tmp = (ILibSCTP_RPACKET*)obj->pendingQueueHead;
+		while (tmp != NULL && tmp != packet)
+		{
+			tmp2 = tmp->NextPacket;
+			free(tmp);
+			tmp = tmp2;
+		}
+
+		// Remove the abandoned packets from the pendingQueue
+		obj->pendingQueueHead = (char*)packet;
+		if (packet == NULL) { obj->pendingQueueTail = NULL; }
+
+		// Send a FWD-TSN Chunk
+		chunk->type = RCTP_CHUNK_TYPE_FWDTSN;
+		chunk->flags = 0x00;
+		chunk->NewTSN = FWDTSN;
+
+		ptr = 8 + (ptr * 4);
+		chunk->length = htons((unsigned short)ptr);
+		obj->fwdTsnDelayTime = 0;
 	}
 	else
 	{
-		// We are already running on the MicrostackChain thread
-		ILibStun_SctpDisconnect_Continue(o + 5);
+		ptr = 0;
 	}
-}
-
-void ILibSCTP_Close(void* module)
-{
-	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)module;
-	if (obj != NULL) { ILibStun_SctpDisconnect(obj->parent, obj->sessionId); }
+	return(ptr);
 }
 
 void ILibStun_SctpResent(struct ILibStun_dTlsSession *obj)
 {
 	unsigned int time = (unsigned int)ILibGetUptime();
-	char* packet = obj->pendingQueueHead;
+	ILibSCTP_RPACKET *rpacket = (ILibSCTP_RPACKET*)obj->pendingQueueHead;
 
 	// If T3RTXTIME == 0, it is disabled, otherwise it is the timestamp of when it was enabled
-	if (obj->T3RTXTIME > 0 && time >= (obj->T3RTXTIME + obj->RTO) && packet != NULL)
+	if (obj->T3RTXTIME > 0 && time >= (obj->T3RTXTIME + obj->RTO) && rpacket != NULL)
 	{
 		obj->T3RTXTIME = 0;
 #ifdef _WEBRTCDEBUG
@@ -3258,57 +3750,75 @@ void ILibStun_SctpResent(struct ILibStun_dTlsSession *obj)
 #endif
 
 		obj->senderCredits = ILibRUDP_StartMTU;												// Set CWND to 1 MTU
-		obj->RTO = obj->RTO * 2;															// Double the RT Timer
-		if (obj->RTO > RTO_MAX) { obj->RTO = RTO_MAX; }										// Enforce a cap on the max timeout
 		obj->SSTHRESH = MAX(obj->congestionWindowSize / 2, 4 * ILibRUDP_StartMTU);			// Update Slow Start Threshold
 		obj->congestionWindowSize = ILibRUDP_StartMTU;										// Reset the size of the Congestion Window, so that we'll initialy only have one SCTP packet in flight
 #ifdef _WEBRTCDEBUG
 		if (obj->onCongestionWindowSizeChanged != NULL) { obj->onCongestionWindowSizeChanged(obj, "OnCongestionWindowSizeChanged", obj->congestionWindowSize); }
 #endif
 
-		while (packet != NULL)
+		while (rpacket != NULL)
 		{
-			if (((unsigned char*)(packet + sizeof(char*) + 2))[1] != 0xFE)					// 0xFE means this packet was already ACK'ed with a GAP Ack Block, so we don't need to retransmit it
+			// 0xFE means this packet was already ACK'ed with a GAP Ack Block, so we don't need to retransmit it
+			// 0xFD means this packet is marked as ABANDONED
+			if(rpacket->PacketGAPCounter != 0xFE && rpacket->PacketGAPCounter != 0xFD)	
 			{
-				if (obj->senderCredits >= ((unsigned short*)(packet + sizeof(char*)))[0])	// If we have available CWND, then retransmit packets
+				if ((rpacket->LastSentTimeStamp + obj->RTO) > time) { break; }	// T3RTX did not expire for this packet
+				if ((rpacket->Reliability & 0x2000) == 0x2000 && rpacket->PacketResendCounter >= (rpacket->Reliability & 0x1FFF))
 				{
-					((unsigned char*)(packet + sizeof(char*) + 2))[0]++;					// Update retry counter
-					((unsigned char*)(packet + sizeof(char*) + 2))[1] = 0;					// Update gap counter, so that it will not FastRetry
-					((unsigned int*)(packet + sizeof(char*)))[1] = time;					// Update last send time
-					obj->lastRetransmitTime = time;											// Anytime we retransmit a packet, we set a timestamp, for RTT calculation purposes
+					// Partial-Reliability REXMIT : Exceeded Max Retransmit
+					rpacket->PacketGAPCounter = 0xFD; // ABANDON PACKET
+					rpacket = rpacket->NextPacket;
+					obj->fwdTsnDelayTime = time;
+					obj->timervalue = 0;	// Reset this value, so we can gaurantee that a FWD-TSN chunk is sent within 500ms
+					continue;
+				}
+				else if ((rpacket->Reliability & 0x4000) == 0x4000 && (unsigned short)(time - rpacket->CreationTimeStamp) >= (rpacket->Reliability & 0x1FFF))
+				{
+					// Partial-Reliability TIMED : Exceeded Max Timeout
+					rpacket->PacketGAPCounter = 0xFD; // ABANDON PACKET
+					rpacket = rpacket->NextPacket;
+					obj->fwdTsnDelayTime = time;
+					obj->timervalue = 0;	// Reset this value, so we can gaurantee that a FWD-TSN chunk is sent within 500ms
+					continue;
+				}
 
-					obj->senderCredits -= ((unsigned short*)(packet + sizeof(char*)))[0];	// Deduct CWND
+				if (obj->senderCredits >= (rpacket->PacketSize))				// If we have available CWND, then retransmit packets
+				{
+					rpacket->PacketResendCounter++;								// Update retry counter
+					rpacket->PacketGAPCounter = 0;								// Update gap counter, so that it will not FastRetry
+					rpacket->LastSentTimeStamp = time;							// Update last send time
+					obj->lastRetransmitTime = time;								// Anytime we retransmit a packet, we set a timestamp, for RTT calculation purposes
+
+					obj->senderCredits -= rpacket->PacketSize;					// Deduct CWND
 					if (obj->T3RTXTIME == 0)
 					{
 						// Only set the T3-RTX timer if it's not already running
 						obj->T3RTXTIME = time;
-#ifdef _WEBRTCDEBUG
-						if (obj->onT3RTX != NULL){ obj->onT3RTX(obj, "OnT3RTX", obj->RTO); }
-#endif
 					}
 
-					ILibStun_SendSctpPacket(obj->parent, obj->sessionId, packet + sizeof(char*) + 8, ((unsigned short*)(packet + sizeof(char*)))[0]);
-#ifdef _WEBRTCDEBUG
-					if (obj->onSendRetry != NULL) { obj->onSendRetry(obj, "OnSendRetry", ((unsigned short*)(packet + sizeof(char*)))[0]); }
-#endif
+					ILibStun_SendSctpPacket(obj->parent, obj->sessionId, rpacket->Data - 12, rpacket->PacketSize);
 				}
 				else
 				{
-					((unsigned char*)(packet + sizeof(char*) + 2))[1] = 0xFF;			// Mark for retransmit later (when CWND allows)
+					rpacket->PacketGAPCounter = 0xFF;							// Mark for retransmit later (when CWND allows)
 				}
 			}
-			packet = ((char**)packet)[0];												// Move to the next packet
+			rpacket = rpacket->NextPacket;										// Move to the next packet
 		}
+
+		obj->RTO = obj->RTO * 2;															// Double the RT Timer
+		if (obj->RTO > RTO_MAX) { obj->RTO = RTO_MAX; }										// Enforce a cap on the max timeout
 	}
 }
 
 void ILibStun_SctpOnTimeout(void *object)
 {
-	struct ILibStun_dTlsSession *obj = (struct ILibStun_dTlsSession*)object;
+	struct ILibStun_dTlsSession *obj = ILibWebRTC_DTLS_FROM_SCTP_HEARTBEAT_TIMER_OBJECT(object);
 	sem_wait(&(obj->Lock));
 	// printf("Timer state=%d, value=%d\r\n", obj->state, obj->timervalue);
 	if (obj->state < 1 || obj->state > 2) { sem_post(&(obj->Lock)); return; } // Check if we are still needed, connecting or connected state only.
 	obj->timervalue++;
+
 	if (obj->timervalue < 80)
 	{
 		// Resent packets
@@ -3318,7 +3828,7 @@ void ILibStun_SctpOnTimeout(void *object)
 	{
 		// Close the connection
 		sem_post(&(obj->Lock));
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP Timeout on Session: %d", obj->sessionId);
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP Timeout on Session: %d", obj->sessionId);
 		ILibStun_SctpDisconnect(obj->parent, obj->sessionId);
 		return;
 	}
@@ -3331,7 +3841,7 @@ void ILibStun_SctpOnTimeout(void *object)
 		ILibStun_SendSctpPacket(obj->parent, obj->sessionId, hb, 16);
 	}
 
-	ILibLifeTime_AddEx(obj->parent->Timer, obj, 100 + (200 * obj->timervalue), &ILibStun_SctpOnTimeout, NULL);
+	ILibLifeTime_AddEx(obj->parent->Timer, ILibWebRTC_DTLS_TO_SCTP_HEARTBEAT_TIMER_OBJECT(obj), 100 + (200 * obj->timervalue), &ILibStun_SctpOnTimeout, NULL);
 	sem_post(&(obj->Lock));
 }
 
@@ -3342,7 +3852,7 @@ int ILibSCTP_AddOptionalVariableParameter(char* insertionPoint, unsigned short p
 	((unsigned short*)insertionPoint)[1] = htons((unsigned short)(4 + parameterDataLen));
 	if(parameterDataLen>0)
 	{
-		memcpy(insertionPoint + 4, parameterData, parameterDataLen);
+		memcpy_s(insertionPoint + 4, parameterDataLen, parameterData, parameterDataLen);
 	}
 	parameterDataLen += 4;
 	retValue = ILibAlignOnFourByteBoundary(insertionPoint, parameterDataLen);
@@ -3426,29 +3936,164 @@ void* ILibSCTP_AddPacketToHoldingQueue_Chooser(void *oldValue, void *newValue, v
 	{
 		unsigned short len = ntohs(((ILibSCTP_DataPayload*)newValue)->length);
 		char* retVal = (char*)malloc(len+1);
-		memcpy(retVal, (char*)newValue, len);
+		if (retVal == NULL) ILIBCRITICALEXIT(254);
+
+		memcpy_s(retVal, len + 1, (char*)newValue, len);
 		ReceiveHoldBuffer_Increment((ILibLinkedList)user, ((ILibSCTP_DataPayload*)newValue)->length);
 		return(retVal);
 	}
 }
-ILibSCTP_SackStatus ILibSCTP_AddPacketToHoldingQueue(struct ILibStun_dTlsSession* o, ILibSCTP_DataPayload *payload, int sentsack)
+void* ILibSCTP_AddPacketToHoldingQueue(struct ILibStun_dTlsSession* o, ILibSCTP_DataPayload *payload, ILibSCTP_SackStatus *sentsack)
 {
+	void* retVal = NULL;
 	// Out of sequence packet, find a spot in the receive queue.
 
 	RCTPRCVDEBUG(printf("STORING %u, size = %d\r\n", tsn, chunksize);)
-	if (ReceiveHoldBuffer_Used(o->receiveHoldBuffer) + payload->length > ILibSCTP_MaxReceiverCredits) {return(ILibSCTP_SackStatus_Skip);}
+		if (ReceiveHoldBuffer_Used(o->receiveHoldBuffer) + payload->length > ILibSCTP_MaxReceiverCredits) { *sentsack = ILibSCTP_SackStatus_Skip; return(NULL); }
 
-	ILibLinkedList_SortedInsertEx(o->receiveHoldBuffer, &ILibSCTP_AddPacketToHoldingQueue_Comparer, &ILibSCTP_AddPacketToHoldingQueue_Chooser, payload, o->receiveHoldBuffer);
+	retVal = ILibLinkedList_SortedInsertEx(o->receiveHoldBuffer, &ILibSCTP_AddPacketToHoldingQueue_Comparer, &ILibSCTP_AddPacketToHoldingQueue_Chooser, payload, o->receiveHoldBuffer);
 	
 	// Send ACK now
-	if (sentsack == ILibSCTP_SackStatus_NotSent)
+	if (*sentsack == ILibSCTP_SackStatus_NotSent)
 	{
-		sentsack = ILibSCTP_SackStatus_Sent;
+		*sentsack = ILibSCTP_SackStatus_Sent;
 		o->rpacketptr = ILibStun_SctpAddSackChunk(o->parent, o->sessionId, o->rpacket, o->rpacketptr); // Send the ACK with the TSN as far forward as we can
 	}
-	return(sentsack);
+	return(retVal);
 }
 
+int ILibSCTP_HoldingQueue_TSNComparer(void *obj1, void *obj2)
+{
+	return((((ILibSCTP_DataPayload*)obj1)->TSN == ((ILibSCTP_DataPayload*)obj2)->TSN) ? 0 : 1);
+}
+
+#ifdef _REMOTELOGGING
+void ILibSctp_DebugSctpPacket(ILibRemoteLogging *logger, char *packet, int packetLen, char *note)
+{
+	int ptr = 12, stop = 0;
+	ILibSCTP_ChunkHeader *chunkHdr;
+
+	ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "Debugging SCTP (%s) -->", note);
+
+	while ((chunkHdr = (ILibSCTP_ChunkHeader*)(packet + ptr)) != NULL && (ptr + 4 <= packetLen) && stop == 0)
+	{
+		unsigned char chunktype = chunkHdr->chunkType;
+		unsigned short chunksize = ntohs(chunkHdr->chunkLength);
+		if (chunksize < 4 || ptr + chunksize > packetLen) break;
+
+		switch (chunktype)
+		{
+			case RCTP_CHUNK_TYPE_DATA:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[DATA]");
+				break;
+			case RCTP_CHUNK_TYPE_INIT:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[INIT]");
+				break;
+			case RCTP_CHUNK_TYPE_INITACK:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[INIT-ACK]");
+				break;
+			case RCTP_CHUNK_TYPE_SACK:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[SACK]");
+				break;
+			case RCTP_CHUNK_TYPE_HEARTBEAT:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[HEARTBEAT]");
+				break;
+			case RCTP_CHUNK_TYPE_HEARTBEATACK:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[HEARTBEAT-ACK]");
+				break;
+			case RCTP_CHUNK_TYPE_ABORT:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[ABORT]");
+				break;
+			case RCTP_CHUNK_TYPE_SHUTDOWN:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[SHUTDOWN]");
+				break;
+			case RCTP_CHUNK_TYPE_SHUTDOWNACK:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[SHUTDOWN-ACK]");
+				break;
+			case RCTP_CHUNK_TYPE_ERROR:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[ERROR]");
+				break;
+			case RCTP_CHUNK_TYPE_COOKIEECHO:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[COOKIE]");
+				break;
+			case RCTP_CHUNK_TYPE_COOKIEACK:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[COOKIE-ACK]");
+				break;
+			case RCTP_CHUNK_TYPE_ECNE:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[ECNE]");
+				break;
+			case RCTP_CHUNK_TYPE_RECONFIG:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[RECONFIG]");
+				break;
+			case RCTP_CHUNK_TYPE_FWDTSN:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[FWDTSN]");
+				break;
+			case RCTP_CHUNK_TYPE_ASCONF:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[ASCONF]");
+				break;
+			case RCTP_CHUNK_TYPE_ASCONFACK:
+				ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...[ASCONF-ACK]");
+				break;
+		}
+
+		ptr += FOURBYTEBOUNDARY(chunksize); // Add chunk size and padding
+	}
+	ILibRemoteLogging_printf(logger, ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "<-- End Debugging SCTP (%s)", note);
+}
+#endif
+
+void ILibSCTP_ReorderChunks(struct ILibStun_Module *obj, int sessionID, char *buffer, int bufferLen)
+{
+	int ptr = 12, stop = 0;
+	ILibSCTP_ChunkHeader *chunkHdr;
+
+	char *dataChunks = ILibScratchPad2;
+	char controlChunks[65535];
+	int dataChunksWritten = 0;
+	int controlChunksWritten = 0;
+
+	// Save Data Chunks to Scratchpad
+	while ((chunkHdr = (ILibSCTP_ChunkHeader*)(buffer + ptr)) != NULL && (ptr + 4 <= bufferLen) && stop == 0)
+	{
+		unsigned char chunktype = chunkHdr->chunkType;
+		//unsigned char chunkflags = chunkHdr->chunkFlags;
+		unsigned short chunksize = ntohs(chunkHdr->chunkLength);
+		unsigned short actualSize = FOURBYTEBOUNDARY(chunksize);
+		if (chunksize < 4 || ptr + chunksize > bufferLen) break;
+
+		if(chunktype == RCTP_CHUNK_TYPE_DATA)
+		{
+			// TempWrite Data Chunks
+			memcpy_s(dataChunks + dataChunksWritten, sizeof(ILibScratchPad2) - dataChunksWritten, (char*)chunkHdr, chunksize);
+			if (actualSize > chunksize) { memset(dataChunks + chunksize, 0, actualSize - chunksize); }
+			dataChunksWritten += actualSize;
+		}
+		else
+		{
+			// TempWrite Control Chunks
+			memcpy_s(controlChunks + controlChunksWritten, sizeof(controlChunks) - controlChunksWritten, (char*)chunkHdr, chunksize);
+			if (actualSize > chunksize) { memset(controlChunks + chunksize, 0, actualSize - chunksize); }
+			controlChunksWritten += actualSize;
+		}
+		ptr += FOURBYTEBOUNDARY(chunksize); // Add chunk size and padding
+	}
+
+	// Merge Control and Data Chunks
+	if (controlChunksWritten > 0 && dataChunksWritten > 0 && (controlChunksWritten + dataChunksWritten + 12) == bufferLen)
+	{
+		memcpy_s(buffer + 12, bufferLen - 12, controlChunks, controlChunksWritten);
+		memcpy_s(buffer + 12 + controlChunksWritten, bufferLen - 12 - controlChunksWritten, dataChunks, dataChunksWritten);
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "ILibSCTP_ReorderChunks[ID = %d]: SCTP Chunks were reordered", sessionID);
+#ifdef _REMOTELOGGING
+		ILibSctp_DebugSctpPacket(ILibChainGetLogger(obj->ChainLink.ParentChain), buffer, bufferLen, "REORDERED");
+#endif
+	}
+	else
+	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibSCTP_ReorderChunks[ID = %d]: Error Reordering SCTP Chunks", sessionID);
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...SCTP Size = %d, but reordered size is: %d", bufferLen, controlChunksWritten + dataChunksWritten + 12);
+	}
+}
 // Main RFC specification: http://tools.ietf.org/html/rfc4960
 void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* buffer, int bufferLength)
 {
@@ -3481,11 +4126,15 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 	// Setup the response packet
 	rptr = &(o->rpacketptr);
 	rpacket = o->rpacket;
+	((int*)rpacket)[0] = ((int*)rpacket)[1] = ((int*)rpacket)[2] = 0;	// Set common header area to zeros, so we can temporarily stick some flags in there to keep track of control/data packet order
 	*rptr = 12;
 
 	// printf("SCTP size: %d\r\n", bufferLength);
 
 	// Decode each chunk
+#ifdef _REMOTELOGGING
+	ILibSctp_DebugSctpPacket(ILibChainGetLogger(obj->ChainLink.ParentChain), buffer, bufferLength, "INBOUND");
+#endif
 	
 	while ((chunkHdr = (ILibSCTP_ChunkHeader*)(buffer + ptr)) != NULL && (ptr + 4 <= bufferLength) && stop == 0)
 	{
@@ -3508,7 +4157,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 				unsigned short hdrLen;
 				ILibSCTP_Reconfig_OutgoingSSNResetRequest *outRequest = NULL;
 
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [RECONFIG]", session);
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [RECONFIG]", session);
 
 				while((bytesProcessed + 4 )< chunkLen)
 				{
@@ -3537,7 +4186,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 								}
 								
 								outRequest = (ILibSCTP_Reconfig_OutgoingSSNResetRequest*)((char*)(&outChunk->reconfigurationParameter) + outOffset);
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Outgoing Reset Request: Seq/%u", (unsigned int)ntohl(req->RReqSeqNum));
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Outgoing Reset Request: Seq/%u", (unsigned int)ntohl(req->RReqSeqNum));
 
 								if(lastTSN <= o->userTSN)
 								{
@@ -3549,7 +4198,6 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 									outRequest->LastTSN = htonl(o->outtsn - 1);
 									outRequest->RReqSeqNum = htonl(o->RREQSEQ++);
 									outRequest->RResSeqNum = htonl(o->RRESSEQ++);	
-									outOffset += (16 + 2*streamCount);
 
 									if(streamCount == 0)
 									{
@@ -3557,7 +4205,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 										// We're going to move the contents to a new SparseArray, so we can post the events without a lock
 
 										ILibSparseArray dup = ILibSparseArray_Move(o->DataChannelMetaDeta);
-										ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Resetting all streams");
+										ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Resetting all streams");
 
 										sem_post(&(o->Lock));
 											ILibWebRTC_PropagateChannelCloseEx(dup, o);
@@ -3565,13 +4213,13 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 									}
 									else
 									{
-										ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Number of streams to be reset: %u", streamCount);
+										ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Number of streams to be reset: %u", streamCount);
 										while(streamCount > 0)
 										{
 											streamId = ntohs(req->Streams[streamCount-1]);
 											attr.Raw = ILibSparseArray_Remove(o->DataChannelMetaDeta, streamId);
 
-											ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, ".........Resetting stream: %u", streamId);
+											ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, ".........Resetting stream: %u", streamId);
 
 											if((attr.Data.StatusFlags & ILibSCTP_StreamAttributesData_Assigned_Status_ASSIGNED) == ILibSCTP_StreamAttributesData_Assigned_Status_ASSIGNED)
 											{
@@ -3593,18 +4241,32 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 											--streamCount;
 										}
 									}
+
+									if (OutboundResponse->Result != htonl(ILibSCTP_Reconfig_Result_Success_NOP) && o->pendingReconfigPacket == NULL)
+									{
+										//unsigned short orl = ntohs(outRequest->parameterLength);
+										outOffset += (16 + 2 * streamCount); // We can send the outbound reset request, becuase we actually closed 
+										o->pendingReconfigPacket = o->rpacket + (o->rpacketsize - FOURBYTEBOUNDARY((ntohs(outRequest->parameterLength) + 16)));
+										o->reconfigFailures = 0;
+
+										((ILibSCTP_ReconfigChunk*)(o->pendingReconfigPacket + 12))->type = RCTP_CHUNK_TYPE_RECONFIG;
+										((ILibSCTP_ReconfigChunk*)(o->pendingReconfigPacket + 12))->chunkFlags = 0;
+										((ILibSCTP_ReconfigChunk*)(o->pendingReconfigPacket + 12))->chunkLength = htons((4 + (16 + 2 * streamCount)));
+
+										memcpy_s(o->pendingReconfigPacket + 16, 4096, outRequest, ntohs(outRequest->parameterLength));
+									}
 								}
 								else
 								{
 									// We have not received all data for the stream yet, so we need to defer the reset
-									ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......LastTSN/%u has not elapsed, DEFERRING", lastTSN);
+									ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......LastTSN/%u has not elapsed, DEFERRING", lastTSN);
 									OutboundResponse->Result = htonl((unsigned int)ILibSCTP_Reconfig_Result_In_Progress); 
 
 									if(o->pendingReconfigPacket !=NULL && o->pendingReconfigPacket >= o->rpacket && o->pendingReconfigPacket <= (o->rpacket + o->rpacketsize))
 									{
 										// Locally initiated Channel Close is pending. Deny request, becuase we don't have resources to process this yet
 										OutboundResponse->Result = htonl(ILibSCTP_Reconfig_Result_Denied);
-										ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Insufficient resources to process Close, due to locally initiated close in progress");									
+										ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Insufficient resources to process Close, due to locally initiated close in progress");
 									}
 									else 
 									{
@@ -3643,7 +4305,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 								unsigned short streamCount = (ntohs(req->parameterLength) - 8) / 2;
 								ILibSCTP_PendingTSN_Data pending;
 
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Incoming Reset Request: Seq/%u", (unsigned int)ntohl(req->RReqSeqNum));
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Incoming Reset Request: Seq/%u", (unsigned int)ntohl(req->RReqSeqNum));
 								pending.Raw = o->pendingReconfigPacket;
 
 								if(outRequest != NULL)
@@ -3656,47 +4318,59 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 									OutboundResponse->RESSEQNum = req->RReqSeqNum;	
 									OutboundResponse->Result = htonl((unsigned int)(pending.Data.Type == 0xFF && pending.Data.Flags == 0x00)?ILibSCTP_Reconfig_Result_In_Progress:ILibSCTP_Reconfig_Result_Success_NOP);									
 									outOffset += sizeof(ILibSCTP_Reconfig_Response);
-									ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Responded with Response Parameter");
+									ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Responded with Response Parameter");
 									break;
 								}
 	
 								// Lone INBOUND RESET REQUEST
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Responding with Outbound Reset Request");
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Responding with Outbound Reset Request");
 								outRequest = (ILibSCTP_Reconfig_OutgoingSSNResetRequest*)((char*)(&outChunk->reconfigurationParameter) + outOffset); // Ignore Klocwork Error, it's not a problem in this case												
 								outRequest->parameterType = htons(SCTP_RECONFIG_TYPE_OUTGOING_SSN_RESET_REQUEST);
-								outRequest->parameterLength = 16 + 2*streamCount;
+								outRequest->parameterLength = htons(16 + 2 * streamCount);
 								outRequest->LastTSN = htonl(o->outtsn - 1);
 								outRequest->RReqSeqNum = htonl(o->RREQSEQ++);
-								outRequest->RResSeqNum = req->RReqSeqNum;
+								outRequest->RResSeqNum = htonl(o->RRESSEQ++);
 
 								outOffset += FOURBYTEBOUNDARY(outRequest->parameterLength);			 // Add parameter size and padding
 								outRequest->parameterLength = htons(outRequest->parameterLength);
 								
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, ".........Number of streams requested to be reset: %u", streamCount);								
-
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Number of streams to be reset: %u", streamCount);
 								while(streamCount > 0)
 								{
 									streamId = ntohs(req->Streams[streamCount-1]);
+									attr.Raw = ILibSparseArray_Remove(o->DataChannelMetaDeta, streamId);
+
+									ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, ".........Resetting stream: %u", streamId);
+
+									if ((attr.Data.StatusFlags & ILibSCTP_StreamAttributesData_Assigned_Status_ASSIGNED) == ILibSCTP_StreamAttributesData_Assigned_Status_ASSIGNED)
+									{
+										ILibSparseArray_Remove(o->DataChannelMetaDetaValues, streamId); // Clear associated data with this stream ID
+										if (obj->OnWebRTCDataChannelClosed != NULL)
+										{
+											sem_post(&(o->Lock));
+											obj->OnWebRTCDataChannelClosed(obj, o, streamId);
+											sem_wait(&(o->Lock));
+										}
+									}
 									outRequest->Streams[streamCount-1] = htons(streamId);
 									--streamCount;
-									ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "............Resetting Stream id: %u", streamId);
 								}	
 							}
 							break;
 						case SCTP_RECONFIG_TYPE_RECONFIGURATION_RESPONSE: // Response
 							{
 								ILibSCTP_Reconfig_Response *res = (ILibSCTP_Reconfig_Response*)hdr;
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Received Response [%u/%s]: Seq/%u",(unsigned int)ntohl(res->Result), ((unsigned int)ntohl(res->Result)==0 || (unsigned int)ntohl(res->Result)==1 || (unsigned int)ntohl(res->Result)==4 || (unsigned int)ntohl(res->Result)==6)?"SUCCESS":"ERROR", (unsigned int)ntohl(res->RESSEQNum));
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Received Response [%u/%s]: Seq/%u",(unsigned int)ntohl(res->Result), ((unsigned int)ntohl(res->Result)==0 || (unsigned int)ntohl(res->Result)==1 || (unsigned int)ntohl(res->Result)==4 || (unsigned int)ntohl(res->Result)==6)?"SUCCESS":"ERROR", (unsigned int)ntohl(res->RESSEQNum));
 								
 								if(o->pendingReconfigPacket!=NULL && ((ILibSCTP_PendingTSN_Data*)((char*)&o->pendingReconfigPacket))->Data.Type != 0xFF)
 								{ 
-									if((o->RREQSEQ -1 ) == ntohl(res->RESSEQNum))
+									if (res->RESSEQNum == ((unsigned int*)(o->pendingReconfigPacket + 20))[0])
 									{
 										// Both sides of the connection are aware of the ChannelClose... We can propagate this up.										
 										ILibSparseArray arr = ILibWebRTC_PropagateChannelClose(o, o->pendingReconfigPacket);
 										
 										ILibLifeTime_Remove(o->parent->Timer, ILibWebRTC_DTLS_TO_TIMER_OBJECT(o));
-										ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......[Response for a pending Close]");
+										ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "......[Response for a pending Close]");
 										o->pendingReconfigPacket = NULL;
 										
 										// We need to shed the Lock before we call up the stack
@@ -3724,7 +4398,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			break;
 		case RCTP_CHUNK_TYPE_COOKIEACK:
 		{
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [COOKIEACK]", session);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [COOKIEACK]", session);
 			if (obj->OnConnect != NULL && o->state == 1)
 			{
 				o->state = 2;
@@ -3736,29 +4410,53 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 		}
 		case RCTP_CHUNK_TYPE_INITACK:
 		{
-			int i;
+			void *cookie = NULL;
+			int cookieLen = 0;
 			if (chunksize < 20 || session == -1 || o->state != 1) break;
 
 			// Set TSN
 			o->RRESSEQ = o->userTSN = o->intsn = ntohl(((unsigned int*)(buffer + ptr + 16))[0]) - 1;
 
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [INIT-ACK]", session);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [INIT-ACK]", session);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...TSN/IN  = %u", o->intsn);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...TSN/OUT = %u", o->outtsn);
 
-			// We need to send a RCTP_CHUNK_TYPE_COOKIEECHO response
-			i = 20;
-			while (i < chunksize)
+			// Optional/Variable Fields
 			{
-				if (ntohs(((unsigned short*)(buffer + ptr + i))[0]) == 7)
+				int varLen = 0;
+				unsigned short tLen = 0;
+				int chunkIndex;
+
+				while (chunksize - varLen > 20)
 				{
-					// Cookie
-					*rptr = ILibStun_AddSctpChunkHeader(rpacket, *rptr, RCTP_CHUNK_TYPE_COOKIEECHO, 0, ntohs(((unsigned short*)(buffer + ptr + i))[1]));
-					memcpy(rpacket + *rptr, buffer + ptr + i + 4, ntohs(((unsigned short*)(buffer + ptr + i))[1]) - 4);
-					*rptr += (ntohs(((unsigned short*)(buffer + ptr + i))[1]) - 4);
-					break;
-				}
-				else
-				{
-					i += (int)ntohs(((unsigned short*)(buffer + ptr + i))[1]);
+					SCTP_INIT_PARAMS optionalParam = (SCTP_INIT_PARAMS)ntohs(((unsigned short*)(buffer + ptr + 20 + varLen))[0]);
+					tLen = ntohs(((unsigned short*)(buffer + ptr + 20 + varLen))[1]);
+					switch (optionalParam)
+					{
+					case SCTP_INIT_PARAM_UNRELIABLE_STREAM:
+						ILibSparseArray_Add(o->PeerFeatureSet, SCTP_INIT_PARAM_UNRELIABLE_STREAM, (void*)0x01);
+						break;
+					case SCTP_INIT_PARAM_SUPPORTED_EXTENSIONS:
+						for (chunkIndex = 0; chunkIndex < tLen - 4; ++chunkIndex)
+						{
+							ILibSparseArray_Add(o->PeerFeatureSet, (int)((unsigned char*)(buffer + ptr + 20 + varLen + 4))[chunkIndex], (void*)0x01);
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Supported Extension: %d", (int)((unsigned char*)(buffer + ptr + 20 + varLen + 4))[chunkIndex]);
+						}
+						break;
+					case SCTP_INIT_PARAM_STATE_COOKIE:
+						cookie = (char*)(buffer + ptr + 20 + varLen + 4);
+						cookieLen = tLen - 4;
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Received Cookie: %s", ILibRemoteLogging_ConvertToHex(cookie, cookieLen));
+						
+						// We need to send a RCTP_CHUNK_TYPE_COOKIEECHO response
+						*rptr = ILibStun_AddSctpChunkHeader(rpacket, *rptr, RCTP_CHUNK_TYPE_COOKIEECHO, 0, tLen);
+						memcpy_s(rpacket + *rptr, 4096 - *rptr, cookie, cookieLen);
+						*rptr += FOURBYTEBOUNDARY(tLen);
+						break;
+					default:
+						break;
+					}
+					varLen += FOURBYTEBOUNDARY(tLen);	// Add parameter size and padding
 				}
 			}
 		}
@@ -3770,7 +4468,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			if (o->tag == 0) { sem_post(&(o->Lock)); return; } // This tag can't be zeroes
 			o->receiverCredits = ntohl(((unsigned int*)(buffer + ptr + 8))[0]);
 #if ILibSCTP_MaxSenderCredits > 0
-			if (o->receiverCredits > ILibSCTP_MaxSenderCredits) o->receiverCredits = ILibSCTP_MaxSenderCredits; // Since we do real-time KVM, reduce the buffering.
+			if (o->receiverCredits > ILibSCTP_MaxSenderCredits) o->receiverCredits = ILibSCTP_MaxSenderCrtedits; // Since we do real-time KVM, reduce the buffering.
 #endif
 			o->userTSN = o->intsn = ntohl(((unsigned int*)(buffer + ptr + 16))[0]) - 1;
 			util_random(4, (char*)&(o->outtsn));
@@ -3780,8 +4478,9 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			o->outport = ntohs(((unsigned short*)buffer)[0]);
 			o->maxOutStreams = MIN(ntohs(((unsigned short*)(buffer + ptr + 12))[0]), ILibSCTP_Stream_MaximumCount);
 			o->maxInStreams = MIN(ntohs(((unsigned short*)(buffer + ptr + 12))[1]), ILibSCTP_Stream_MaximumCount);
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [INIT]", session);
-
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [INIT]", session);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...TSN/IN  = %u", o->intsn);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...TSN/OUT = %u", o->outtsn);
 			// Optional/Variable Fields
 			{
 				int varLen = 0;
@@ -3801,6 +4500,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 							for(chunkIndex = 0 ; chunkIndex < tLen - 4; ++chunkIndex)
 							{
 								ILibSparseArray_Add(o->PeerFeatureSet, (int)((unsigned char*)(buffer + ptr + 20 + varLen + 4))[chunkIndex], (void*)0x01);
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Supported Extension: %d", (int)((unsigned char*)(buffer + ptr + 20 + varLen + 4))[chunkIndex]);
 							}
 							break;
 						default:
@@ -3829,7 +4529,8 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 				((ILibSCTP_InitAckChunk*)(rpacket + *rptr))->NumberOfInboundStreams = htons(o->maxInStreams);		// Number of Inbound Streams
 				((ILibSCTP_InitAckChunk*)(rpacket + *rptr))->InitialTSN = htonl(o->outtsn);							// Initial TSN
 				*rptr += sizeof(ILibSCTP_InitAckChunk);
-				*rptr += ILibSCTP_AddOptionalVariableParameter(rpacket + *rptr, htons(7), (void*)&uptime, sizeof(uptime)); // Stick uptime as cookie, so we can calculate initial RTT
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Setting Cookie: %s", ILibRemoteLogging_ConvertToHex((char*)&uptime, sizeof(uptime)));
+				*rptr += ILibSCTP_AddOptionalVariableParameter(rpacket + *rptr, htons(SCTP_INIT_PARAM_STATE_COOKIE), (void*)&uptime, sizeof(uptime)); // Stick uptime as cookie, so we can calculate initial RTT
 				*rptr += ILibSCTP_AddOptionalVariableParameter(rpacket + *rptr, htons(SCTP_INIT_PARAM_SUPPORTED_EXTENSIONS), chunks, 1); // Supports RE-CONFIG
 			}
 			break;
@@ -3838,7 +4539,8 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			int FastRetryDisabled = 0;
 			int GapAckPtr = 0, DuplicatePtr = 0, oldHoldCount;
 			unsigned int gstart, gend = 0;
-			char* packet = NULL;
+			//char* packet = NULL;
+			ILibSCTP_RPACKET* rpacket = NULL;
 			unsigned int tsn = ntohl(((unsigned int*)(buffer + ptr + 4))[0]);
 #ifdef _REMOTELOGGING
 			unsigned int arwnd = ntohl(((unsigned int*)(buffer + ptr + 8))[0]);
@@ -3858,7 +4560,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			{
 				// We have exited Fast Recovery Mode
 				o->FastRetransmitExitPoint = 0;
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d] has exited Fast-Recovery Mode (Sender Credits: %d / Receiver Credits: %d)", o->sessionId, o->senderCredits, o->receiverCredits);
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d] has exited Fast-Recovery Mode (Sender Credits: %d / Receiver Credits: %d)", o->sessionId, o->senderCredits, o->receiverCredits);
 #ifdef _WEBRTCDEBUG
 				if (o->onFastRecovery != NULL){ o->onFastRecovery(o, "OnFastRecovery", 0); }
 #endif
@@ -3869,19 +4571,19 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 
 			while (DuplicatePtr < DuplicateCount) { tsnx = ntohl(((unsigned int*)(buffer + ptr + 16 + (GapAckCount * 4) + (DuplicatePtr * 4)))[0]); ++DuplicatePtr; }
 
-			// Clear all packets that are fully acknowledged
-			if (o->pendingQueueHead != NULL) { tsnx = ntohl(((unsigned int*)(o->pendingQueueHead + sizeof(char*) + 8 + 12 + 4))[0]); }
+			// Clear all packets that are fully acknowledged		
+			if (o->pendingQueueHead != NULL) { tsnx = ntohl(((ILibSCTP_DataPayload*)((ILibSCTP_RPACKET*)o->pendingQueueHead)->Data)->TSN); }
 			while (o->pendingQueueHead != NULL && tsnx <= tsn)
 			{
-				// If we haven't made an RTT calculation, let's try to
-				if (((unsigned char*)(o->pendingQueueHead + sizeof(char*) + 2))[0] == 0 && rttCalculated == 0)
+				// If we haven't made an RTT calculation, let's try to				
+				if (((ILibSCTP_RPACKET*)o->pendingQueueHead)->PacketResendCounter == 0 && rttCalculated == 0)
 				{
 					// But only if no packets were re-transmitted since the last time we sent a packet
-					if (o->lastRetransmitTime < ((unsigned int*)(o->pendingQueueHead + sizeof(char*)))[1])
+					if (o->lastRetransmitTime < ((ILibSCTP_RPACKET*)o->pendingQueueHead)->LastSentTimeStamp)
 					{
 						// This packet that was ACK'ed and was NOT retransmitted, and NO OTHER packets
 						// were retransmitted since this packet was originally sent
-						int r = (int)(o->lastSackTime - ((unsigned int*)(o->pendingQueueHead + sizeof(char*)))[1]);
+						int r = (int)(o->lastSackTime - ((ILibSCTP_RPACKET*)o->pendingQueueHead)->LastSentTimeStamp);
 						o->RTTVAR = (int)((double)(1 - RTO_BETA) * (double)o->RTTVAR + RTO_BETA * (double)abs(o->SRTT - r));
 						o->SRTT = (int)((double)(1 - RTO_ALPHA) * (double)o->SRTT + RTO_ALPHA * (double)r);
 						o->RTO = o->SRTT + 4 * o->RTTVAR;
@@ -3894,15 +4596,15 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 #endif
 					}
 				}
-				cumulativeTSNAdvanced += ((((unsigned short*)(o->pendingQueueHead + sizeof(char*)))[0]) - (12 + 16));
-				o->pendingByteCount -= ((((unsigned short*)(o->pendingQueueHead + sizeof(char*)))[0]) - (12 + 16));
+				cumulativeTSNAdvanced += (((ILibSCTP_RPACKET*)o->pendingQueueHead)->PacketSize - (12 + 16));
+				o->pendingByteCount -= (((ILibSCTP_RPACKET*)o->pendingQueueHead)->PacketSize - (12 + 16));
 				o->pendingCount--;
-				packet = o->pendingQueueHead;
-				o->pendingQueueHead = ((char**)(packet))[0];
+				rpacket = (ILibSCTP_RPACKET*)o->pendingQueueHead;
+				o->pendingQueueHead = (char*)((ILibSCTP_RPACKET*)o->pendingQueueHead)->NextPacket;
 				if (o->pendingQueueHead == NULL) { o->pendingQueueTail = NULL; }
-				else { tsnx = ntohl(((unsigned int*)(o->pendingQueueHead + sizeof(char*) + 8 + 12 + 4))[0]); }
+				else { tsnx = ntohl(((ILibSCTP_DataPayload*)((ILibSCTP_RPACKET*)o->pendingQueueHead)->Data)->TSN); }
 
-				free(packet);
+				free(rpacket);
 				o->timervalue = 0; // This is a valid SACK, reset the timeout for packet resent				
 			}
 
@@ -3923,14 +4625,14 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 #endif
 			}
 
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...A_RWND: %u", arwnd);
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Sender Credits: %u", o->senderCredits);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...A_RWND: %u", arwnd);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Sender Credits: %u", o->senderCredits);
 
 			if (o->pendingQueueHead == NULL)
 			{
 				o->senderCredits = o->congestionWindowSize;
 				o->PARTIAL_BYTES_ACKED = 0;
-				if(o->T3RTXTIME!=0) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: T3TX Timer OFF", o->sessionId);}
+				if(o->T3RTXTIME!=0) {ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: T3TX Timer OFF", o->sessionId);}
 				o->T3RTXTIME = 0;
 #ifdef _WEBRTCDEBUG
 				if (o->onT3RTX != NULL){ o->onT3RTX(o, "OnT3RTX", 0); } // All data has been ack'ed, so we can turn off the T3RTX timer
@@ -3942,7 +4644,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 				if (cumulativeTSNAdvanced > 0)
 				{
 					o->T3RTXTIME = o->lastSackTime;
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: T3TX Timer Restarted", o->sessionId);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: T3TX Timer Restarted", o->sessionId);
 #ifdef _WEBRTCDEBUG
 					if (o->onT3RTX != NULL){ o->onT3RTX(o, "OnT3RTX", o->RTO); } // The lowest TSN has been ACK'ed, and there is still data pending, so restart the timer
 #endif
@@ -3966,23 +4668,23 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			//printf("ARK-STR %d GAPS, %d SENDS\r\n", GapAckCount, SendCount);
 
 			// If there are any GAPS in the ACK, add to the FAST ACK counter.
-			packet = o->pendingQueueHead;
-			while (packet != NULL && GapAckPtr < GapAckCount)
+			rpacket = (ILibSCTP_RPACKET*)o->pendingQueueHead;
+			while (rpacket != NULL && GapAckPtr < GapAckCount)
 			{
 				gstart = tsn + ntohs(((unsigned short*)(buffer + ptr + 16 + (GapAckPtr * 4)))[0]);	// Start of GAP Block
 				gend = tsn + ntohs(((unsigned short*)(buffer + ptr + 18 + (GapAckPtr * 4)))[0]);	// End of GAP Block
-				tsnx = ntohl(((unsigned int*)(packet + sizeof(char*) + 8 + 12 + 4))[0]);			// TSN of Pending Packet
-				while (packet != NULL && tsnx <= gend)
+				tsnx = ntohl(((ILibSCTP_DataPayload*)rpacket->Data)->TSN);		// TSN of Pending Packet
+				while (rpacket != NULL && tsnx <= gend)
 				{
 					// Packet TSN could potentially be within the GAP Block
-					unsigned char frt = ((unsigned char*)(packet + sizeof(char*) + 2))[1]; // Number of times the packet was indicated to be in a gap
+					unsigned char frt = rpacket->PacketGAPCounter;				// Number of times the packet was indicated to be in a gap
 					if (tsnx < gstart)
 					{
 						// This packet was not received by the peer
-						if (frt < 0xFE)
+						if (frt < 0xFD)
 						{
 							++frt; // Increment the GAP Counter if this packet isn't already marked for re-transmit
-							if (frt >= 0xFE) { frt = 0xFD; } // Cap the counter, because OxFE and 0xFF have special meaning, and won't retransmit
+							if (frt >= 0xFD) { frt = 0xFC; } // Cap the counter, because 0xFD, 0xFE, and 0xFF have special meaning, and won't retransmit
 						}
 						else if (frt == 0xFE)
 						{
@@ -3993,16 +4695,16 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 					else
 					{
 						// This packet was received by the peer
-						if (frt != 0xFE)
+						if (frt < 0xFD)
 						{
 							// This is the first time this packet was GAP ACK'ed
 							frt = 0xFE; // This packet was forward ACKed by the peer. Ban this packet from being retransmitted for now
-							o->senderCredits += (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16));
-							o->PARTIAL_BYTES_ACKED += (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16));
+							o->senderCredits += (rpacket->PacketSize - (12 + 16));
+							o->PARTIAL_BYTES_ACKED += (rpacket->PacketSize - (12 + 16));
 						}
 					}
 
-					if (frt >= ILibSCTP_FastRetry_GAP && frt < 0xFE)
+					if (frt >= ILibSCTP_FastRetry_GAP && frt < 0xFD)
 					{
 						// Perform fast retry. This only happens if this packet was in the ACK gap 'ILibSCTP_FastRetry_GAP' times.
 						if (windowReset == 0 && o->FastRetransmitExitPoint == 0)
@@ -4016,7 +4718,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 							o->senderCredits = MIN(o->senderCredits, o->congestionWindowSize);
 							o->PARTIAL_BYTES_ACKED = 0;
 							windowReset = 1;
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: Entering Fast-Retry Mode (Sender Credits: %d)", o->sessionId, o->senderCredits);
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: Entering Fast-Retry Mode (Sender Credits: %d)", o->sessionId, o->senderCredits);
 #ifdef _WEBRTCDEBUG
 							if (o->onCongestionWindowSizeChanged != NULL) { o->onCongestionWindowSizeChanged(o, "OnCongestionWindowSizeChanged", o->congestionWindowSize); }
 #endif
@@ -4028,11 +4730,11 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 
 						if (FastRetryDisabled == 0)
 						{
-							if (packet == o->pendingQueueHead)
+							if ((char*)rpacket == o->pendingQueueHead)
 							{
 								// We are re-transmitting the lowest outstanding TSN, restart the T3-RTX timer
 								o->T3RTXTIME = o->lastSackTime;
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: Restarting T3RTX Timer (Retransmitting lowest TSN)", o->sessionId);
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: Restarting T3RTX Timer (Retransmitting lowest TSN)", o->sessionId);
 #ifdef _WEBRTCDEBUG
 								if (o->onT3RTX != NULL){ o->onT3RTX(o, "OnT3RTX", o->RTO); }
 #endif
@@ -4041,17 +4743,17 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 							{
 								// Since we are not re-transmitting the lowest outstanding TSN, only start the T3-RTX timer, if it's not running
 								o->T3RTXTIME = o->lastSackTime;
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: Restarting T3RTX Timer (Not retransmitting lowest TSN)", o->sessionId);
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: Restarting T3RTX Timer (Not retransmitting lowest TSN)", o->sessionId);
 #ifdef _WEBRTCDEBUG
 								if (o->onT3RTX != NULL){ o->onT3RTX(o, "OnT3RTX", o->RTO); }
 #endif
 							}
 
 							// Send the first FastRetransmit candidate right now, ignoring sender credits
-							o->lastRetransmitTime = o->lastSackTime; // Every time we retransmit, we need to take note of it, for RTT purposes
-							((unsigned int*)(packet + sizeof(char*)))[1] = o->lastSackTime;					// Update Send Time, used for retry
-							ILibStun_SendSctpPacket(obj, session, packet + sizeof(char*) + 8, ((unsigned short*)(packet + sizeof(char*)))[0]);
-							((unsigned char*)(packet + sizeof(char*) + 2))[0]++;							// Add to the packet resent counter
+							o->lastRetransmitTime = o->lastSackTime;									 // Every time we retransmit, we need to take note of it, for RTT purposes
+							rpacket->LastSentTimeStamp = o->lastSackTime;								// Update Send Time, used for retry
+							ILibStun_SendSctpPacket(obj, session, rpacket->Data - 12, rpacket->PacketSize);
+							rpacket->PacketResendCounter++;												// Add to the packet resent counter
 							//printf("RESEND COUNT %d, TSN=%u\r\n", ((unsigned char*)(packet + sizeof(char*) + 2))[0], tsnx);
 
 							FastRetryDisabled = 1;
@@ -4063,10 +4765,10 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 						{
 							// We already sent the first retransmit, 
 							// But we can at least try to retransmit the rest when sender credits permit
-							if (o->senderCredits >= ((unsigned short*)(packet + sizeof(char*)))[0])
+							if (o->senderCredits >= rpacket->PacketSize)
 							{
 								// We have enough sender credits to retransmit these
-								((unsigned int*)(packet + sizeof(char*)))[1] = o->lastSackTime;							// Update Send Time, used for retry
+								rpacket->LastSentTimeStamp = o->lastSackTime;							// Update Send Time, used for retry
 								if (o->T3RTXTIME == 0)
 								{
 									o->T3RTXTIME = o->lastSackTime;
@@ -4074,11 +4776,12 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 									if (o->onT3RTX != NULL) { o->onT3RTX(o, "OnT3RTX", o->RTO); }
 #endif
 								}
-								((unsigned char*)(packet + sizeof(char*) + 2))[0]++;									// Add to the packet resent counter
-								o->senderCredits -= (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16));		// Update sender credits
+								rpacket->PacketResendCounter++;									// Add to the packet resent counter
+								o->senderCredits -= (rpacket->PacketSize - (12 + 16));		// Update sender credits
 								o->lastRetransmitTime = o->lastSackTime; // Every time we retransmit, we need to take note of it, for RTT purposes
-
-								ILibStun_SendSctpPacket(obj, session, packet + sizeof(char*) + 8, ((unsigned short*)(packet + sizeof(char*)))[0]);
+								
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_ConsolePrint | ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: Retransmitting/T3RTX Expired", o->sessionId);
+								ILibStun_SendSctpPacket(obj, session, rpacket->Data - 12, rpacket->PacketSize);
 #ifdef _WEBRTCDEBUG
 								if (o->onSendRetry != NULL) { o->onSendRetry(obj, "OnSendRetry", ((unsigned short*)(packet + sizeof(char*)))[0]); }
 #endif
@@ -4087,26 +4790,26 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 							{
 								// No Sender Credits available, so we're just going to mark these packets for retransmit later (frt = 0xFF)
 								// (This block left blank on purpose, so we can include these comments)
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: No sender credits available for retransmit", o->sessionId);
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP[%d]: No sender credits available for retransmit", o->sessionId);
 							}
 						}
 					}
-					else if (frt == 0xFF && o->senderCredits >= ((unsigned short*)(packet + sizeof(char*)))[0])
+					else if (frt == 0xFF && o->senderCredits >= rpacket->PacketSize)
 					{
 						// We have sufficient sender credits to send packets marked for retransmit
-						((unsigned int*)(packet + sizeof(char*)))[1] = o->lastSackTime;					// Update Send Time, used for retry
-						((unsigned char*)(packet + sizeof(char*) + 2))[0]++;							// Add to the packet resent counter
-						o->senderCredits -= ((unsigned short*)(packet + sizeof(char*)))[0];				// Update sender credits
+						rpacket->LastSentTimeStamp = o->lastSackTime;									// Update Send Time, used for retry
+						rpacket->PacketResendCounter++;													// Add to the packet resent counter
+						o->senderCredits -= rpacket->PacketSize;										// Update sender credits
 						o->lastRetransmitTime = o->lastSackTime; // Every time we retransmit, we need to take note of it, for RTT purposes
 
-						ILibStun_SendSctpPacket(obj, session, packet + sizeof(char*) + 8, ((unsigned short*)(packet + sizeof(char*)))[0]);
+						ILibStun_SendSctpPacket(obj, session, rpacket->Data - 12, rpacket->PacketSize);
 #ifdef _WEBRTCDEBUG
 						if (o->onSendRetry != NULL) { o->onSendRetry(obj, "OnSendRetry", ((unsigned short*)(packet + sizeof(char*)))[0]); }
 #endif
 					}
-					((unsigned char*)(packet + sizeof(char*) + 2))[1] = frt; // Possibly add to the packet gap counter
-					packet = ((char**)(packet))[0];
-					if (packet != NULL) tsnx = ntohl(((unsigned int*)(packet + sizeof(char*) + 8 + 12 + 4))[0]);
+					rpacket->PacketGAPCounter = frt; // Possibly add to the packet gap counter
+					rpacket = rpacket->NextPacket;
+					if (rpacket != NULL) tsnx = ntohl(((ILibSCTP_DataPayload*)rpacket->Data)->TSN);
 				}
 				GapAckPtr++;
 			}
@@ -4121,14 +4824,14 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			oldHoldCount = o->holdingCount;
 			while (o->receiverCredits > 0 && o->holdingQueueHead != NULL)
 			{
-				packet = o->holdingQueueHead;
+				rpacket = (ILibSCTP_RPACKET*)o->holdingQueueHead;
 
 				// Check if we have sufficient credits to send the next packet
-				if (o->receiverCredits < (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16))) break;
-				if (o->senderCredits < (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16))) break;
+				if (o->receiverCredits < (rpacket->PacketSize - (12 + 16))) break;
+				if (o->senderCredits < (rpacket->PacketSize - (12 + 16))) break;
 
 				// Remove the packet from the holding queue
-				o->holdingQueueHead = ((char**)(o->holdingQueueHead))[0];	// Move to the next packet
+				o->holdingQueueHead = (char*)rpacket->NextPacket;	// Move to the next packet
 				if (o->holdingQueueHead == NULL) o->holdingQueueTail = NULL;
 				o->holdingCount--;
 
@@ -4138,17 +4841,17 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 #endif
 
 				// Add the packet to the end of the pending queue
-				if (o->pendingQueueTail == NULL) { o->pendingQueueHead = packet; }
-				else { ((char**)(o->pendingQueueTail))[0] = packet; }
-				((char**)packet)[0] = NULL;
-				o->pendingQueueTail = packet;
+				if (o->pendingQueueTail == NULL) { o->pendingQueueHead = (char*)rpacket; }
+				else { ((char**)(o->pendingQueueTail))[0] = (char*)rpacket; }
+				rpacket->NextPacket = NULL;
+				o->pendingQueueTail = (char*)rpacket;
 				o->pendingCount++;
-				o->pendingByteCount += (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16));
+				o->pendingByteCount += (rpacket->PacketSize - (12 + 16));
 
 				// Remove the credits
-				o->senderCredits -= (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16));
-				o->receiverCredits -= (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16));
-				o->holdingByteCount -= (((unsigned short*)(packet + sizeof(char*)))[0] - (12 + 16));
+				o->senderCredits -= (rpacket->PacketSize - (12 + 16));
+				o->receiverCredits -= (rpacket->PacketSize - (12 + 16));
+				o->holdingByteCount -= (rpacket->PacketSize - (12 + 16));
 
 #ifdef _WEBRTCDEBUG
 				// Debug Events
@@ -4164,11 +4867,11 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 				}
 
 				// Update the packet retry data
-				((unsigned int*)(packet + sizeof(char*)))[1] = o->lastSackTime;								// Last time the packet was sent (Used for retry)
+				rpacket->LastSentTimeStamp = o->lastSackTime;								// Last time the packet was sent (Used for retry)
 
 
 				// Send the packet
-				ILibStun_SendSctpPacket(obj, session, packet + sizeof(char*) + 8, ((unsigned short*)(packet + sizeof(char*)))[0]);	// Send the packet
+				ILibStun_SendSctpPacket(obj, session, rpacket->Data - 12, rpacket->PacketSize);	// Send the packet
 			}
 
 			// If we can now send more packets, notify the application
@@ -4187,9 +4890,9 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			RCTPDEBUG(printf("RCTP_CHUNK_TYPE_HEARTBEAT, Size=%d\r\n", chunksize);)
 			o->timervalue = 0;
 			ILibStun_AddSctpChunkHeader(rpacket, *rptr, RCTP_CHUNK_TYPE_HEARTBEATACK, 0, chunksize);
-			memcpy(rpacket + *rptr + 4, buffer + ptr + 4, chunksize - 4);
-			*rptr += chunksize;
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Received [HEARTBEAT/%u]", session, ntohs(chunkHdr->chunkLength));
+			memcpy_s(rpacket + *rptr + 4, 4092 - *rptr, buffer + ptr + 4, chunksize - 4);
+			*rptr += FOURBYTEBOUNDARY(chunksize);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Received [HEARTBEAT/%u]", session, ntohs(chunkHdr->chunkLength));
 			break;
 		case RCTP_CHUNK_TYPE_HEARTBEATACK:
 			RCTPDEBUG(printf("RCTP_CHUNK_TYPE_HEARTBEATACK, Size=%d\r\n", chunksize);)
@@ -4205,10 +4908,10 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 				{
 					ILibSCTP_ErrorCause_Header *cause = (ILibSCTP_ErrorCause_Header*)(chunkHdr->chunkData + start);
 					unsigned short causeLen = FOURBYTEBOUNDARY(ntohs(cause->CauseLength));
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d Received [ABORT:%u/%s]", session, ntohs(cause->CauseCode), SCTP_ERROR_CAUSE_TO_STRING(cause));
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d Received [ABORT:%u/%s]", session, ntohs(cause->CauseCode), SCTP_ERROR_CAUSE_TO_STRING(cause));
 					if(ntohs(cause->CauseCode)==SCTP_ERROR_CAUSE_CODE_PROTOCOL_VIOLATION)
 					{
-						ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...%s", cause->CauseInformation);
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...%s", cause->CauseInformation);
 					}
 					start += causeLen;
 				}				
@@ -4219,7 +4922,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 		case RCTP_CHUNK_TYPE_SHUTDOWNACK:
 		case RCTP_CHUNK_TYPE_ERROR:
 			sem_post(&(o->Lock));
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [SHUTDOWN/ERROR] (%u)", session, chunktype);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [SHUTDOWN/ERROR] (%u)", session, chunktype);
 			ILibStun_SctpDisconnect(obj, session);
 			return;
 		case RCTP_CHUNK_TYPE_COOKIEECHO:
@@ -4228,7 +4931,7 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			o->RTO = o->SRTT + 4 * o->RTTVAR;
 			o->SSTHRESH = 4 * ILibRUDP_StartMTU;
 			if (o->RTO < RTO_MIN) { o->RTO = RTO_MIN; }
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [COOKIE-ECHO]", session);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [COOKIE-ECHO]", session);
 
 			*rptr = ILibStun_AddSctpChunkHeader(rpacket, *rptr, RCTP_CHUNK_TYPE_COOKIEACK, 0, 4);
 			if (obj->OnConnect != NULL && o->state == 1)
@@ -4240,8 +4943,37 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 				sem_wait(&(o->Lock));
 			}
 			break;
+		case RCTP_CHUNK_TYPE_FWDTSN:
+		{
+			ILibSCTP_FwdTSNPayload *fdata = (ILibSCTP_FwdTSNPayload*)(buffer + ptr);
+			int i;
+			int len = (htons(fdata->length) - 8) / 4;
+			void *holding;
+			unsigned int NewTSN = ntohl(fdata->NewTSN);
+			ILibSCTP_DataPayload *data;
+			ILibSCTP_Accumulator *acc;
+
+			if (NewTSN <= o->intsn) { break; }	// Skip this FWD-TSN because it's stale
+			while ((holding = ILibLinkedList_GetNode_Head(o->receiveHoldBuffer)) != NULL && (data = (ILibSCTP_DataPayload*)ILibLinkedList_GetDataFromNode(holding)) != NULL && data->TSN <= NewTSN)
+			{
+				free(data);
+				ILibLinkedList_Remove(holding);
+			}
+			
+			for (i = 0; i < len; ++i)
+			{
+				acc = (ILibSCTP_Accumulator*)ILibSparseArray_Get(o->DataAccumulator, ntohl(fdata->SkippedStreams[i].StreamNumber));
+				if (acc != NULL) { acc->bufferPtr = -1; } // If an accumulator was created, reset the bufferPtr to abort the Re-Assembly
+			}
+
+			o->intsn = NewTSN;
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d received [FWDTSN]", session);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Updated TSN to: %u", NewTSN);
+		}
+			break;
 		case RCTP_CHUNK_TYPE_DATA:
 		{
+			void* holdingNode;
 			unsigned int tsn;
 			unsigned short streamId;
 			unsigned short streamSeq;
@@ -4252,6 +4984,24 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 			RCTPDEBUG(printf("RCTP_CHUNK_TYPE_DATA, Flags=%d, Size=%d\r\n", chunkflags, chunksize);)
 			data = (ILibSCTP_DataPayload*)(buffer + ptr);
 			tsn = ntohl(data->TSN);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP [DATA] Received");
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "... TSN = %u", tsn);
+
+			if ((chunkflags & ILibSCTP_UnorderedFlag) == ILibSCTP_UnorderedFlag && ((chunkflags & 0x03) == 0x03))
+			{
+				// 'Unordered Delivery' was specified, and we have a full fragment, Propagate Data up the stack immediately
+				streamId = ntohs(data->StreamID);
+				pid = ntohl(data->ProtocolID);
+
+				if (tsn == o->intsn + 1)
+				{
+					ILibStun_SctpProcessStreamData(obj, session, streamId, 0, chunkflags, pid, data->UserData, chunksize - 16);
+				}
+				else if (tsn > o->intsn + 1 && ILibLinkedList_GetNode_Search(o->receiveHoldBuffer, &ILibSCTP_HoldingQueue_TSNComparer, data) == NULL)
+				{
+					ILibStun_SctpProcessStreamData(obj, session, streamId, 0, chunkflags, pid, data->UserData, chunksize - 16);
+				}
+			}
 
 			if (tsn == o->intsn + 1)
 			{
@@ -4264,28 +5014,43 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 				RCTPRCVDEBUG(printf("GOT %u, size = %d\r\n", tsn, chunksize);)
 				RCTPDEBUG(printf("IN DATA_CHUNK FLAGS: %d, TSN: %u, ID: %d, SEQ: %d, PID: %u, SIZE: %d\r\n", chunkflags, tsn, streamId, streamSeq, pid, chunksize - 16);)
 
-				// Move the TSN as forward as we can
-				rqptr = ILibLinkedList_GetNode_Head(o->receiveHoldBuffer);
-				while (rqptr != NULL)
-				{					
-					unsigned int tsnx = ntohl(((ILibSCTP_DataPayload*)ILibLinkedList_GetDataFromNode(rqptr))->TSN);
-					if (tsnx != o->intsn + 1) break;
-					o->intsn = tsnx;
-					RCTPRCVDEBUG(printf("MOVED TSN to %u\r\n", o->intsn);)
-					rqptr = ILibLinkedList_GetNextNode(rqptr);
-				}
-
 				if((o->flags & DTLS_PAUSE_FLAG)==DTLS_PAUSE_FLAG || (o->userTSN < o->intsn - 1))
 				{
 					// We are paused, so we need to buffer this packet for later. (Or, the userTSN isn't caught up yet)
-					sentsack = ILibSCTP_AddPacketToHoldingQueue(o, data, sentsack);
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Packet: %u Buffered, due to PAUSE", o->sessionId, ntohl(data->TSN));
+					holdingNode = ILibSCTP_AddPacketToHoldingQueue(o, data, &sentsack);
+					if (holdingNode != NULL)
+					{
+						ILibSCTP_GetHoldingQueueFlags(holdingNode)->DataPropagated = ((chunkflags & ILibSCTP_UnorderedFlag) == ILibSCTP_UnorderedFlag);
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Packet: %u Buffered, due to PAUSE", o->sessionId, ntohl(data->TSN));
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "... UserTSN = %u", o->userTSN);
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "... InTSN   = %u", o->intsn);
+					}
+					else
+					{
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Packet: %u DROPPED, because holding Queue is FULL", o->sessionId, ntohl(data->TSN));
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "... UserTSN = %u", o->userTSN);
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "... InTSN   = %u", o->intsn);
+					}
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_ConsolePrint | ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d, exiting processing loop due to PAUSE state", o->sessionId);
 					break;
 				}
 				else
 				{
 					o->userTSN = o->intsn;
 				}
+
+				// Move the TSN as forward as we can
+				rqptr = ILibLinkedList_GetNode_Head(o->receiveHoldBuffer);
+				while (rqptr != NULL)
+				{
+					unsigned int tsnx = ntohl(((ILibSCTP_DataPayload*)ILibLinkedList_GetDataFromNode(rqptr))->TSN);
+					if (tsnx != o->intsn + 1) break;
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_ConsolePrint | ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "TSN Moved Forward to: %u", tsnx);
+					o->intsn = tsnx;
+					RCTPRCVDEBUG(printf("MOVED TSN to %u\r\n", o->intsn);)
+						rqptr = ILibLinkedList_GetNextNode(rqptr);
+				}
+
 
 				// TODO: Optimize this, send SACK only after a little bit of time (or every 3 packets or so). Or only in some cases.
 				if (sentsack == ILibSCTP_SackStatus_NotSent)
@@ -4294,12 +5059,14 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 					*rptr = ILibStun_SctpAddSackChunk(obj, session, rpacket, *rptr); // Send the ACK with the TSN as far forward as we can
 				}
 
-				sem_post(&(o->Lock));
-				ILibStun_SctpProcessStreamData(obj, session, streamId, streamSeq, chunkflags, pid, data->UserData, chunksize - 16);
-				if (obj->dTlsSessions[session] == NULL || obj->dTlsSessions[session]->state == 0) return;
-				sem_wait(&(o->Lock));
-
-				if((o->flags & DTLS_PAUSE_FLAG)==DTLS_PAUSE_FLAG) {break;}
+				if ((chunkflags & ILibSCTP_UnorderedFlag) != ILibSCTP_UnorderedFlag || ((chunkflags & 0x03) != 0x03))
+				{
+					// Only continue processing here, if 'Unordered Delivery' was not specified, or we have a partial fragment
+					sem_post(&(o->Lock));
+					ILibStun_SctpProcessStreamData(obj, session, streamId, streamSeq, chunkflags, pid, data->UserData, chunksize - 16);
+					if (obj->dTlsSessions[session] == NULL || obj->dTlsSessions[session]->state == 0) return;
+					sem_wait(&(o->Lock));
+				}
 
 				// Pull as many packets as we can out of the receive hold queue
 				pulled = 0;
@@ -4319,28 +5086,50 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 					pid = ntohl(payload->ProtocolID);
 					o->userTSN = o->intsn = tsnx;
 
-					sem_post(&(o->Lock));
-					ILibStun_SctpProcessStreamData(obj, session, streamId, streamSeq, chunkflagsx, pid, payload->UserData, chunksizex - 16);
-					if (obj->dTlsSessions[session] == NULL || obj->dTlsSessions[session]->state == 0) return;
-					sem_wait(&(o->Lock));
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_ConsolePrint|ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Packet: %u Pulled from Holding Queue", o->sessionId, o->userTSN);
+
+					if (ILibSCTP_GetHoldingQueueFlags(ILibLinkedList_GetNode_Head(o->receiveHoldBuffer))->DataPropagated == 0)
+					{
+						// Only propagate this up, if it hasn't been propagated already
+						sem_post(&(o->Lock));
+						ILibStun_SctpProcessStreamData(obj, session, streamId, streamSeq, chunkflagsx, pid, payload->UserData, chunksizex - 16);
+						if (obj->dTlsSessions[session] == NULL || obj->dTlsSessions[session]->state == 0) return;
+						sem_wait(&(o->Lock));
+					}
 
 					free(payload);
 					ILibLinkedList_Remove(ILibLinkedList_GetNode_Head(o->receiveHoldBuffer));
-
-					if((o->flags & DTLS_PAUSE_FLAG)==DTLS_PAUSE_FLAG) {break;}
+					if((o->flags & DTLS_PAUSE_FLAG)==DTLS_PAUSE_FLAG) 
+					{
+						ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_ConsolePrint | ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP_2: %d, exiting processing loop due to PAUSE state", o->sessionId);
+						break;
+					}
 				}
 				if (pulled > 0) ReceiveHoldBuffer_Decrement(o->receiveHoldBuffer, pulled);
 			}
 			else if (tsn > o->intsn + 1)
 			{
 				// This is an out of order packet, so lets buffer it for later
-				sentsack = ILibSCTP_AddPacketToHoldingQueue(o, data, sentsack);
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Packet: %u Buffered, out of order", o->sessionId, ntohl(data->TSN));
+				holdingNode = ILibSCTP_AddPacketToHoldingQueue(o, data, &sentsack);
+				if (holdingNode != NULL)
+				{
+					ILibSCTP_GetHoldingQueueFlags(holdingNode)->DataPropagated = (((chunkflags & ILibSCTP_UnorderedFlag) == ILibSCTP_UnorderedFlag) && ((chunkflags & 0x03) == 0x03));
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Packet: %u Buffered, out of order", o->sessionId, ntohl(data->TSN));
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "...Expected: %u", o->intsn + 1);
+				}
+				else
+				{
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_ConsolePrint | ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d Packet: %u DROPPED, because holding Queue is FULL", o->sessionId, ntohl(data->TSN));
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_ConsolePrint | ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "... UserTSN = %u", o->userTSN);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_ConsolePrint | ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "... InTSN   = %u", o->intsn);
+
+				}
 			}
 			else
 			{
 				// Already received packet.
 				RCTPRCVDEBUG(printf("TOSSING %u, size = %d\r\n", tsn, chunksize);)
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d Packet: %u dropped, duplicate... Expected: %u", o->sessionId, ntohl(data->TSN), o->intsn + 1);
 
 				// Send ACK now
 				if (sentsack == 0)
@@ -4348,7 +5137,6 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 					sentsack = 1;
 					*rptr = ILibStun_SctpAddSackChunk(obj, session, rpacket, *rptr); // Send the ACK with the TSN as far forward as we can
 				}
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_3, "SCTP: %d Packet: %u dropped, duplicate", o->sessionId, ntohl(data->TSN));
 			}
 		}
 			break;
@@ -4358,33 +5146,53 @@ void ILibStun_ProcessSctpPacket(struct ILibStun_Module *obj, int session, char* 
 		}
 
 		ptr += FOURBYTEBOUNDARY(chunksize); // Add chunk size and padding
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_2, "...Buffer Index =  %d", ptr);
 	}
-
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Stopped Reading SCTP, rptr = %d", *rptr);
 	if (session == -1) { sem_post(&(o->Lock)); return; }
-	if (*rptr > 12) { ILibStun_SendSctpPacket(obj, session, rpacket, *rptr); }
+	if (*rptr > 12) 
+	{
+#ifdef _REMOTELOGGING
+		ILibSctp_DebugSctpPacket(ILibChainGetLogger(obj->ChainLink.ParentChain), rpacket, *rptr, "RPACKET");
+#endif
+		if ((((int*)rpacket)[2] & SCTP_COMMON_HEADER_FLAGS_REORDER) == SCTP_COMMON_HEADER_FLAGS_REORDER)
+		{
+			// Need to reorder Control/Data Chunks to be spec-compliant
+			ILibSCTP_ReorderChunks(obj, session, rpacket, *rptr);
+		}
+		ILibStun_SendSctpPacket(obj, session, rpacket, *rptr); 
+	}
 	*rptr = 0;
 	sem_post(&(o->Lock));
 }
 
-void ILibSCTP_Pause(void* module)
+//! Pause processing of inbound SCTP data
+/*!
+	\param sctpSession Peer Connection Session
+*/
+void ILibSCTP_Pause(void* sctpSession)
 {
-	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)module;
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d was PAUSED by the USER", obj->sessionId);
+	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)sctpSession;
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d was PAUSED by the USER", obj->sessionId);
 
 	sem_wait(&(obj->Lock));
 	obj->flags |= DTLS_PAUSE_FLAG;
 	sem_post(&(obj->Lock));
 }
-void ILibSCTP_Resume(void* module)
+//! Resume processing of inbound SCTP data
+/*!
+	\param sctpSession Peer Connection Session
+*/
+void ILibSCTP_Resume(void* sctpSession)
 {
-	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)module;
+	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)sctpSession;
 	struct ILibStun_Module *sobj = obj->parent;
 	void *node;
 	ILibSCTP_DataPayload *payload;
 	int sessionID = obj->sessionId;
 	int pulled = 0;
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d RESUME operation begin", obj->sessionId);
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d RESUME operation begin", obj->sessionId);
 
 	sem_wait(&(obj->Lock));
 	if((obj->flags & DTLS_PAUSE_FLAG) == DTLS_PAUSE_FLAG)
@@ -4414,20 +5222,20 @@ void ILibSCTP_Resume(void* module)
 	}
 	if (pulled > 0) ReceiveHoldBuffer_Decrement(obj->receiveHoldBuffer, pulled);
 	sem_post(&(obj->Lock));
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d RESUME operation complete", sessionID);
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP: %d RESUME operation complete", sessionID);
 }
 
 
 void ILibStun_InitiateSCTP(struct ILibStun_Module *obj, int session, unsigned short sourcePort, unsigned short destinationPort)
 {
-	char* buffer;
+	char buffer[32 + 12];
 	int ptr;
 	unsigned int initiateTag;
+	char chunks[1] = { 130 };
 
 	obj->dTlsSessions[session]->inport = sourcePort;
 	obj->dTlsSessions[session]->outport = destinationPort;
 	obj->dTlsSessions[session]->receiverCredits = ILibSCTP_MaxReceiverCredits;
-	if ((buffer = (char*)malloc(20 + 12)) == NULL){ ILIBCRITICALEXIT(254); }
 	ptr = 12;
 
 #ifdef _WEBRTCDEBUG
@@ -4435,7 +5243,7 @@ void ILibStun_InitiateSCTP(struct ILibStun_Module *obj, int session, unsigned sh
 	if (obj->dTlsSessions[session]->onReceiverCredits != NULL) { obj->dTlsSessions[session]->onReceiverCredits(obj->dTlsSessions[session], "OnReceiverCredits", obj->dTlsSessions[session]->receiverCredits); }
 #endif
 
-	ptr = ILibStun_AddSctpChunkHeader(buffer, ptr, RCTP_CHUNK_TYPE_INIT, 0, 20);
+	ptr = ILibStun_AddSctpChunkHeader(buffer, ptr, RCTP_CHUNK_TYPE_INIT, 0, 32);
 	util_random(4, buffer + ptr);							// Initiate Tag
 	initiateTag = ((unsigned int*)(buffer + ptr))[0];
 	ptr += 4;
@@ -4451,11 +5259,29 @@ void ILibStun_InitiateSCTP(struct ILibStun_Module *obj, int session, unsigned sh
 	obj->dTlsSessions[session]->RREQSEQ = obj->dTlsSessions[session]->outtsn = ntohl(((unsigned int*)(buffer + ptr))[0]);
 	ptr += 4;
 
+	ptr += ILibSCTP_AddOptionalVariableParameter(buffer + ptr, htons(SCTP_INIT_PARAM_UNRELIABLE_STREAM), NULL, 0);		// Supports UNRELIABLE
+	ptr += ILibSCTP_AddOptionalVariableParameter(buffer + ptr, htons(SCTP_INIT_PARAM_SUPPORTED_EXTENSIONS), chunks, 1); // Supports RE-CONFIG
+
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Initiating SCTP...");
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...TSN/IN = %u", obj->dTlsSessions[session]->outtsn);
+
+	if (ptr > 44)
+	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...*** MEMORY CORRUPTION *** malloc(%d) => actual(%d)", 44, ptr);
+	}
+
 	ILibStun_SendSctpPacket(obj, session, buffer, ptr);
 
 	obj->dTlsSessions[session]->tag = initiateTag;
 }
 
+//! Add a new Data Channel Stream to a Peer Connection
+/*!
+	\param WebRTCModule Peer Connection Session
+	\param streamId Stream ID to associate with the new Data Channel
+	\param channelName Name to associate with the new Data Channel
+	\param channelNameLength size of the buffer holding channelName
+*/
 void ILibWebRTC_OpenDataChannel(void *WebRTCModule, unsigned short streamId, char* channelName, int channelNameLength)
 {
 	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)WebRTCModule;
@@ -4471,7 +5297,7 @@ void ILibWebRTC_OpenDataChannel(void *WebRTCModule, unsigned short streamId, cha
 	((unsigned short*)buffer)[4] = htons((unsigned short)channelNameLength);	// Label Name Length
 	((unsigned short*)buffer)[5] = 0x00;						// Protocol Length
 
-	memcpy(buffer + 12, channelName, channelNameLength);
+	memcpy_s(buffer + 12, channelNameLength, channelName, channelNameLength);
 
 	attributes.Raw = 0x00;
 	attributes.Data.StatusFlags |= ILibSCTP_StreamAttributesData_Assigned_Status_WAITING_FOR_ACK;
@@ -4490,6 +5316,10 @@ void ILibWebRTC_CloseDataChannel_ALL_Ex(ILibSparseArray sender, int index, void 
 
 	((unsigned short*)user)[++((unsigned short*)user)[0]] = (unsigned short)index;
 }
+//! Close all Data Channels associated with a Peer Connection
+/*!
+	\param WebRTCModule Peer Connection Session
+*/
 void ILibWebRTC_CloseDataChannel_ALL(void *WebRTCModule)
 {
 	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)WebRTCModule;
@@ -4518,7 +5348,7 @@ ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannelEx2(void *WebRTCMo
 	if(len > (obj->rpacketsize / 2) )
 	{
 		// We don't want to consume too much of the rpacket buffer
-		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Cannot process close, rpacket buffer is too small. Dtls Session: %d", obj->sessionId);
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Cannot process close, rpacket buffer is too small. Dtls Session: %d", obj->sessionId);
 		return(ILibWebRTC_DataChannel_CloseStatus_ERROR);
 	}
 
@@ -4548,12 +5378,12 @@ ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannelEx2(void *WebRTCMo
 			req2->parameterLength = htons((unsigned short)(8 + (2 * streamIdLength))); // One Stream
 			req2->RReqSeqNum = htonl(obj->RREQSEQ++);
 
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP/RECONFIG on Session(%d) LastTSN: %u", obj->sessionId, obj->outtsn - 1);
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Sending Outgoing Reset Request (Req/Res): %u/%u", (unsigned int)ntohl(req->RReqSeqNum), (unsigned int)ntohl(req->RResSeqNum));			
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Sending Incoming Reset Request (Req): %u", (unsigned int)ntohl(req2->RReqSeqNum));
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP/RECONFIG on Session(%d) LastTSN: %u", obj->sessionId, obj->outtsn - 1);
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Sending Outgoing Reset Request (Req/Res): %u/%u", (unsigned int)ntohl(req->RReqSeqNum), (unsigned int)ntohl(req->RResSeqNum));
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "Sending Incoming Reset Request (Req): %u", (unsigned int)ntohl(req2->RReqSeqNum));
 			for (i = 0; i<streamIdLength; ++i)
 			{
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...StreamID: %u", streamIds[i]);
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "...StreamID: %u", streamIds[i]);
 				req->Streams[i] = htons(streamIds[i]);
 				req2->Streams[i] = htons(streamIds[i]);
 			}
@@ -4565,7 +5395,7 @@ ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannelEx2(void *WebRTCMo
 		{
 			// Peer does not support this operation... 
 			retVal = ILibWebRTC_DataChannel_CloseStatus_NOT_SUPPORTED;
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP/RECONFIG on PEER [NOT-SUPPORTED]");
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_SCTP, ILibRemoteLogging_Flags_VerbosityLevel_1, "SCTP/RECONFIG on PEER [NOT-SUPPORTED]");
 		}
 	}
 	else
@@ -4574,6 +5404,13 @@ ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannelEx2(void *WebRTCMo
 	}
 	return(retVal);
 }
+//! Close one or more Data Channels associated with a Peer Connection
+/*!
+	\param WebRTCModule Peer Connection Session
+	\param streamIds Array of Stream IDs to close
+	\param streamIdLength Size of array
+	\return Close Status
+*/
 ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannelEx(void *WebRTCModule, unsigned short *streamIds, int streamIdLength)
 {
 	struct ILibStun_dTlsSession* obj = (struct ILibStun_dTlsSession*)WebRTCModule;
@@ -4585,6 +5422,12 @@ ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannelEx(void *WebRTCMod
 	return(retVal);
 }
 
+//! Close a Data Channel associated with a Peer Connection
+/*!
+	\param WebRTCModule Peer Connection Session
+	\param streamId The Data Channel ID to close
+	\return Close Status
+*/
 ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannel(void *WebRTCModule, unsigned short streamId)
 {
 	return(ILibWebRTC_CloseDataChannelEx(WebRTCModule, &streamId, 1)); // Ignore Klocwork Error, it's not a problem in this case
@@ -4592,9 +5435,15 @@ ILibWebRTC_DataChannel_CloseStatus ILibWebRTC_CloseDataChannel(void *WebRTCModul
 }
 
 
-int ILibSCTP_DoesPeerSupportFeature(void* module, int feature)
+//! Query if an SCTP session supports an optional feature
+/*!
+	\param sctpSession Peer Connection Session
+	\param feature Feature ID (eg: 0xC000 = Partial Reliability)
+	\return 0 = NO, 1 = YES
+*/
+int ILibSCTP_DoesPeerSupportFeature(void* sctpSession, int feature)
 {
-	struct ILibStun_dTlsSession *obj = (struct ILibStun_dTlsSession*)module;
+	struct ILibStun_dTlsSession *obj = (struct ILibStun_dTlsSession*)sctpSession;
 	return(ILibSparseArray_Get(obj->PeerFeatureSet, feature)==NULL?0:1);
 }
 
@@ -4612,38 +5461,49 @@ void ILibStun_CreateDtlsSession(struct ILibStun_Module *obj, int sessionId, int 
 {
 	if (obj->dTlsSessions[sessionId] == NULL) 
 	{ 
-		if ((obj->dTlsSessions[sessionId] = (struct ILibStun_dTlsSession*)malloc(sizeof(struct ILibStun_dTlsSession))) == NULL) ILIBCRITICALEXIT(254); 
+		void *mem;
+		obj->dTlsSessions[sessionId] = ILibMemory_Allocate(sizeof(struct ILibStun_dTlsSession), 8 + sizeof(struct sockaddr_in6), NULL, &mem);
+		obj->dTlsSessions[sessionId]->remoteInterface = (struct sockaddr_in6*)mem;
+		((int*)((char*)mem + sizeof(struct sockaddr_in6)))[0] = 4;
 	}
 	else
 	{
 		sem_destroy(&(obj->dTlsSessions[sessionId]->Lock));
 		ILibWebRTC_DestroySparseArrayTables(obj->dTlsSessions[sessionId]);
-	}
 
-	memset(obj->dTlsSessions[sessionId], 0, sizeof(struct ILibStun_dTlsSession));
-	obj->dTlsSessions[sessionId]->IdentifierFlags = (unsigned short)ILibTransports_Raw_WebRTC;
-	obj->dTlsSessions[sessionId]->Chain = obj->Chain;
-	obj->dTlsSessions[sessionId]->sendPtr = &ILibWebRTC_TransportSend;
-	obj->dTlsSessions[sessionId]->closePtr = &ILibSCTP_Close;
+		memset(obj->dTlsSessions[sessionId], 0, sizeof(struct ILibStun_dTlsSession));
+		obj->dTlsSessions[sessionId]->remoteInterface = (struct sockaddr_in6*)ILibMemory_GetExtraMemory(obj->dTlsSessions[sessionId], sizeof(struct ILibStun_dTlsSession));
+		memset(obj->dTlsSessions[sessionId]->remoteInterface, 0, sizeof(struct sockaddr_in6));
+		memset(ILibMemory_GetExtraMemory(obj->dTlsSessions[sessionId]->remoteInterface, sizeof(struct sockaddr_in6)), 0, ILibMemory_GetExtraMemorySize(ILibMemory_GetExtraMemory(obj->dTlsSessions[sessionId]->remoteInterface, sizeof(struct sockaddr_in6))));
+	}
+	obj->IceStates[iceSlot]->dtlsSession = sessionId;
+	obj->dtlsSessionNextSlot = sessionId + 1;
+	obj->dTlsSessions[sessionId]->Transport.IdentifierFlags = (unsigned short)ILibTransports_Raw_WebRTC;
+	obj->dTlsSessions[sessionId]->Transport.ChainLink.ParentChain = obj->ChainLink.ParentChain;
+	obj->dTlsSessions[sessionId]->Transport.SendPtr = &ILibWebRTC_TransportSend;
+	obj->dTlsSessions[sessionId]->Transport.ClosePtr = &ILibSCTP_Close;
 	//obj->dTlsSessions[sessionId]->closePtr = &ILibWebRTC_CloseDataChannel_ALL;
-	obj->dTlsSessions[sessionId]->pendingPtr = (ILibTransport_PendingBytesToSendPtr)&ILibSCTP_GetPendingBytesToSend;
+	obj->dTlsSessions[sessionId]->Transport.PendingBytesPtr = (ILibTransport_PendingBytesToSendPtr)&ILibSCTP_GetPendingBytesToSend;
 
 	obj->dTlsSessions[sessionId]->iceStateSlot = iceSlot;
 	obj->dTlsSessions[sessionId]->state = 4; //Bryan: Changed this to 4 from 1, becuase we need to call SSL_do_handshake to determine when DTLS was successful
 	obj->dTlsSessions[sessionId]->sessionId = sessionId;
 	sem_init(&(obj->dTlsSessions[sessionId]->Lock), 0, 1);
 	obj->dTlsSessions[sessionId]->parent = obj;
-	memcpy(&(obj->dTlsSessions[sessionId]->remoteInterface), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family));
+	memcpy_s(obj->dTlsSessions[sessionId]->remoteInterface, sizeof(struct sockaddr_in6), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family));
 	obj->dTlsSessions[sessionId]->senderCredits = 4 * ILibRUDP_StartMTU;
 	obj->dTlsSessions[sessionId]->congestionWindowSize = 4 * ILibRUDP_StartMTU;
 	obj->dTlsSessions[sessionId]->ssl = SSL_new(obj->SecurityContext);
+
+	SSL_set_ex_data(obj->dTlsSessions[sessionId]->ssl, ILibStunClientIndex, obj);
+
 	if ((obj->dTlsSessions[sessionId]->rpacket = (char*)malloc(4096)) == NULL) ILIBCRITICALEXIT(254);
 	obj->dTlsSessions[sessionId]->rpacketsize = 4096;
 
 	ILibWebRTC_CreateSparseArrayTables(obj->dTlsSessions[sessionId]);
-	obj->dTlsSessions[sessionId]->receiveHoldBuffer = ILibLinkedList_Create();
+	obj->dTlsSessions[sessionId]->receiveHoldBuffer = ILibLinkedList_CreateEx(sizeof(int));
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "New DTLS Session: %d linked to IceStateSlot: %d using %s:%u", sessionId, iceSlot, ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "New DTLS Session: %d linked to IceStateSlot: %d using %s:%u", sessionId, iceSlot, ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), htons(remoteInterface->sin6_port));
 }
 
 void ILibStun_InitiateDTLS(struct ILibStun_IceState *IceState, int IceSlot, struct sockaddr_in6* remoteInterface)
@@ -4671,23 +5531,23 @@ void ILibStun_InitiateDTLS(struct ILibStun_IceState *IceState, int IceSlot, stru
 	BIO_set_mem_eof_return(write, -1);
 
 	// Bind everything
-	SSL_set_bio(obj->dTlsSessions[j]->ssl, read, write);
+	SSL_set_bio(obj->dTlsSessions[j]->ssl, read, write); // MS Static Code Analysis erroneously reports this could be NULL, becuase it was too dumb to see it was initialized in ILibStun_CreateDtlsSession()
 	SSL_set_connect_state(obj->dTlsSessions[j]->ssl);
 	l = SSL_do_handshake(obj->dTlsSessions[j]->ssl);
-	if (l <= 0) { l = SSL_get_error(obj->dTlsSessions[j]->ssl, l); }
+	if (l <= 0) { l = SSL_get_error(obj->dTlsSessions[j]->ssl, (int)l); }
 
 	if (l == SSL_ERROR_WANT_READ)
 	{
 		while (BIO_ctrl_pending(write) > 0)
 		{
 			i = BIO_read(write, tbuffer, 4096);
-			if (IceState->useTurn == 0)
+			if ((((int*)ILibMemory_GetExtraMemory(remoteInterface, sizeof(struct sockaddr_in6)))[0] & ILibTURN_FLAGS_DATA_INDICATION) == ILibTURN_FLAGS_DATA_INDICATION)
 			{
-				ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)remoteInterface, tbuffer, i, ILibAsyncSocket_MemoryOwnership_USER);
+				ILibTURN_SendIndication(obj->mTurnClientModule, remoteInterface, tbuffer, 0, i);
 			}
 			else
 			{
-				ILibTURN_SendIndication(obj->mTurnClientModule, remoteInterface, tbuffer, 0, i);
+				ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)obj)->UDP, (struct sockaddr*)remoteInterface, tbuffer, i, ILibAsyncSocket_MemoryOwnership_USER);
 			}
 		}
 		// We're going to drop out now, becuase we need to check for received UDP data
@@ -4706,9 +5566,9 @@ int ILibStun_GetDtlsSessionSlotForIceState(struct ILibStun_Module *obj, struct I
 		{
 			for (i = 0; i < ice->hostcandidatecount; ++i)
 			{
-				if (ice->hostcandidates[i].addr == ((struct sockaddr_in*)&session->remoteInterface)->sin_addr.s_addr)
+				if (ice->hostcandidates[i].addr == ((struct sockaddr_in*)session->remoteInterface)->sin_addr.s_addr)
 				{
-					if (ice->hostcandidates[i].port == session->remoteInterface.sin6_port) { return x; }
+					if (ice->hostcandidates[i].port == session->remoteInterface->sin6_port) { return x; }
 				}
 			}
 		}
@@ -4716,46 +5576,77 @@ int ILibStun_GetDtlsSessionSlotForIceState(struct ILibStun_Module *obj, struct I
 	return -1;
 }
 
+//! Get the local ICE Username for an active Peer Connection
+/*!
+	\param WebRTCModule Peer Connection Session
+	\param[in,out] username Must by at least 8 bytes big
+*/
 void ILibStun_DTLS_GetIceUserName(void* WebRTCModule, char* username)
 {
 	struct ILibStun_dTlsSession* session = (struct ILibStun_dTlsSession*)WebRTCModule;
-	memcpy(username, session->parent->IceStates[session->iceStateSlot]->userAndKey + 1, 8);
+	memcpy_s(username, 8, session->parent->IceStates[session->iceStateSlot]->userAndKey + 1, 8);
 }
 
 void ILibStun_DTLS_Success_OnCreateTURNChannelBinding(ILibTURN_ClientModule turnModule, unsigned short channelNumber, int success, void* user)
 {
 	struct ILibStun_Module *obj = (struct ILibStun_Module*)user;
+	struct timeval tv;
 
 	UNREFERENCED_PARAMETER(turnModule);
 
+	gettimeofday(&tv, NULL);
+	obj->dTlsSessions[(int)channelNumber]->channelBindingRefresh = tv.tv_sec;
 	if (success != 0)
 	{
 		// ChannelBinding Creation was successful
-		if (obj->IceStates[obj->dTlsSessions[(int)channelNumber]->iceStateSlot]->dtlsInitiator != 0)
-		{
-			// We must initiate SCTP
-			ILibStun_InitiateSCTP(obj, (int)channelNumber, 5000, 5000);
-		}
-		else
-		{
-			// Start the timer, for SCTP Heartbeats
-			ILibLifeTime_AddEx(obj->Timer, obj->dTlsSessions[(int)channelNumber], 100, &ILibStun_SctpOnTimeout, NULL);
-		}
+		((int*)ILibMemory_GetExtraMemory(obj->dTlsSessions[(int)channelNumber]->remoteInterface, sizeof(struct sockaddr_in6)))[0] = (int)channelNumber | ILibTURN_FLAGS_CHANNEL_DATA;
+	}
+	else
+	{
+		((int*)ILibMemory_GetExtraMemory(obj->dTlsSessions[(int)channelNumber]->remoteInterface, sizeof(struct sockaddr_in6)))[0] = ILibTURN_FLAGS_DATA_INDICATION;
+	}
+
+	if (obj->IceStates[obj->dTlsSessions[(int)channelNumber]->iceStateSlot]->dtlsInitiator != 0)
+	{
+		// We must initiate SCTP
+		ILibStun_InitiateSCTP(obj, (int)channelNumber, 5000, 5000);
+	}
+	else
+	{
+		// Start the timer, for SCTP Heartbeats
+		ILibLifeTime_AddEx(obj->Timer, ILibWebRTC_DTLS_TO_SCTP_HEARTBEAT_TIMER_OBJECT(obj->dTlsSessions[(int)channelNumber]), 100, &ILibStun_SctpOnTimeout, NULL);
+	}
+	
+}
+void ILibStun_DTLS_Success_OnCreateTURNChannelBinding2(ILibTURN_ClientModule turnModule, unsigned short channelNumber, int success, void* user)
+{
+	struct ILibStun_Module *obj = (struct ILibStun_Module*)user;
+	struct timeval tv;
+
+	UNREFERENCED_PARAMETER(turnModule);
+
+	gettimeofday(&tv, NULL);
+	obj->dTlsSessions[(int)channelNumber]->channelBindingRefresh = tv.tv_sec;
+	if (success != 0)
+	{
+		// ChannelBinding Creation was successful
+		((int*)ILibMemory_GetExtraMemory(obj->dTlsSessions[(int)channelNumber]->remoteInterface, sizeof(struct sockaddr_in6)))[0] = (int)channelNumber | ILibTURN_FLAGS_CHANNEL_DATA;
 	}
 }
-
 void ILibStun_DTLS_Success(struct ILibStun_Module *obj, int session, struct sockaddr_in6 *remoteInterface)
 {
 	int IceSlot;
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "DTLS Session: %d [Handshake SUCCESS]", session);
+	ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "DTLS Session: %d [Handshake SUCCESS]", session);
 
 	obj->dTlsSessions[session]->SSTHRESH = 4 * ILibRUDP_StartMTU;
 
 	IceSlot = obj->dTlsSessions[session]->iceStateSlot;
 	if (IceSlot >= 0)
 	{
-		if (obj->IceStates[IceSlot]->useTurn != 0)
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...%s", obj->IceStates[IceSlot]->dtlsInitiator == 0 ? "DTLS Server" : "DTLS Client");
+
+		if ((((int*)ILibMemory_GetExtraMemory(remoteInterface, sizeof(struct sockaddr_in6)))[0] & ILibTURN_FLAGS_DATA_INDICATION) == ILibTURN_FLAGS_DATA_INDICATION)
 		{
 			// We need to create a ChannelBinding for this DTLS Session
 			ILibTURN_CreateChannelBinding(obj->mTurnClientModule, (unsigned short)session, remoteInterface, ILibStun_DTLS_Success_OnCreateTURNChannelBinding, obj);
@@ -4768,7 +5659,7 @@ void ILibStun_DTLS_Success(struct ILibStun_Module *obj, int session, struct sock
 		else
 		{
 			// Start the timer, for SCTP Heartbeats
-			ILibLifeTime_AddEx(obj->Timer, obj->dTlsSessions[session], 100, &ILibStun_SctpOnTimeout, NULL);
+			ILibLifeTime_AddEx(obj->Timer, ILibWebRTC_DTLS_TO_SCTP_HEARTBEAT_TIMER_OBJECT(obj->dTlsSessions[session]), 100, &ILibStun_SctpOnTimeout, NULL);
 		}
 
 		// Since DTLS is established, we can stop sending periodic STUNS on the ICE Offer Candidates
@@ -4778,7 +5669,7 @@ void ILibStun_DTLS_Success(struct ILibStun_Module *obj, int session, struct sock
 		if (obj->consentFreshnessDisabled == 0) // TODO: Bryan: We should really put this after SCTP has been established...
 		{
 			// Start Consent Freshness Algorithm. Wait for the Timeout, then send first packet
-			ILibLifeTime_Add(obj->Timer, obj->dTlsSessions[session] + 1, ILibStun_MaxConsentFreshnessTimeoutSeconds, ILibStun_WebRTC_ConsentFreshness_Start, NULL);
+			ILibLifeTime_Add(obj->Timer, ILibWebRTC_DTLS_TO_CONSENT_FRESHNESS_TIMER_OBJECT(obj->dTlsSessions[session]), ILibStun_MaxConsentFreshnessTimeoutSeconds, ILibStun_WebRTC_ConsentFreshness_Start, NULL);
 		}
 	}
 }
@@ -4802,7 +5693,7 @@ void ILibStun_OnUDP(ILibAsyncUDPSocket_SocketModule socketModule, char* buffer, 
 	if (socketModule == NULL && remoteInterface->sin6_family == 0)
 	{
 		existingSession = (int)remoteInterface->sin6_port;
-		remoteInterface = &(obj->dTlsSessions[existingSession]->remoteInterface);
+		remoteInterface = obj->dTlsSessions[existingSession]->remoteInterface;
 	}
 
 	// Process STUN Packet
@@ -4820,7 +5711,7 @@ void ILibStun_OnUDP(ILibAsyncUDPSocket_SocketModule socketModule, char* buffer, 
 			{
 				if (obj->dTlsSessions[obj->IceStates[i]->dtlsSession] != NULL)
 				{
-					if (memcmp(&(obj->dTlsSessions[obj->IceStates[i]->dtlsSession]->remoteInterface), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family)) == 0)
+					if (memcmp(obj->dTlsSessions[obj->IceStates[i]->dtlsSession]->remoteInterface, remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family)) == 0)
 					{
 						existingSession = obj->IceStates[i]->dtlsSession;
 						break;
@@ -4846,11 +5737,11 @@ void ILibStun_OnUDP(ILibAsyncUDPSocket_SocketModule socketModule, char* buffer, 
 							{
 								if (obj->IceStates[i]->hostcandidateResponseFlag[cx] == 1)
 								{
-									ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "DTLS Session: %d switching candidates from: %s:u", obj->IceStates[i]->dtlsSession, ILibRemoteLogging_ConvertAddress((struct sockaddr*)(&obj->dTlsSessions[obj->IceStates[i]->dtlsSession]->remoteInterface)), ntohs(obj->dTlsSessions[obj->IceStates[i]->dtlsSession]->remoteInterface.sin6_port));
-									ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...TO: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
+									ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "DTLS Session: %d switching candidates from: %s:%u", obj->IceStates[i]->dtlsSession, ILibRemoteLogging_ConvertAddress((struct sockaddr*)(obj->dTlsSessions[obj->IceStates[i]->dtlsSession]->remoteInterface)), ntohs(obj->dTlsSessions[obj->IceStates[i]->dtlsSession]->remoteInterface->sin6_port));
+									ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...TO: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
 									
 									// This Candidate was Allowed, let's switch to this candidate
-									memcpy(&(obj->dTlsSessions[obj->IceStates[i]->dtlsSession]->remoteInterface), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family));
+									memcpy_s(obj->dTlsSessions[obj->IceStates[i]->dtlsSession]->remoteInterface, sizeof(struct sockaddr_in6), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family));
 									existingSession = obj->IceStates[i]->dtlsSession;
 									break;
 								}
@@ -4878,24 +5769,17 @@ void ILibStun_OnUDP(ILibAsyncUDPSocket_SocketModule socketModule, char* buffer, 
 						if (obj->IceStates[i]->hostcandidateResponseFlag[cx] == 1)
 						{
 							// This Candidate was Allowed, find a free dTLS session slot
-							for (dtlsSessionId = 0; dtlsSessionId < ILibSTUN_MaxSlots; dtlsSessionId++)
-							{
-								if (obj->dTlsSessions[dtlsSessionId] == NULL || obj->dTlsSessions[dtlsSessionId]->state == 0)
-								{
-									obj->IceStates[i]->dtlsSession = dtlsSessionId;
-									iceSlotId = i;									
-									break;
-								}
-							}
+							dtlsSessionId = ILibStun_GetFreeSessionSlot(obj);
+							iceSlotId = i;
 							if (dtlsSessionId == ILibSTUN_MaxSlots) 
 							{
-								ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, " ABORTING: No free dTLS Session Slots");
+								ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, " ABORTING: No free dTLS Session Slots");
 								return; // No free slots
 							}
 						}
 						else
 						{
-							ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...DTLS Packet from: %s:%u was using a disallowed candidate", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...DTLS Packet from: %s:%u was using a disallowed candidate", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
 							return; // This candidate was not allowed
 						}
 						i = ILibSTUN_MaxSlots;
@@ -4907,8 +5791,34 @@ void ILibStun_OnUDP(ILibAsyncUDPSocket_SocketModule socketModule, char* buffer, 
 
 		if (dtlsSessionId < 0)
 		{
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...DTLS Packet from: %s:%u has no valid candidates", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
-			return; // No valid candidates were found
+			// No valid candidates were found
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...DTLS Packet from: %s:%u has no valid candidates", ILibRemoteLogging_ConvertAddress((struct sockaddr*)remoteInterface), ntohs(remoteInterface->sin6_port));
+			
+			// But let's check to see if we received any ICE requests on this Address/Port combination (Maybe the port in the candidate list is stale)
+			for (i = 0; i < ILibSTUN_MaxSlots; ++i)
+			{
+				if (obj->IceStates[i] != NULL && obj->IceStates[i]->dtlsSession < 0)
+				{
+					// ICE State object with no DTLS Session Established
+					for (cx = 0; cx < STUN_NUM_ADDR; ++cx)
+					{
+						if (obj->IceStates[i]->ReceivedAddr[cx].sin6_family == remoteInterface->sin6_family && memcmp(&(obj->IceStates[i]->ReceivedAddr[cx]), remoteInterface, INET_SOCKADDR_LENGTH(remoteInterface->sin6_family)) == 0)
+						{
+							ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "......because the port mapping differs from the specified candidates");
+							
+							// Find a free DTLS Session ID
+							iceSlotId = i;
+							dtlsSessionId = ILibStun_GetFreeSessionSlot(obj);
+						}
+					}
+				}
+			}
+			if (dtlsSessionId < 0 || dtlsSessionId == ILibSTUN_MaxSlots) 
+			{
+				// DTLS Session ABORT, becuase either the connection was not allowed, or the slots are full
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "......aborting");
+				return; 
+			}
 		}
 
 		j = dtlsSessionId;
@@ -4935,11 +5845,11 @@ void ILibStun_OnUDP(ILibAsyncUDPSocket_SocketModule socketModule, char* buffer, 
 			//
 			// Handshake Failed!
 			//			
-			ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Handshake FAILED");
+			ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Handshake FAILED");
 			while ((err = ERR_get_error()) != 0) 
 			{
 				ERR_error_string_n(err, ILibScratchPad, sizeof(ILibScratchPad));
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Reason: %s", ILibScratchPad);
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Reason: %s", ILibScratchPad);
 			}				   
 			existingSession = j; //ToDo: Bryan. Figure out what to do in this case
 			break;
@@ -4993,11 +5903,11 @@ void ILibStun_OnUDP(ILibAsyncUDPSocket_SocketModule socketModule, char* buffer, 
 			{
 			case 0:
 				// Handshake Failed!
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Handshake FAILED");
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Handshake FAILED");
 				while ((err = ERR_get_error()) != 0) 
 				{
 					ERR_error_string_n(err, ILibScratchPad, sizeof(ILibScratchPad));
-					ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Reason: %s", ILibScratchPad);
+					ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "......Reason: %s", ILibScratchPad);
 				}				   
 				// TODO: We should probably do something
 				break;
@@ -5023,7 +5933,7 @@ void ILibStun_OnUDP(ILibAsyncUDPSocket_SocketModule socketModule, char* buffer, 
 			else if (i == 0)
 			{
 				// Session closed, perform cleanup
-				ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "DTLS Session: %d was closed", existingSession);
+				ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "DTLS Session: %d was closed", existingSession);
 				ILibStun_SctpDisconnect(obj, existingSession);
 				return;
 			}
@@ -5068,38 +5978,89 @@ int ILibStunClient_dTLS_verify_callback(int ok, X509_STORE_CTX *ctx)
 {
 	int i, l = 32;
 	char thumbprint[32];
-
+	SSL *ssl = (SSL*)X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+	ILibStun_Module *stunModule = SSL_get_ex_data(ssl, ILibStunClientIndex);
+	
 	// Validate the incoming certificate against known allowed fingerprints.
 	UNREFERENCED_PARAMETER(ok);
 
-	X509_digest(ctx->current_cert, EVP_get_digestbyname("sha256"), (unsigned char*)thumbprint, (unsigned int*)&l);
-	if (l != 32 || g_stunModule == NULL) return 0;
-	ILibRemoteLogging_printf(ILibChainGetLogger(g_stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "Verifying Inbound Cert: %s", ILibRemoteLogging_ConvertToHex(thumbprint, 32));
+	// X509_digest(ctx->current_cert, EVP_get_digestbyname("sha256"), (unsigned char*)thumbprint, (unsigned int*)&l); // OpenSSL 1.0
+	X509_digest(X509_STORE_CTX_get_current_cert(ctx), EVP_get_digestbyname("sha256"), (unsigned char*)thumbprint, (unsigned int*)&l); // OpenSSL 1.1
+	if (l != 32 || stunModule == NULL) return 0;
+	ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "Verifying Inbound Cert: %s", ILibRemoteLogging_ConvertToHex(thumbprint, 32));
 	
 	for (i = 0; i < ILibSTUN_MaxSlots; i++)
 	{
-		if (g_stunModule->IceStates[i] != NULL && g_stunModule->IceStates[i]->dtlscerthashlen == 32 && memcmp(g_stunModule->IceStates[i]->dtlscerthash, thumbprint, 32) == 0)
+		if (stunModule->IceStates[i] != NULL && stunModule->IceStates[i]->dtlscerthashlen == 32 && memcmp(stunModule->IceStates[i]->dtlscerthash, thumbprint, 32) == 0)
 		{
-			ILibRemoteLogging_printf(ILibChainGetLogger(g_stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Matches Slot[%d]", i);
+			ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...Matches Slot[%d]", i);
 			return 1;
 		}
 	}
-	ILibRemoteLogging_printf(ILibChainGetLogger(g_stunModule->Chain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...FAILED (No Matches)");
+	ILibRemoteLogging_printf(ILibChainGetLogger(stunModule->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_DTLS, ILibRemoteLogging_Flags_VerbosityLevel_1, "...FAILED (No Matches)");
 	return 0;
 }
 
 //
 // TURN Client Support for WebRTC
 //
-void ILibWebRTC_OnTurnConnect(ILibTURN_ClientModule turnModule, int success)
+typedef struct ILibTURN_TurnClientObject
 {
-	if (success != 0) { ILibTURN_Allocate(turnModule, ILibTURN_TransportTypes_UDP); }
+	ILibChain_Link ChainLink;
+	ILibTURN_OnConnectTurnHandler OnConnectTurnCallback;
+	ILibTURN_OnAllocateHandler OnAllocateCallback;
+	ILibTURN_OnDataIndicationHandler OnDataIndicationCallback;
+	ILibTURN_OnChannelDataHandler OnChannelDataCallback;
+
+	void* TAG;
+	void* tcpClient;
+	char* username;
+	int usernameLen;
+	char* password;
+	int passwordLen;
+	void* transactionData;
+	void* sendOkStack;
+
+	char* currentNonce;
+	int currentNonceLen;
+	char* currentRealm;
+	int currentRealmLen;
+}ILibTURN_TurnClientObject;
+void ILibWebRTC_TurnAllocationRefresh(void *obj);
+ILibTURN_ClientModule ILibStun_GetTurnClient(void *stunModule)
+{
+	return(((ILibStun_Module*)stunModule)->mTurnClientModule);
 }
 
+void ILibWebRTC_OnTurnConnect(ILibTURN_ClientModule turnModule, int success)
+{
+	ILibRemoteLogging_printf(ILibChainGetLogger(((ILibTURN_TurnClientObject*)turnModule)->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "TURN: Connect Status = %s", success == 0 ? "FAIL" : "SUCCESS");
+	if (success != 0) { ILibTURN_Allocate(turnModule, ILibTURN_TransportTypes_UDP); }
+}
+void ILibWebRTC_OnTurnAllocateRefresh(ILibTURN_ClientModule turnModule, int Lifetime, void *user)
+{
+	struct ILibStun_Module* stun = (struct ILibStun_Module*)ILibTURN_GetTag(turnModule);
+	ILibLifeTime_Remove(stun->Timer, turnModule);
+	ILibLifeTime_Add(stun->Timer, turnModule, Lifetime / 5 * 4, ILibWebRTC_TurnAllocationRefresh, NULL);
+
+	UNREFERENCED_PARAMETER(user);
+}
+void ILibWebRTC_TurnAllocationRefresh(void *obj)
+{
+	ILibTURN_ClientModule turnModule = (ILibTURN_ClientModule*)obj;
+	ILibTURN_RefreshAllocation(turnModule, ILibWebRTC_OnTurnAllocateRefresh, NULL);
+}
 void ILibWebRTC_OnTurnAllocate(ILibTURN_ClientModule turnModule, int Lifetime, struct sockaddr_in6* RelayedTransportAddress)
 {
 	struct ILibStun_Module* stun = (struct ILibStun_Module*)ILibTURN_GetTag(turnModule);
-	if (Lifetime > 0) { memcpy(&(stun->mRelayedTransportAddress), RelayedTransportAddress, sizeof(struct sockaddr_in6)); }
+	ILibRemoteLogging_printf(ILibChainGetLogger(((ILibTURN_TurnClientObject*)turnModule)->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "TURN: Allocated: %s for duration: %d", ILibRemoteLogging_ConvertAddress((struct sockaddr*)RelayedTransportAddress), Lifetime);
+	stun->allocationLifetime = Lifetime;
+	if (Lifetime > 0) 
+	{ 
+		memcpy_s(&(stun->mRelayedTransportAddress), sizeof(struct sockaddr_in6), RelayedTransportAddress, sizeof(struct sockaddr_in6)); 
+		ILibLifeTime_Remove(stun->Timer, turnModule);
+		ILibLifeTime_Add(stun->Timer, turnModule, Lifetime / 5 * 4, ILibWebRTC_TurnAllocationRefresh, NULL);
+	}
 }
 
 void ILibWebRTC_OnTurnDataIndication(ILibTURN_ClientModule turnModule, struct sockaddr_in6* remotePeer, char* buffer, int offset, int length)
@@ -5119,6 +6080,16 @@ void ILibWebRTC_OnTurnChannelData(ILibTURN_ClientModule turnModule, unsigned sho
 	ILibStun_OnUDP(NULL, buffer + offset, length, &fakeAddress, stunModule, NULL, NULL);
 }
 
+//! Configure a TURN Server for use with ICE
+/*!
+	\param stunModule Stun/ICE Client
+	\param turnServer The TURN Server to configure
+	\param username TURN Server username
+	\param usernameLength TURN Server username length
+	\param password TURN Server Password
+	\param passwordLength TURN Server password length
+	\param turnFlags TURN Server configuration flags
+*/
 void ILibWebRTC_SetTurnServer(void* stunModule, struct sockaddr_in6* turnServer, char* username, int usernameLength, char* password, int passwordLength, ILibWebRTC_TURN_ConnectFlags turnFlags)
 {
 	struct ILibStun_Module* stun = (struct ILibStun_Module*)stunModule;
@@ -5129,10 +6100,10 @@ void ILibWebRTC_SetTurnServer(void* stunModule, struct sockaddr_in6* turnServer,
 		switch (turnServer->sin6_family)
 		{
 		case AF_INET:
-			memcpy(&(stun->mTurnServerAddress), turnServer, sizeof(struct sockaddr_in));
+			memcpy_s(&(stun->mTurnServerAddress), sizeof(struct sockaddr_in6), turnServer, sizeof(struct sockaddr_in));
 			break;
 		case AF_INET6:
-			memcpy(&(stun->mTurnServerAddress), turnServer, sizeof(struct sockaddr_in6));
+			memcpy_s(&(stun->mTurnServerAddress), sizeof(struct sockaddr_in6), turnServer, sizeof(struct sockaddr_in6));
 			break;
 		}
 	}
@@ -5144,7 +6115,7 @@ void ILibWebRTC_SetTurnServer(void* stunModule, struct sockaddr_in6* turnServer,
 	if (usernameLength > 0 && username != NULL)
 	{
 		if ((stun->turnUsername = (char*)malloc(usernameLength + 1)) == NULL){ ILIBCRITICALEXIT(254); }
-		memcpy(stun->turnUsername, username, usernameLength);
+		memcpy_s(stun->turnUsername, usernameLength + 1, username, usernameLength);
 		stun->turnUsername[usernameLength] = 0;
 		stun->turnUsernameLength = usernameLength;
 	}
@@ -5156,7 +6127,7 @@ void ILibWebRTC_SetTurnServer(void* stunModule, struct sockaddr_in6* turnServer,
 	if (passwordLength > 0 && password != NULL)
 	{
 		if ((stun->turnPassword = (char*)malloc(passwordLength + 1)) == NULL){ ILIBCRITICALEXIT(254); }
-		memcpy(stun->turnPassword, password, passwordLength);
+		memcpy_s(stun->turnPassword, passwordLength + 1, password, passwordLength);
 		stun->turnPassword[passwordLength] = 0;
 		stun->turnPasswordLength = passwordLength;
 	}
@@ -5195,7 +6166,12 @@ void ILibWebRTC_DisableConsentFreshness(void *stunModule)
 	struct ILibStun_Module *obj = (struct ILibStun_Module*)stunModule;
 	obj->consentFreshnessDisabled = 1;
 }
-
+//! Set Security Attributes for STUN/ICE/WebRTC
+/*!
+	\param StunModule The Stun client to update (obtained from ILibStunClient_Start)
+	\param securityContext The SSL Security Context
+	\param certThumbprintSha256 The thumbprint of the local DTLS certificate
+*/
 void ILibStunClient_SetOptions(void* StunModule, SSL_CTX* securityContext, char* certThumbprintSha256)
 {
 	struct ILibStun_Module *obj = (struct ILibStun_Module*)StunModule;
@@ -5203,36 +6179,54 @@ void ILibStunClient_SetOptions(void* StunModule, SSL_CTX* securityContext, char*
 	obj->CertThumbprint = certThumbprintSha256;
 	obj->CertThumbprintLength = 32; // SHA256
 
+	if(ILibStunClientIndex < 0) 
+	{
+		ILibStunClientIndex = SSL_get_ex_new_index(0, "ILibStun_Module index", NULL, NULL, NULL);
+	}
+
 	if (obj->SecurityContext != NULL)
 	{
-		SSL_CTX_set_ecdh_auto(obj->SecurityContext, 1);
+		//SSL_CTX_set_ecdh_auto(obj->SecurityContext, 1);	// DEPRECATED in OpenSSL/1.1.x
 		SSL_CTX_set_session_cache_mode(obj->SecurityContext, SSL_SESS_CACHE_OFF);
 		SSL_CTX_set_read_ahead(obj->SecurityContext, 1);
 		SSL_CTX_set_verify(obj->SecurityContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, ILibStunClient_dTLS_verify_callback);
 	}
 }
-
+SSL_CTX* ILibStunClient_GetSSLCTX(void *StunModule)
+{
+	return (((ILibStun_Module*)StunModule)->SecurityContext);
+}
+//! Creates a new instance of a Stun Client
+/*!
+	\param Chain The microstack chain to add this module to
+	\param LocalPort The local UDP port to bind the stun client to. (0 = Random)
+	\param OnResult Callback to deliver STUN Results to
+	\return StunModule
+*/
 void* ILibStunClient_Start(void *Chain, unsigned short LocalPort, ILibStunClient_OnResult OnResult)
 {
 	struct ILibStun_Module *obj;
 
 	if ((obj = (struct ILibStun_Module*)malloc(sizeof(struct ILibStun_Module))) == NULL) ILIBCRITICALEXIT(254);
 	memset(obj, 0, sizeof(struct ILibStun_Module));
-
-	ILibAddToChain(Chain, obj);
+	obj->State = STUN_STATUS_NOT_TESTED;
+	obj->StunUsers = ILibLinkedList_Create();
 
 	obj->OnResult = OnResult;
 	obj->LocalIf.sin_family = AF_INET;
 	obj->LocalIf.sin_port = htons(LocalPort);
 	obj->LocalIf6.sin6_family = AF_INET6;
 	obj->LocalIf6.sin6_port = htons(LocalPort);
-	obj->Chain = Chain;
-	obj->Destroy = &ILibStun_OnDestroy;
+	obj->ChainLink.ParentChain = Chain;
+	obj->ChainLink.DestroyHandler = &ILibStun_OnDestroy;
 	obj->UDP = ILibAsyncUDPSocket_CreateEx(Chain, ILibRUDP_MaxMTU, (struct sockaddr*)&(obj->LocalIf), ILibAsyncUDPSocket_Reuse_EXCLUSIVE, &ILibStun_OnUDP, NULL, obj);
 	if (obj->UDP == NULL) { free(obj); return NULL; }
 #ifdef WIN32
 	obj->UDP6 = ILibAsyncUDPSocket_CreateEx(Chain, ILibRUDP_MaxMTU, (struct sockaddr*)&(obj->LocalIf6), ILibAsyncUDPSocket_Reuse_EXCLUSIVE, &ILibStun_OnUDP, NULL, obj);
+	if (obj->UDP6 == NULL) { free(obj); return NULL; }
 #endif
+
+	ILibAddToChain(Chain, obj);
 
 	if (LocalPort == 0)
 	{
@@ -5243,14 +6237,12 @@ void* ILibStunClient_Start(void *Chain, unsigned short LocalPort, ILibStunClient
 	}
 
 	obj->Timer = ILibGetBaseTimer(Chain);
-	obj->State = STUN_STATUS_CHECKING_UDP_CONNECTIVITY;
 	util_random(32, obj->Secret); // Random used to generate integrity keys
 
 	// Init TURN Client
 	obj->mTurnClientModule = ILibTURN_CreateTurnClient(Chain, ILibWebRTC_OnTurnConnect, ILibWebRTC_OnTurnAllocate, ILibWebRTC_OnTurnDataIndication, ILibWebRTC_OnTurnChannelData);
 	ILibTURN_SetTag(obj->mTurnClientModule, obj);
 
-	g_stunModule = obj;
 	return obj;
 }
 
@@ -5264,100 +6256,132 @@ void ILibStun_OnTimeout(void *object)
 		break;
 	case STUN_STATUS_CHECKING_UDP_CONNECTIVITY:
 		// No UDP connectivity
-		if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Unknown, NULL, obj->user); }
-		ILibStun_OnCompleted(obj);
+		ILibStun_FireResults(obj, ILibStun_Results_Unknown, NULL); 
 		break;
 	case STUN_STATUS_CHECKING_FULL_CONE_NAT:
 	{
 		// We're not supposed to trigger this case. If we did, it means the StunSever we are using does not implement RFC5389/5780
-		if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_RFC5780_NOT_IMPLEMENTED, (struct sockaddr_in*)&(obj->Public), obj->user); }
-		ILibStun_OnCompleted(obj);
+		ILibStun_FireResults(obj, ILibStun_Results_RFC5780_NOT_IMPLEMENTED, (struct sockaddr_in*)&(obj->Public)); 
 	}
 		break;
 	case STUN_STATUS_CHECKING_RESTRICTED_NAT:
 		// Port Restricted NAT
-		if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Port_Restricted_NAT, (struct sockaddr_in*)&(obj->Public), obj->user); }
-		ILibStun_OnCompleted(obj);
+		ILibStun_FireResults(obj, ILibStun_Results_Port_Restricted_NAT, (struct sockaddr_in*)&(obj->Public)); 
 		break;
 	case STUN_STATUS_CHECKING_SYMETRIC_NAT:
 		// Symetric NAT
-		if (obj->OnResult != NULL) { obj->OnResult(obj, ILibStun_Results_Symetric_NAT, (struct sockaddr_in*)&(obj->Public), obj->user); }		// NOTE: Changed "ILibStun_Results_Unknown" that was here, is that ok??
-		ILibStun_OnCompleted(obj);
+		ILibStun_FireResults(obj, ILibStun_Results_Symetric_NAT, (struct sockaddr_in*)&(obj->Public)); 	// NOTE: Changed "ILibStun_Results_Unknown" that was here, is that ok??
 		break;
 	}
 }
+ILibStunClient_PreviousResults ILibStunClient_CheckPreviousStunResults(ILibStun_Module *obj, struct sockaddr_in* StunServer, int flags, void *user)
+{
+	ILibStunClient_PreviousResults RetVal = ILibStunClient_PreviousResults_NeverTested;
 
+	ILibLinkedList_Lock(obj->StunUsers);
+	if (obj->State == STUN_STATUS_NOT_TESTED)
+	{
+		memcpy_s(&(obj->StunServer), sizeof(struct sockaddr_in6), StunServer, INET_SOCKADDR_LENGTH(StunServer->sin_family));
+		ILibLinkedList_AddTail(obj->StunUsers, user);
+		obj->State = STUN_STATUS_CHECKING_UDP_CONNECTIVITY;
+		ILibRemoteLogging_printf(ILibChainGetLogger(obj->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Performing STUN [Flags=%04X] with: %s:%u", flags, ILibRemoteLogging_ConvertAddress((struct sockaddr*)StunServer), ntohs(StunServer->sin_port));
+		ILib_Stun_SendAttributeChangeRequest(obj, (struct sockaddr*)&(obj->StunServer), flags);
+		ILibLifeTime_Add(obj->Timer, obj, ILibStunClient_TIMEOUT, &ILibStun_OnTimeout, NULL);
+		RetVal = ILibStunClient_PreviousResults_NeverTested;
+	}
+	else if (obj->State == STUN_STATUS_COMPLETE)
+	{
+		RetVal = ILibStunClient_PreviousResults_ValidResults;
+	}
+	else
+	{
+		// Add to the UserList, because there is already a STUN in process... We want a piece of that action!
+		ILibLinkedList_AddTail(obj->StunUsers, user);
+	}
+	ILibLinkedList_UnLock(obj->StunUsers);
+
+	if (RetVal == ILibStunClient_PreviousResults_ValidResults)
+	{
+		// STUN was recently completed, so we can just immediately signal the previous results
+		if (obj->OnResult != NULL) { obj->OnResult(obj, obj->StunResult, (struct sockaddr_in*)&(obj->Public), user); }
+	}
+	return(RetVal);
+}
+
+//! Attempt to determine NAT Type
+/*!
+	\param StunModule Stun Client module
+	\param StunServer The Stun server to utilize in the query
+	\param user Custom user state data
+*/
 void ILibStunClient_PerformNATBehaviorDiscovery(void* StunModule, struct sockaddr_in* StunServer, void *user)
 {
 	struct ILibStun_Module *obj = (struct ILibStun_Module*)StunModule;
 	if (StunServer->sin_family != AF_INET) return;
-	memcpy(&(obj->StunServer), StunServer, INET_SOCKADDR_LENGTH(StunServer->sin_family));
-	obj->user = user;
-	obj->State = STUN_STATUS_CHECKING_UDP_CONNECTIVITY;
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Performing NAT Behavior Discovery with: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)StunServer), ntohs(StunServer->sin_port));
-	ILib_Stun_SendAttributeChangeRequest(obj, (struct sockaddr*)&(obj->StunServer), 0x8000);
-	ILibLifeTime_Add(obj->Timer, obj, ILibStunClient_TIMEOUT, &ILibStun_OnTimeout, NULL);
+
+	ILibStunClient_CheckPreviousStunResults(obj, StunServer, 0x8000, user);
 }
+//! Attempt to perform a basic Stun operation to obtain the public IP/Endpoint of the edge NAT Router
+/*!
+	\param StunModule Stun Client module
+	\paran StunServer The stun server to utilize in the operation
+	\param user Custom user state data
+*/
 void ILibStunClient_PerformStun(void* StunModule, struct sockaddr_in* StunServer, void *user)
 {
 	struct ILibStun_Module *obj = (struct ILibStun_Module*)StunModule;
 	if (StunServer->sin_family != AF_INET) return;
-	memcpy(&(obj->StunServer), StunServer, INET_SOCKADDR_LENGTH(StunServer->sin_family));
-	obj->user = user;
-	obj->State = STUN_STATUS_CHECKING_UDP_CONNECTIVITY;
-	ILibRemoteLogging_printf(ILibChainGetLogger(obj->Chain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "Performing STUN with: %s:%u", ILibRemoteLogging_ConvertAddress((struct sockaddr*)StunServer), ntohs(StunServer->sin_port));
-	ILib_Stun_SendAttributeChangeRequest(obj, (struct sockaddr*)&(obj->StunServer), 0x00);
-	ILibLifeTime_Add(obj->Timer, obj, ILibStunClient_TIMEOUT, &ILibStun_OnTimeout, NULL);
+	ILibStunClient_CheckPreviousStunResults(obj, StunServer, 0x0000, user);
 }
-
+//! Send a Stun Packet
+/*!
+	\param StunModule The Stun Client Module
+	\param target Stun Packet destination
+	\param data Packet to send
+	\param datalen Size of the packet to send
+	\param UserFree MemoryOwnership of the data (Who is going to free the memory?)
+*/
 void ILibStunClient_SendData(void* StunModule, struct sockaddr* target, char* data, int datalen, enum ILibAsyncSocket_MemoryOwnership UserFree)
 {
 	if (target->sa_family == AF_INET) ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)StunModule)->UDP, (struct sockaddr*)target, data, datalen, UserFree);
 	else if (target->sa_family == AF_INET6) ILibAsyncUDPSocket_SendTo(((struct ILibStun_Module*)StunModule)->UDP6, (struct sockaddr*)target, data, datalen, UserFree);
 }
 
-struct ILibTURN_TurnClientObject
-{
-	ILibChain_PreSelect PreSelect;
-	ILibChain_PostSelect PostSelect;
-	ILibChain_Destroy Destroy;
-	ILibTURN_OnConnectTurnHandler OnConnectTurnCallback;
-	ILibTURN_OnAllocateHandler OnAllocateCallback;
-	ILibTURN_OnDataIndicationHandler OnDataIndicationCallback;
-	ILibTURN_OnChannelDataHandler OnChannelDataCallback;
-
-	void* TAG;
-	void* tcpClient;
-	char* username;
-	int usernameLen;
-	char* password;
-	int passwordLen;
-	void* transactionData;
-	void* sendOkStack;
-
-	char* currentNonce;
-	int currentNonceLen;
-	char* currentRealm;
-	int currentRealmLen;
-};
-
 void ILibTURN_OnDestroy(void* object)
 {
 	struct ILibTURN_TurnClientObject* turn = (struct ILibTURN_TurnClientObject*)object;
+
+	if (turn->currentRealm != NULL) { free(turn->currentRealm); turn->currentRealm = NULL; }
+	if (turn->password != NULL) { free(turn->password); turn->password = NULL; }
+	if (turn->username != NULL) { free(turn->username); turn->username = NULL; }
+	if (turn->currentNonce != NULL) { free(turn->currentNonce); turn->currentNonce = NULL; }
+
 	ILibDestroyHashTree(turn->transactionData);
 }
-
+//! Set a custom user state object
+/*!
+	\param clientModule TURN Client
+	\param tag User state object
+*/
 void ILibTURN_SetTag(ILibTURN_ClientModule clientModule, void *tag)
 {
 	struct ILibTURN_TurnClientObject *turn = (struct ILibTURN_TurnClientObject*)clientModule;
 	turn->TAG = tag;
 }
-
+//! Get a custom user state object
+/*!
+	\param clientModule TURN Client
+	\return User state object
+*/
 void* ILibTURN_GetTag(ILibTURN_ClientModule clientModule)
 {
 	return (((struct ILibTURN_TurnClientObject*)clientModule)->TAG);
 }
-
+//! Determine if the TURN Client is connected to a server
+/*!
+	\param clientModule TURN Client
+	\return ZERO = NO, NON-ZERO = YES
+*/
 int ILibTURN_IsConnectedToServer(ILibTURN_ClientModule clientModule)
 {
 	return (ILibAsyncSocket_IsConnected(((struct ILibTURN_TurnClientObject*)clientModule)->tcpClient));
@@ -5383,6 +6407,23 @@ char* ILibTURN_GetTransactionID(char* buffer, int offset, int length)
 {
 	UNREFERENCED_PARAMETER(length);
 	return (buffer + offset + 8);
+}
+
+int ILibTURN_GetErrorCode(char* buffer, int length)
+{
+	int cls;
+	int nmb;
+
+	if (length < 4) { return(0); }
+
+	cls = ((int)buffer[2] & 0x07);
+	nmb = (int)buffer[3] % 100;
+	return((100 * cls) + nmb);
+}
+char* ILibTURN_GetErrorReason(char* buffer, int length)
+{
+	if (length <= 4) { return(NULL); }
+	return(buffer + 4);
 }
 
 int ILibTURN_GetAttributeValue(char* buffer, int offset, int length, STUN_ATTRIBUTES attribute, int index, char** value)
@@ -5444,22 +6485,22 @@ int ILibTURN_GetAttributeCount(char* buffer, int offset, int length, STUN_ATTRIB
 void ILibTURN_GenerateIntegrityKey(char* username, char* realm, char* password, char* integrityKey)
 {
 	char key[128];
-	int keyLen = snprintf(key, 128, "%s:%s:%s", username, realm, password);
+	int keyLen = sprintf_s(key, 128, "%s:%s:%s", username, realm, password);
 	util_md5(key, keyLen, integrityKey);
 }
 
 // integrity must be at least 20 in size
 void ILibTURN_CalculateMessageIntegrity(char* buffer, int offset, int length, char* key, int keyLen, char* integrity)
 {
-	HMAC_CTX hmac;
+	HMAC_CTX* hmac;
 	unsigned int hmaclen = 20;
 
 	// Setup and perform HMAC-SHA1
-	HMAC_CTX_init(&hmac);
-	HMAC_Init_ex(&hmac, key, keyLen, EVP_sha1(), NULL);
-	HMAC_Update(&hmac, (unsigned char*)buffer + offset, length);
-	HMAC_Final(&hmac, (unsigned char*)integrity, &hmaclen); // Put the HMAC in the outgoing result location
-	HMAC_CTX_cleanup(&hmac);
+	hmac = HMAC_CTX_new();
+	HMAC_Init_ex(hmac, key, keyLen, EVP_sha1(), NULL);
+	HMAC_Update(hmac, (unsigned char*)buffer + offset, length);
+	HMAC_Final(hmac, (unsigned char*)integrity, &hmaclen); // Put the HMAC in the outgoing result location
+	HMAC_CTX_free(hmac);
 }
 
 int ILibTURN_IsPacketAuthenticated(struct ILibTURN_TurnClientObject *turn, char* buffer, int offset, int length)
@@ -5523,24 +6564,84 @@ void ILibTURN_ProcessStunFormattedPacket(struct ILibTURN_TurnClientObject *turn,
 
 	switch (method)
 	{
+		case TURN_REFRESH_RESPONSE:
+		{
+			void *ptr;
+			int val;
+			
+			ILibGetEntryEx(turn->transactionData, TransactionID, 12, (void*)&ptr, &val);
+			ILibTURN_GetAttributeValue(buffer, offset, length, TURN_LIFETIME, 0, (char**)&tmp);
+			
+			if (ptr != NULL)
+			{
+				if (val == 0 && ptr != NULL)
+				{
+					((ILibTURN_OnRefreshHandler)ptr)(turn, ntohl(((int*)tmp)[0]), NULL);
+				}
+				else if (val == 2)
+				{
+					if (((ILibTURN_TransactionData*)ptr)->Handler != NULL) { ((ILibTURN_OnRefreshHandler)((ILibTURN_TransactionData*)ptr)->Handler)(turn, ntohl(((int*)tmp)[0]), ((ILibTURN_TransactionData*)ptr)->user); }
+					free(ptr);
+				}
+			}
+			break;
+		}
+		case TURN_REFRESH_ERROR:
+		{
+			char *ebuf;
+			int ebufLen;
+			int ecode;
+			void *ptr;
+			int ptrLen;
+
+			ebufLen = ILibTURN_GetAttributeValue(buffer, offset, length, STUN_ATTRIB_ERROR_CODE, 0, &ebuf);
+			ecode = ILibTURN_GetErrorCode(ebuf, ebufLen);
+			ebuf = ILibTURN_GetErrorReason(ebuf, ebufLen);
+
+			ILibRemoteLogging_printf(ILibChainGetLogger(turn->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "TURN: Allocation Refresh Error (%d) %s", ecode, ebuf);
+			ILibGetEntryEx(turn->transactionData, TransactionID, 12, (void**)&ptr, &ptrLen);
+			
+			switch (ecode)
+			{
+				case 438: // Stale Nonce, resend request using new Nonce Value
+					if (ILibTURN_GetAttributeCount(buffer, offset, length, STUN_ATTRIB_NONCE) == 1)
+					{
+						ebufLen = ILibTURN_GetAttributeValue(buffer, offset, length, STUN_ATTRIB_NONCE, 0, &ebuf);
+						free(turn->currentNonce);
+						turn->currentNonceLen = ebufLen;
+						turn->currentNonce = ILibString_Copy(ebuf, ebufLen);
+
+						ILibTURN_RefreshAllocation(turn, ptrLen == 0 ? (ILibTURN_OnRefreshHandler)ptr : (ILibTURN_OnRefreshHandler)((ILibTURN_TransactionData*)ptr)->Handler, ptrLen == 0 ? NULL : ((ILibTURN_TransactionData*)ptr)->user);
+					}
+					if (ptrLen == 2) { free(ptr); }
+					break;
+				case 401: // Unauthorized
+					break;
+				default:
+					if (ptrLen == 2) { free(ptr); }
+					break;
+			}
+
+			break;
+		}
 		case TURN_CHANNEL_BIND_ERROR:
 		{
-			void **ptr;
+			ILibTURN_TransactionData *ptr;
 			int val;
 
 			ILibGetEntryEx(turn->transactionData, TransactionID, 12, (void**)&ptr, &val);
-			if (ptr[0] != NULL) { ((ILibTURN_OnCreateChannelBindingHandler)ptr[0])(turn, (unsigned short)val, 0, ptr[1]); }
+			if (ptr->Handler != NULL) { ((ILibTURN_OnCreateChannelBindingHandler)ptr->Handler)(turn, (unsigned short)val, 0, ptr->user); }
 			free(ptr);
 			ILibDeleteEntry(turn->transactionData, TransactionID, 12);
 			break;
 		}
 		case TURN_CHANNEL_BIND_RESPONSE:
 		{
-			void **ptr;
+			ILibTURN_TransactionData *ptr;
 			int val;
 
 			ILibGetEntryEx(turn->transactionData, TransactionID, 12, (void**)&ptr, &val);
-			if (ptr[0] != NULL) { ((ILibTURN_OnCreateChannelBindingHandler)ptr[0])(turn, (unsigned short)val, 1, ptr[1]); }
+			if (ptr->Handler != NULL) { ((ILibTURN_OnCreateChannelBindingHandler)ptr->Handler)(turn, (unsigned short)val, 1, ptr->user); }
 			free(ptr);
 			ILibDeleteEntry(turn->transactionData, TransactionID, 12);
 			break;
@@ -5557,9 +6658,12 @@ void ILibTURN_ProcessStunFormattedPacket(struct ILibTURN_TurnClientObject *turn,
 			{
 				if (turn->OnDataIndicationCallback != NULL)
 				{
-					struct sockaddr_in6 peer;
-					ILibTURN_GetXORMappedAddress(remotePeer, remotePeerLen, TransactionID, &peer);
-					turn->OnDataIndicationCallback(turn, &peer, data, 0, dataLen);
+					char peer[8+sizeof(struct sockaddr_in6)];
+					((int*)(peer + sizeof(struct sockaddr_in6)))[0] = 4;
+					((int*)(peer + sizeof(struct sockaddr_in6)))[1] = 0x10000;
+
+					ILibTURN_GetXORMappedAddress(remotePeer, remotePeerLen, TransactionID, (struct sockaddr_in6*)peer);
+					turn->OnDataIndicationCallback(turn, (struct sockaddr_in6*)peer, data, 0, dataLen);
 				}
 			}
 			break;
@@ -5576,7 +6680,10 @@ void ILibTURN_ProcessStunFormattedPacket(struct ILibTURN_TurnClientObject *turn,
 			}
 			else
 			{
-				((ILibTURN_OnCreatePermissionHandler)((void**)ptr)[0])(turn, 0, ((ILibTURN_OnCreatePermissionHandler)((void**)ptr)[1]));
+				if (((ILibTURN_TransactionData*)ptr)->Handler != NULL)
+				{
+					((ILibTURN_OnCreatePermissionHandler)((ILibTURN_TransactionData*)ptr)->Handler)(turn, 0, ((ILibTURN_TransactionData*)ptr)->user);
+				}
 				free(ptr);
 			}
 
@@ -5595,7 +6702,10 @@ void ILibTURN_ProcessStunFormattedPacket(struct ILibTURN_TurnClientObject *turn,
 			}
 			else
 			{
-				((ILibTURN_OnCreatePermissionHandler)((void**)ptr)[0])(turn, 1, ((ILibTURN_OnCreatePermissionHandler)((void**)ptr)[1]));
+				if (((ILibTURN_TransactionData*)ptr)->Handler != NULL)
+				{
+					((ILibTURN_OnCreatePermissionHandler)((ILibTURN_TransactionData*)ptr)->Handler)(turn, 1, ((ILibTURN_TransactionData*)ptr)->user);
+				}
 				free(ptr);
 			}
 			ILibDeleteEntry(turn->transactionData, TransactionID, 12);
@@ -5625,17 +6735,17 @@ void ILibTURN_ProcessStunFormattedPacket(struct ILibTURN_TurnClientObject *turn,
 
 					if (turn->currentNonce != NULL) { free(turn->currentNonce); }
 					if ((turn->currentNonce = (char*)malloc(nonceLen + 1)) == NULL){ ILIBCRITICALEXIT(254); }
-					memcpy(turn->currentNonce, nonce, nonceLen);
+					memcpy_s(turn->currentNonce, nonceLen + 1, nonce, nonceLen);
 					turn->currentNonce[nonceLen] = 0;
 					turn->currentNonceLen = nonceLen;
 
 					if (turn->currentRealm != NULL) { free(turn->currentRealm); }
 					if ((turn->currentRealm = (char*)malloc(realmLen + 1)) == NULL){ ILIBCRITICALEXIT(254); }
-					memcpy(turn->currentRealm, realm, realmLen);
+					memcpy_s(turn->currentRealm, realmLen + 1, realm, realmLen);
 					turn->currentRealm[realmLen] = 0;
 					turn->currentRealmLen = realmLen;
 
-					inputKeyLen = snprintf(inputKey, 128, "%s:%s:%s", turn->username, turn->currentRealm, turn->password);
+					inputKeyLen = sprintf_s(inputKey, 128, "%s:%s:%s", turn->username, turn->currentRealm, turn->password);
 
 					util_md5(inputKey, inputKeyLen, outputKey);
 					util_random(12, NewTransactionID);
@@ -5697,9 +6807,9 @@ int ILibTURN_GetStunPacketLength(char* buffer, int offset, int length)
 	int magic = ntohl(((unsigned int*)(buffer + offset))[1]);
 	if (messageLength > length || magic != 0x2112A442) // Check the length and magic string
 	{
-		if (magic != 0x2112A442) return ((int)messageLength);
+		return(0);
 	}
-	return 0;
+	return ((int)messageLength);
 }
 
 void ILibTURN_TCP_OnData(ILibAsyncSocket_SocketModule socketModule, char* buffer, int *p_beginPointer, int endPointer, ILibAsyncSocket_OnInterrupt* OnInterrupt, void **user, int *PAUSE)
@@ -5729,7 +6839,7 @@ void ILibTURN_TCP_OnData(ILibAsyncSocket_SocketModule socketModule, char* buffer
 			if (endPointer >= 8)
 			{
 				// STUN Formatted Packet
-				int stunLength = ILibTURN_GetStunPacketLength(buffer, *p_beginPointer, 8);
+				int stunLength = ILibTURN_GetStunPacketLength(buffer, *p_beginPointer, endPointer);
 				if (endPointer >= stunLength)
 				{
 					ILibTURN_ProcessStunFormattedPacket(turn, buffer, *p_beginPointer, stunLength);
@@ -5762,19 +6872,31 @@ ILibTURN_ClientModule ILibTURN_CreateTurnClient(void* chain, ILibTURN_OnConnectT
 	struct ILibTURN_TurnClientObject* retVal = (struct ILibTURN_TurnClientObject*)malloc(sizeof(struct ILibTURN_TurnClientObject));
 	if (retVal == NULL){ ILIBCRITICALEXIT(254); }
 	memset(retVal, 0, sizeof(struct ILibTURN_TurnClientObject));
-	retVal->Destroy = &ILibTURN_OnDestroy;
+	retVal->ChainLink.DestroyHandler = &ILibTURN_OnDestroy;
 	retVal->tcpClient = ILibCreateAsyncSocketModule(chain, 4096, &ILibTURN_TCP_OnData, &ILibTURN_TCP_OnConnect, &ILibTURN_TCP_OnDisconnect, NULL);
 	retVal->OnConnectTurnCallback = OnConnectTurn;
 	retVal->OnAllocateCallback = OnAllocate;
 	retVal->OnDataIndicationCallback = OnData;
 	retVal->OnChannelDataCallback = OnChannelData;
 	retVal->transactionData = ILibInitHashTree();
+	retVal->ChainLink.ParentChain = chain;
 
 	ILibAddToChain(chain, retVal);
 
 	return retVal;
 }
+//! Initiates a connection with a TURN Server
 
+//! Will trigger the OnConnectTurn handler specified in ILibTURN_CreateTurnClient
+/*!
+	\param turnModule TURN Client
+	\param turnServer TURN Server Address/Port
+	\param username TURN/Username
+	\param usernameLen TURN/Username Length
+	\param password TURN/Password
+	\param passwordLen TURN/Password Length
+	\param proxyServer [Reserved for future use]
+*/
 void ILibTURN_ConnectTurnServer(ILibTURN_ClientModule turnModule, struct sockaddr_in* turnServer, char* username, int usernameLen, char* password, int passwordLen, struct sockaddr_in* proxyServer)
 {
 	struct ILibTURN_TurnClientObject *turn = (struct ILibTURN_TurnClientObject*) turnModule;
@@ -5783,8 +6905,8 @@ void ILibTURN_ConnectTurnServer(ILibTURN_ClientModule turnModule, struct sockadd
 
 	if ((turn->username = (char*)malloc(usernameLen + 1)) == NULL){ ILIBCRITICALEXIT(254); }
 	if ((turn->password = (char*)malloc(passwordLen + 1)) == NULL){ ILIBCRITICALEXIT(254); }
-	memcpy(turn->username, username, usernameLen);
-	memcpy(turn->password, password, passwordLen);
+	memcpy_s(turn->username, usernameLen + 1, username, usernameLen);
+	memcpy_s(turn->password, passwordLen + 1, password, passwordLen);
 	turn->username[usernameLen] = 0;
 	turn->password[passwordLen] = 0;
 	turn->usernameLen = usernameLen;
@@ -5797,7 +6919,7 @@ int ILibTURN_GenerateStunFormattedPacketHeader(char* rbuffer, STUN_TYPE packetTy
 {
 	((unsigned short*)rbuffer)[0] = htons(packetType);								// Allocate, skip setting length for now
 	((unsigned int*)rbuffer)[1] = htonl(0x2112A442);								// Set the magic string																								
-	memcpy(rbuffer + 8, transactionID, 12);
+	memcpy_s(rbuffer + 8, 12,  transactionID, 12);
 	return 20;
 }
 
@@ -5805,10 +6927,16 @@ int ILibTURN_AddAttributeToStunFormattedPacketHeader(char* rbuffer, int rptr, ST
 {
 	((unsigned short*)(rbuffer + rptr))[0] = htons(attrType);					// Attribute header
 	((unsigned short*)(rbuffer + rptr))[1] = htons((unsigned short)dataLen);	// Attribute length
-	if (dataLen > 0) { memcpy(rbuffer + rptr + 4, data, dataLen); }
+	if (dataLen > 0) { memcpy_s(rbuffer + rptr + 4, dataLen, data, dataLen); }
 	return(ILibAlignOnFourByteBoundary(rbuffer+rptr, 4+dataLen));
 }
-
+//! Decode a STUN/XORMAPPED Address
+/*!
+	\param buffer Buffer containing the STUN/XORMAPPED Address
+	\param bufferLen Length of Buffer
+	\param transactionID TransactionID of the packet that the address was encoded to
+	\param[in,out] value The decoded address
+*/
 void ILibTURN_GetXORMappedAddress(char* buffer, int bufferLen, char* transactionID, struct sockaddr_in6 *value)
 {
 	int i;
@@ -5830,7 +6958,7 @@ void ILibTURN_GetXORMappedAddress(char* buffer, int bufferLen, char* transaction
 		unsigned char addr[16];
 		unsigned char material[16];
 		((unsigned int*)material)[0] = 0x2112A442;
-		memcpy(material + 4, transactionID, 12);
+		memcpy_s(material + 4, sizeof(material) - 4, transactionID, 12);
 		memset(value, 0, INET_SOCKADDR_LENGTH(AF_INET6));
 		value->sin6_family = AF_INET6;
 
@@ -5847,7 +6975,13 @@ void ILibTURN_GetXORMappedAddress(char* buffer, int bufferLen, char* transaction
 	}
 	value->sin6_port = htons(ntohs(((unsigned short*)buffer)[1]) ^ (unsigned short)((unsigned int)0x2112A442 >> 16));
 }
-
+//! Create a STUN XOR/MAPPED Address
+/*!
+	\param endpoint IPAddress (IPv4 or IPv6) to map
+	\param buffer Buffer to write the result to
+	\param transactionID STUN Transaction ID of the packet to encode the address for [Required for IPv6]
+	\return Number of bytes written to buffer
+*/
 int ILibTURN_CreateXORMappedAddress(struct sockaddr_in6 *endpoint, char* buffer, char* transactionID)
 {
 	int i, retVal;
@@ -5869,9 +7003,9 @@ int ILibTURN_CreateXORMappedAddress(struct sockaddr_in6 *endpoint, char* buffer,
 		unsigned char addr[16];
 		unsigned char material[16];
 		((unsigned int*)material)[0] = 0x2112A442;
-		memcpy(material + 4, transactionID, 12);
+		memcpy_s(material + 4, sizeof(material) - 4, transactionID, 12);
 
-		if (htonl(16) == 16)
+		if (htonl(16) == /* DISABLES CODE */ (16))
 		{
 			for (i = 0; i < 16; ++i) { endpoint->sin6_addr.s6_addr[i] = endpoint->sin6_addr.s6_addr[i] ^ material[i]; }
 		}
@@ -5881,7 +7015,7 @@ int ILibTURN_CreateXORMappedAddress(struct sockaddr_in6 *endpoint, char* buffer,
 			for (i = 0; i < 16; ++i) { endpoint->sin6_addr.s6_addr[15 - i] = addr[i]; }
 		}
 
-		memcpy(buffer + 4, endpoint->sin6_addr.s6_addr, 16);
+		memcpy_s(buffer + 4, 16, endpoint->sin6_addr.s6_addr, 16);
 		retVal = 20;
 	}
 		break;
@@ -5892,7 +7026,13 @@ int ILibTURN_CreateXORMappedAddress(struct sockaddr_in6 *endpoint, char* buffer,
 
 	return retVal;
 }
+//! Request a TURN Allocation
 
+//! Allocation Response will be received via OnAllocate handler specified in ILibTURN_CreateTurnClient
+/*!
+	\param turnModule TURN Client
+	\param transportType Desired Transport Type to allocate
+*/
 void ILibTURN_Allocate(ILibTURN_ClientModule turnModule, ILibTURN_TransportTypes transportType)
 {
 	struct ILibTURN_TurnClientObject *turn = (struct ILibTURN_TurnClientObject*)turnModule;
@@ -5913,7 +7053,49 @@ void ILibTURN_Allocate(ILibTURN_ClientModule turnModule, ILibTURN_TransportTypes
 
 	ILibAsyncSocket_Send(turn->tcpClient, rbuffer, rptr, ILibAsyncSocket_MemoryOwnership_USER);
 }
+void ILibTURN_RefreshAllocation(ILibTURN_ClientModule turnModule, ILibTURN_OnRefreshHandler handler, void *user)
+{
+	struct ILibTURN_TurnClientObject *turn = (struct ILibTURN_TurnClientObject*)turnModule;
+	char rbuffer[256];
+	char TransactionID[12];
+	int rptr;
+	char integrityKey[16];
 
+	util_random(12, TransactionID);																							// Random used for transaction id	
+	ILibTURN_GenerateIntegrityKey(turn->username, turn->currentRealm, turn->password, integrityKey);
+
+	rptr = ILibTURN_GenerateStunFormattedPacketHeader(rbuffer, TURN_REFRESH, TransactionID);
+
+	rptr += ILibTURN_AddAttributeToStunFormattedPacketHeader(rbuffer, rptr, STUN_ATTRIB_USERNAME, turn->username, turn->usernameLen);
+	rptr += ILibTURN_AddAttributeToStunFormattedPacketHeader(rbuffer, rptr, STUN_ATTRIB_REALM, turn->currentRealm, turn->currentRealmLen);
+	rptr += ILibTURN_AddAttributeToStunFormattedPacketHeader(rbuffer, rptr, STUN_ATTRIB_NONCE, turn->currentNonce, turn->currentNonceLen);
+
+	rptr += ILibStun_AddMessageIntegrityAttr(rbuffer, rptr, integrityKey, 16);
+	rptr += ILibStun_AddFingerprint(rbuffer, rptr);
+
+	if (user != NULL)
+	{
+		ILibTURN_TransactionData *ptr = ILibMemory_Allocate(sizeof(ILibTURN_TransactionData), 0, NULL, NULL);
+		ptr->Handler = (void*)handler;
+		ptr->user = user;
+		ILibAddEntryEx(turn->transactionData, TransactionID, 12, ptr, 2);
+	}
+	else
+	{
+		ILibAddEntryEx(turn->transactionData, TransactionID, 12, (void*)handler, 0);
+	}
+
+	ILibAsyncSocket_Send(turn->tcpClient, rbuffer, rptr, ILibAsyncSocket_MemoryOwnership_USER);
+}
+
+//! Create/Renew a Transport Permission
+/*!
+	\param turnModule TURN Client
+	\param permissions Array of addresses to allow on the RELAY
+	\param permissionsLength Number of array elements in permissions
+	\param result Event handler to trigger on completion of this request
+	\param user Custom user state object
+*/
 void ILibTURN_CreatePermission(ILibTURN_ClientModule turnModule, struct sockaddr_in6* permissions, int permissionsLength, ILibTURN_OnCreatePermissionHandler result, void *user)
 {
 	struct ILibTURN_TurnClientObject *turn = (struct ILibTURN_TurnClientObject*)turnModule;
@@ -5930,6 +7112,7 @@ void ILibTURN_CreatePermission(ILibTURN_ClientModule turnModule, struct sockaddr
 	rptr = ILibTURN_GenerateStunFormattedPacketHeader(rbuffer, TURN_CREATE_PERMISSION, TransactionID);
 	for (i = 0; i < permissionsLength; ++i)
 	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(turn->ChainLink.ParentChain), ILibRemoteLogging_Modules_WebRTC_STUN_ICE, ILibRemoteLogging_Flags_VerbosityLevel_1, "TURN: Creating Permission for %s", ILibRemoteLogging_ConvertAddress((struct sockaddr*)&(permissions[i])));
 		peerLen = ILibTURN_CreateXORMappedAddress(&(permissions[i]), peer, TransactionID);
 		rptr += ILibTURN_AddAttributeToStunFormattedPacketHeader(rbuffer, rptr, STUN_ATTRIB_XOR_PEER_ADDRESS, peer, peerLen);
 	}
@@ -5945,21 +7128,28 @@ void ILibTURN_CreatePermission(ILibTURN_ClientModule turnModule, struct sockaddr
 	{
 		if (user != NULL)
 		{
-			void **val = (void**)malloc(2 * sizeof(void*));
-			if (val == NULL){ ILIBCRITICALEXIT(254); }
-			val[0] = result;
-			val[1] = user;
-			ILibAddEntryEx(turn->transactionData, TransactionID, 12, val, 2);
+			ILibTURN_TransactionData *ptr = ILibMemory_Allocate(sizeof(ILibTURN_TransactionData), 0, NULL, NULL);
+			ptr->Handler = (void*)result;
+			ptr->user = user;
+			ILibAddEntryEx(turn->transactionData, TransactionID, 12, ptr, 2);
 		}
 		else
 		{
-			ILibAddEntryEx(turn->transactionData, TransactionID, 12, result, 0);
+			ILibAddEntryEx(turn->transactionData, TransactionID, 12, (void*)result, 0);
 		}
 	}
 
 	ILibAsyncSocket_Send(turn->tcpClient, rbuffer, rptr, ILibAsyncSocket_MemoryOwnership_USER);
 }
-
+//! Send Data as a TURN/INDICATION
+/*!
+	\param turnModule TURN Client
+	\param remotePeer Destination
+	\param buffer Data to send
+	\param offset Data offset
+	\param length Data length
+	\return Send Status of operation
+*/
 enum ILibAsyncSocket_SendStatus ILibTURN_SendIndication(ILibTURN_ClientModule turnModule, struct sockaddr_in6* remotePeer, char* buffer, int offset, int length)
 {
 	struct ILibTURN_TurnClientObject *turn = (struct ILibTURN_TurnClientObject*)turnModule;
@@ -5967,7 +7157,6 @@ enum ILibAsyncSocket_SendStatus ILibTURN_SendIndication(ILibTURN_ClientModule tu
 	char TransactionID[12];
 	char *packet = (char*)malloc(50 + length);
 	int ptr, AddressLen;
-
 	if (packet == NULL){ ILIBCRITICALEXIT(254); }
 	util_random(12, TransactionID);
 	ptr = ILibTURN_GenerateStunFormattedPacketHeader(packet, TURN_SEND, TransactionID);
@@ -5979,7 +7168,14 @@ enum ILibAsyncSocket_SendStatus ILibTURN_SendIndication(ILibTURN_ClientModule tu
 
 	return ILibAsyncSocket_Send(turn->tcpClient, packet, ptr, ILibAsyncSocket_MemoryOwnership_CHAIN);
 }
-
+//! Create/Renew a TURN Channel Binding
+/*!
+	\param turnModule TURN Client
+	\param channelNumber Channel Number to create/renew
+	\param remotePeer Remote Endpoint to bind
+	\param result Event to trigger on Create/Renew completion
+	\param user Custom user state object
+*/
 void ILibTURN_CreateChannelBinding(ILibTURN_ClientModule turnModule, unsigned short channelNumber, struct sockaddr_in6* remotePeer, ILibTURN_OnCreateChannelBindingHandler result, void* user)
 {
 	char TransactionID[12];
@@ -6010,22 +7206,33 @@ void ILibTURN_CreateChannelBinding(ILibTURN_ClientModule turnModule, unsigned sh
 	if (result != NULL)
 	{
 		// Only malloc memory if the user actually cares to get called back
-		void **u = (void**)malloc(2 * sizeof(void*));
-		if (u == NULL){ ILIBCRITICALEXIT(254); }
-		u[0] = result;
-		u[1] = (void*)user;
+		ILibTURN_TransactionData *u = ILibMemory_Allocate(sizeof(ILibTURN_TransactionData), 0, NULL, NULL);
+		u->Handler = (void*)result;
+		u->user = user;
 		ILibAddEntryEx(turn->transactionData, TransactionID, 12, u, (int)channelNumber);
 	}
 
 	ILibAsyncSocket_Send(turn->tcpClient, Packet, Ptr, ILibAsyncSocket_MemoryOwnership_USER);
 }
-
+//! Get the number of bytes that are buffered to be sent
+/*!
+	\param turnModule TURN Client
+	\return Number of bytes waiting to be sent
+*/
 unsigned int ILibTURN_GetPendingBytesToSend(ILibTURN_ClientModule turnModule)
 {
 	struct ILibTURN_TurnClientObject *turn = (struct ILibTURN_TurnClientObject*)turnModule;
 	return ILibAsyncSocket_GetPendingBytesToSend(turn->tcpClient);
 }
-
+//! Send data through a TURN/CHANNEL Binding
+/*!
+	\param turnModule TURN Client
+	\param channelNumber Channel number binding to use
+	\param buffer Data to send
+	\param offset Data offset
+	\param length Data Length
+	\return Send Status of operation
+*/
 enum ILibAsyncSocket_SendStatus ILibTURN_SendChannelData(ILibTURN_ClientModule turnModule, unsigned short channelNumber, char* buffer, int offset, int length)
 {
 	struct ILibTURN_TurnClientObject *turn = (struct ILibTURN_TurnClientObject*)turnModule;
@@ -6158,4 +7365,6 @@ unsigned int crc32c(unsigned int crci, const void *buf, unsigned int len)
 	while (len) { crc = crc32c_table[0][(crc ^ *next++) & 0xff] ^ (crc >> 8); len--; }
 	return (unsigned int)crc ^ 0xffffffff;
 }
+
+#endif
 

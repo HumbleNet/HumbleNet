@@ -1,11 +1,11 @@
 /*
-Copyright 2006 - 2015 Intel Corporation
+Copyright 2006 - 2017 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,10 +21,6 @@ limitations under the License.
 #include <crtdbg.h>
 #endif
 
-#if defined(WIN32) && !defined(snprintf) && (_MSC_FULL_VER <= 180000000)
-#define snprintf(dst, len, frm, ...) _snprintf_s(dst, len, _TRUNCATE, frm, __VA_ARGS__)
-#endif
-
 #if defined(WINSOCK2)
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -38,46 +34,28 @@ limitations under the License.
 #include "ILibAsyncServerSocket.h"
 #include "ILibAsyncSocket.h"
 #include "ILibWebClient.h"
-
-#ifndef MICROSTACK_NOTLS
-#include <openssl/sha.h>
-#include "../core/utils.h"
-#else
-#include "sha1.h"
-#endif
+#include "ILibCrypto.h"
 #include "ILibRemoteLogging.h"
 
-#define WEBSOCKET_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-#define WEBSOCKET_FIN		0x08000
-#define WEBSOCKET_RSV1		0x04000
-#define WEBSOCKET_RSV2		0x02000
-#define WEBSOCKET_RSV3		0x01000
-#define WEBSOCKET_OPCODE	0x00F00
-#define WEBSOCKET_MASK		0x00080
-#define WEBSOCKET_PLEN		0x0007F
-
-#define WEBSOCKET_MAX_OUTPUT_FRAMESIZE 4096
-
-#define WEBSOCKET_OPCODE_FRAMECONT		0x0
-#define WEBSOCKET_OPCODE_TEXTFRAME		0x1
-#define WEBSOCKET_OPCODE_BINARYFRAME	0x2
-#define WEBSOCKET_OPCODE_CLOSE			0x8
-#define WEBSOCKET_OPCODE_PING			0x9
-#define WEBSOCKET_OPCODE_PONG			0xA
-
 #define DIGEST_AUTHENTICATION_NONCE_DEFAULT_DURATION_MINUTES 15
+#define ILibWebServer_StreamHeader_Raw_MaxHeaderLength 4096
+
+int ILibWebServerSSLCTXIndex = -1;
+int ILibWebServerConnectionSSLCTXIndex = -1;
+
 //#define HTTP_SESSION_IDLE_TIMEOUT 30
+
 
 #ifdef ILibWebServer_SESSION_TRACKING
 void ILibWebServer_SessionTrack(void *Session, char *msg)
 {
 #if defined(WIN32) || defined(_WIN32_WCE)
 	char tempMsg[4096];
-	wchar_t t[4096];
-	size_t len;
+	//wchar_t t[4096];
+	//size_t len;
 	sprintf_s(tempMsg, 4096, "Session: %p   %s\r\n", Session, msg);
-	mbstowcs_s(&len, t, 4096, tempMsg, 4096);
-	OutputDebugString(t);
+	//mbstowcs_s(&len, t, 4096, tempMsg, 4096);
+	OutputDebugString(tempMsg);
 #else
 	printf("Session: %x   %s\r\n",Session,msg);
 #endif
@@ -94,12 +72,8 @@ struct ILibWebServer_VirDir_Data
 
 typedef struct ILibWebServer_StateModule
 {
-	void(*PreSelect)(void* object, fd_set *readset, fd_set *writeset, fd_set *errorset, int* blocktime);
-	void(*PostSelect)(void* object, int slct, fd_set *readset, fd_set *writeset, fd_set *errorset);
-	void(*Destroy)(void* object);
-
-	void *Chain;
-	void *ServerSocket;
+	ILibChain_Link ChainLink;
+	ILibAsyncServerSocket_ServerModule ServerSocket;
 	void *LifeTime;
 	void *User;
 	void *Tag;
@@ -107,14 +81,56 @@ typedef struct ILibWebServer_StateModule
 	void *VirtualDirectoryTable;
 
 	int DigestAuth_NonceDuration;
-
+#ifndef MICROSTACK_NOTLS
+	void* HTTPS_SetCTX;
+	ILibWebServer_OnHttpsConnection onHTTPS;
+#endif
+	
 	void(*OnSession)(struct ILibWebServer_Session *SessionToken, void *User);
 }ILibWebServer_StateModule;
 
+
+typedef struct ILibWebServer_Session_SystemData
+{
+	void *AsyncServerSocket;		// AsyncServerSocket
+	void *ConnectionToken;			// ConnectionToken
+	void *WebClientDataObject;		// WebClientDataObject
+	void *VirtualDirectory;			// VirtualDirectory
+	int   RequestAnsweredFlag;		// Request Answered Flag (set by send)
+	int   RequestAnsweredMethod;	// RequestAnswered Method Called
+	int   RequestMadeFlag;			// Request Made Flag
+	int   CloseOverrideFlag;		// Close Override Flag
+	void *DisconnectFlagPointer;	// DisconnectFlagPointer
+
+	sem_t SessionLock;				// Session Lock
+	int   ReferenceCounter;			// Reference Counter;
+	int   OverrideVirDirStruct;		// Override VirDir Struct
+	
+	int   WebSocketFragmentFlag;			// WebSocketFragmentFlag
+	int   WebSocketDataFrameType;			// WebSocketDataFrameType
+	char* WebSocketFragmentBuffer;			// WebSocketFragmentBuffer
+	int   WebSocketFragmentIndex;			// WebSocketFragmentIndex;
+	int	  WebSocketFragmentBufferSize;		// WebSocketFragmentBufferSize;
+	int	  WebSocketFragmentMaxBufferSize;	// WebSocketFragmentMaxBufferSize;
+	char  WebSocketCouldNotAutoReassemble;	// WebSocketCouldNotAutoReassemble
+	char  WebSocketCloseFrameSent;			// WebSocketCloseFrameSent
+	void* DigestTable;
+	void* WebSocket_Request;
+}ILibWebServer_Session_SystemData;
+
+#define ILibWebServer_Session_GetSystemData(ws) ((ILibWebServer_Session_SystemData*)((char*)ws+sizeof(ILibWebServer_Session)))
+void *ILibWebServer_Session_GetConnectionToken(ILibWebServer_Session *session)
+{
+	return(ILibWebServer_Session_GetSystemData(session)->ConnectionToken);
+}
 unsigned int ILibWebServer_Session_GetPendingBytesToSend(struct ILibWebServer_Session *session)
 {
-	return(ILibAsyncServerSocket_GetPendingBytesToSend(session->Reserved1, session->Reserved2));
+	return(ILibAsyncServerSocket_GetPendingBytesToSend(ILibWebServer_Session_GetSystemData(session)->AsyncServerSocket, ILibWebServer_Session_GetSystemData(session)->ConnectionToken));
 }
+
+const int ILibMemory_WEBSERVERSESSION_CONTAINERSIZE = sizeof(ILibWebServer_Session) + sizeof(ILibWebServer_Session_SystemData);
+
+
 
 /*! \fn ILibWebServer_SetTag(ILibWebServer_ServerToken object, void *Tag)
 \brief Sets the user tag associated with the server
@@ -138,6 +154,15 @@ void *ILibWebServer_GetTag(ILibWebServer_ServerToken object)
 	return(s->Tag);
 }
 
+void ILibWebServer_StopListener(ILibWebServer_ServerToken server)
+{
+	ILibAsyncServerSocket_StopListening(((ILibWebServer_StateModule*)server)->ServerSocket);
+}
+void ILibWebServer_RestartListener(ILibWebServer_ServerToken server)
+{
+	ILibAsyncServerSocket_ResumeListening(((ILibWebServer_StateModule*)server)->ServerSocket);
+}
+
 //
 // Internal method dispatched by a timer to idle out a session
 //
@@ -148,12 +173,12 @@ void *ILibWebServer_GetTag(ILibWebServer_ServerToken object)
 void ILibWebServer_IdleSink(void *object)
 {
 	struct ILibWebServer_Session *session = (struct ILibWebServer_Session*)object;
-	if (ILibAsyncSocket_IsFree(session->Reserved2) == 0)
+	if (ILibAsyncSocket_IsFree(ILibWebServer_Session_GetSystemData(session)->ConnectionToken) == 0)
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebSession[%p] IDLE/Timeout", (void*)session);
+		ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebSession[%p] IDLE/Timeout", (void*)session);
 
 		// This is OK, because we're on the MicroStackThread
-		ILibAsyncServerSocket_Disconnect(session->Reserved1, session->Reserved2);
+		ILibAsyncServerSocket_Disconnect(ILibWebServer_Session_GetSystemData(session)->AsyncServerSocket, ILibWebServer_Session_GetSystemData(session)->ConnectionToken);
 	}
 }
 
@@ -184,6 +209,9 @@ void ILibWebServer_Destroy(void *object)
 		ILibHashTree_DestroyEnumerator(en);
 		ILibDestroyHashTree(s->VirtualDirectoryTable);
 	}
+#ifndef MICROSTACK_NOTLS
+	if (s->HTTPS_SetCTX != NULL) { SSL_CTX_free(s->HTTPS_SetCTX); }
+#endif
 }
 //
 // Internal method dispatched from the underlying WebClient engine
@@ -237,7 +265,7 @@ struct packetheader *header,
 		{
 			char body[255];
 			int bodyLength;
-			bodyLength = snprintf(body, 255, "HTTP/1.1 413 Request Too Big (MaxHeader=%d)\r\n\r\n", MAX_HTTP_HEADER_SIZE);
+			bodyLength = sprintf_s(body, 255, "HTTP/1.1 413 Request Too Big (MaxHeader=%d)\r\n\r\n", MAX_HTTP_HEADER_SIZE);
 			ILibAsyncSocket_Send(ws->Reserved2, body, bodyLength, ILibAsyncSocket_MemoryOwnership_USER);
 		}
 	}
@@ -248,14 +276,14 @@ struct packetheader *header,
 	// Reserved5 = Request Made Flag
 	//	If this flag is set, a request has been received
 	//
-	if (ws->Reserved4 != 0 || ws->Reserved5 == 0)
+	if (ILibWebServer_Session_GetSystemData(ws)->RequestAnsweredFlag != 0 || ILibWebServer_Session_GetSystemData(ws)->RequestMadeFlag == 0)
 	{
 		//
 		// This session is no longer idle
 		//
-		ws->Reserved4 = 0;
-		ws->Reserved5 = 1;
-		ws->Reserved8 = 0;
+		ILibWebServer_Session_GetSystemData(ws)->RequestAnsweredFlag = 0;
+		ILibWebServer_Session_GetSystemData(ws)->RequestMadeFlag = 1;
+		ILibWebServer_Session_GetSystemData(ws)->RequestAnsweredMethod = 0;
 		ILibLifeTime_Remove(((struct ILibWebServer_StateModule*)ws->Parent)->LifeTime, ws);
 	}
 
@@ -272,7 +300,7 @@ struct packetheader *header,
 			//
 			char body[255];
 			int bodyLength;
-			bodyLength = snprintf(body, 255, "HTTP/1.1 400 Bad Request (Missing Host Field)\r\n\r\n");
+			bodyLength = sprintf_s(body, 255, "HTTP/1.1 400 Bad Request (Missing Host Field)\r\n\r\n");
 			ILibWebServer_Send_Raw(ws, body, bodyLength, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_Done);
 			return;
 		}
@@ -281,7 +309,7 @@ struct packetheader *header,
 	if (recvStatus == ILibWebClient_ReceiveStatus_Complete && header != NULL && header->Directive != NULL)
 	{
 		// Check to see if this is a WebSocket request, so we can modify a flag
-		ws->Reserved16 = (ILibGetHeaderLine(header, "Sec-WebSocket-Key", 17) != NULL) ? ILibWebServer_WebSocket_DataType_REQUEST : ILibWebServer_WebSocket_DataType_UNKNOWN;
+		ILibWebServer_Session_GetSystemData(ws)->WebSocketDataFrameType = (ILibGetHeaderLine(header, "Sec-WebSocket-Key", 17) != NULL) ? ILibWebServer_WebSocket_DataType_REQUEST : ILibWebServer_WebSocket_DataType_UNKNOWN;
 	}
 
 	//
@@ -292,7 +320,7 @@ struct packetheader *header,
 		//
 		// Reserved7 = Virtual Directory State Object
 		//
-		if (ws->Reserved7 == NULL)
+		if (ILibWebServer_Session_GetSystemData(ws)->VirtualDirectory == NULL)
 		{
 			//
 			// See if we can find the virtual directory.
@@ -328,8 +356,8 @@ struct packetheader *header,
 				//
 				// Set the StateObject, then call the handler
 				//
-				ws->Reserved7 = ILibGetEntry(wsm->VirtualDirectoryTable, tmp, tmpLength);
-				if (ws->Reserved7 != NULL) ((ILibWebServer_VirtualDirectory)((struct ILibWebServer_VirDir_Data*)ws->Reserved7)->callback)(ws, header, bodyBuffer, beginPointer, endPointer, recvStatus, ((struct ILibWebServer_VirDir_Data*)ws->Reserved7)->user);
+				ILibWebServer_Session_GetSystemData(ws)->VirtualDirectory = ILibGetEntry(wsm->VirtualDirectoryTable, tmp, tmpLength);
+				if (ILibWebServer_Session_GetSystemData(ws)->VirtualDirectory != NULL) ((ILibWebServer_VirtualDirectory)((struct ILibWebServer_VirDir_Data*)ILibWebServer_Session_GetSystemData(ws)->VirtualDirectory)->callback)(ws, header, bodyBuffer, beginPointer, endPointer, recvStatus, ((struct ILibWebServer_VirDir_Data*)ILibWebServer_Session_GetSystemData(ws)->VirtualDirectory)->user);
 			}
 			else if (ws->OnReceive != NULL)
 			{
@@ -341,12 +369,12 @@ struct packetheader *header,
 		}
 		else
 		{
-			if (ws->Reserved13 == 0)
+			if (ILibWebServer_Session_GetSystemData(ws)->OverrideVirDirStruct == 0)
 			{
 				//
 				// The state object was already set, so we know this is the handler to use. So easy!
 				//
-				((ILibWebServer_VirtualDirectory)((struct ILibWebServer_VirDir_Data*)ws->Reserved7)->callback)(ws, header, bodyBuffer, beginPointer, endPointer, recvStatus, ((struct ILibWebServer_VirDir_Data*)ws->Reserved7)->user);
+				((ILibWebServer_VirtualDirectory)((struct ILibWebServer_VirDir_Data*)ILibWebServer_Session_GetSystemData(ws)->VirtualDirectory)->callback)(ws, header, bodyBuffer, beginPointer, endPointer, recvStatus, ((struct ILibWebServer_VirDir_Data*)ILibWebServer_Session_GetSystemData(ws)->VirtualDirectory)->user);
 			}
 			else
 			{
@@ -360,7 +388,7 @@ struct packetheader *header,
 		// Since there is no Virtual Directory lookup table, none were registered,
 		// so we know we have no choice but to call the regular handler
 		//
-		ILibRemoteLogging_printf(ILibChainGetLogger(ws->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebSession[%p] << %s [%s] %s", (void*)ws, ILibRemoteLogging_ConvertAddress((struct sockaddr*)header->Source), header->Directive, header->DirectiveObj);
+		ILibRemoteLogging_printf(ILibChainGetLogger(ws->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebSession[%p] << %s [%s] %s", (void*)ws, ILibRemoteLogging_ConvertAddress((struct sockaddr*)header->Source), header->Directive, header->DirectiveObj);
 
 		ws->OnReceive(ws, InterruptFlag, header, bodyBuffer, beginPointer, endPointer, (ILibWebServer_DoneFlag)recvStatus);
 	}
@@ -369,7 +397,7 @@ struct packetheader *header,
 	//
 	// Reserved8 = RequestAnswered method has been called
 	//
-	if (recvStatus == ILibWebClient_ReceiveStatus_Complete && InterruptFlag == 0 && header != NULL && ws->Reserved8 == 0)
+	if (recvStatus == ILibWebClient_ReceiveStatus_Complete && InterruptFlag == 0 && header != NULL && ILibWebServer_Session_GetSystemData(ws)->RequestAnsweredMethod == 0)
 	{
 		//
 		// The request hasn't been satisfied yet, so stop reading from the socket until it is
@@ -399,7 +427,7 @@ void ILibWebServer_OnBufferReAllocated(void *AsyncServerSocketToken, void *Conne
 	// Reserved2 = ConnectionToken
 	// Reserved3 = WebClientDataObject
 	//
-	ILibWebClient_OnBufferReAllocate(ws->Reserved2, ws->Reserved3, offSet);
+	ILibWebClient_OnBufferReAllocate(ILibWebServer_Session_GetSystemData(ws)->ConnectionToken, ILibWebServer_Session_GetSystemData(ws)->WebClientDataObject, offSet);
 }
 #if defined(MAX_HTTP_PACKET_SIZE)
 void ILibWebServer_OnBufferSizeExceeded(void *connectionToken, void *user)
@@ -410,7 +438,7 @@ void ILibWebServer_OnBufferSizeExceeded(void *connectionToken, void *user)
 
 	char body[255];
 	int bodyLength;
-	bodyLength = sprintf(body, "HTTP/1.1 413 Request Too Big (MaxPacketSize=%d)\r\n\r\n", MAX_HTTP_PACKET_SIZE);
+	bodyLength = sprintf_s(body, sizeof(body), "HTTP/1.1 413 Request Too Big (MaxPacketSize=%d)\r\n\r\n", MAX_HTTP_PACKET_SIZE);
 	ILibAsyncSocket_Send(connectionToken, body, bodyLength, ILibAsyncSocket_MemoryOwnership_USER);
 }
 #endif
@@ -428,25 +456,27 @@ void ILibWebServer_OnConnect(void *AsyncServerSocketModule, void *ConnectionToke
 	//
 	// Create a new ILibWebServer_Session to represent this connection
 	//
+
 	wsm = (struct ILibWebServer_StateModule*)ILibAsyncServerSocket_GetTag(AsyncServerSocketModule);
-	if ((ws = (struct ILibWebServer_Session*)malloc(sizeof(struct ILibWebServer_Session))) == NULL) ILIBCRITICALEXIT(254);
-	memset(ws, 0, sizeof(struct ILibWebServer_Session));
+	ws = (struct ILibWebServer_Session*)ILibChain_Link_Allocate(ILibMemory_WEBSERVERSESSION_CONTAINERSIZE, ILibMemory_GetExtraMemorySize(wsm->ChainLink.ExtraMemoryPtr));
 
-	ws->Reserved_Chain = wsm->Chain;
-	ws->Reserved_Flags = (unsigned int)ILibTransports_WebServer;
-	ws->closePtr = (ILibTransport_ClosePtr)&ILibWebServer_DisconnectSession;
-	ws->sendPtr = (ILibTransport_SendPtr)&ILibWebServer_Send_Raw;
-	ws->pendingPtr = (ILibTransport_PendingBytesToSendPtr)&ILibWebServer_Session_GetPendingBytesToSend;
+	ws->Reserved_Transport.ChainLink.ParentChain = wsm->ChainLink.ParentChain;
+	ws->Reserved_Transport.IdentifierFlags = (unsigned int)ILibTransports_WebServer;
+	ws->Reserved_Transport.ClosePtr = (ILibTransport_ClosePtr)&ILibWebServer_DisconnectSession;
+	ws->Reserved_Transport.SendPtr = (ILibTransport_SendPtr)&ILibWebServer_Send_Raw;
+	ws->Reserved_Transport.PendingBytesPtr = (ILibTransport_PendingBytesToSendPtr)&ILibWebServer_Session_GetPendingBytesToSend;
+	ws->ParentExtraMemory = wsm->ChainLink.ExtraMemoryPtr;
 
-	sem_init(&(ws->Reserved11), 0, 1); // Initialize the SessionLock
-	ws->Reserved12 = 1; // Reference Counter, Initial count should be 1
+	sem_init(&(ILibWebServer_Session_GetSystemData(ws)->SessionLock), 0, 1);		// Initialize the SessionLock
+	ILibWebServer_Session_GetSystemData(ws)->ReferenceCounter = 1;					// Reference Counter, Initial count should be 1
+	ILibWebServer_Session_GetSystemData(ws)->AsyncServerSocket = AsyncServerSocketModule;
+	ILibWebServer_Session_GetSystemData(ws)->ConnectionToken = ConnectionToken;
+	ILibWebServer_Session_GetSystemData(ws)->WebClientDataObject = ILibCreateWebClientEx(&ILibWebServer_OnResponse, ConnectionToken, wsm, ws);
 
 	//printf("#### ALLOCATED (%d) ####\r\n", ConnectionToken);
 
+	sem_init(&(ILibWebServer_Session_GetSystemData(ws)->SessionLock), 0, 1); // Initialize the SessionLock
 	ws->Parent = wsm;
-	ws->Reserved1 = AsyncServerSocketModule;
-	ws->Reserved2 = ConnectionToken;
-	ws->Reserved3 = ILibCreateWebClientEx(&ILibWebServer_OnResponse, ConnectionToken, wsm, ws);
 	ws->User = wsm->User;
 	*user = ws;
 #if defined(MAX_HTTP_PACKET_SIZE)
@@ -467,7 +497,7 @@ void ILibWebServer_OnConnect(void *AsyncServerSocketModule, void *ConnectionToke
 	SESSION_TRACK(ws, "* Allocated *");
 	SESSION_TRACK(ws, "AddRef");
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(ws->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebServer: OnSession[%p]", (void*)ws);
+	ILibRemoteLogging_printf(ILibChainGetLogger(ws->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebServer: OnSession[%p]", (void*)ws);
 
 	//
 	// Inform the user that a new session was established
@@ -498,28 +528,28 @@ void ILibWebServer_OnDisconnect(void *AsyncServerSocketModule, void *ConnectionT
 	// Some clients may close the socket anyway, before the server does, so we should remove this
 	// so we don't accidently close the socket again.
 	//
-	ILibLifeTime_Remove(((struct ILibWebServer_StateModule*)ws->Parent)->LifeTime, ws->Reserved2);
-	if (ws->Reserved10 != NULL) ws->Reserved10 = NULL;
+	ILibLifeTime_Remove(((struct ILibWebServer_StateModule*)ws->Parent)->LifeTime, ILibWebServer_Session_GetSystemData(ws)->ConnectionToken);
+	if (ILibWebServer_Session_GetSystemData(ws)->DisconnectFlagPointer != NULL) ILibWebServer_Session_GetSystemData(ws)->DisconnectFlagPointer = NULL;
 
 	//
 	// Reserved4 = RequestAnsweredFlag
 	// Reserved5 = RequestMadeFlag
 	//
-	if (ws->Reserved4 != 0 || ws->Reserved5 == 0)
+	if (ILibWebServer_Session_GetSystemData(ws)->RequestAnsweredFlag != 0 || ILibWebServer_Session_GetSystemData(ws)->RequestMadeFlag == 0)
 	{
 		ILibLifeTime_Remove(((struct ILibWebServer_StateModule*)ws->Parent)->LifeTime, ws);
-		ws->Reserved4 = 0;
+		ILibWebServer_Session_GetSystemData(ws)->RequestAnsweredFlag = 0;
 	}
 
 	SESSION_TRACK(ws, "OnDisconnect");
 
-	if (ws->Reserved_WebSocket_Request != NULL && ws->OnReceive != NULL)
+	if (ILibWebServer_Session_GetSystemData(ws)->WebSocket_Request != NULL && ws->OnReceive != NULL)
 	{
 		int tmp_ptr = 0;
-		ws->OnReceive(ws, 0, (struct packetheader*)ws->Reserved_WebSocket_Request, NULL, &tmp_ptr, 0, ILibWebServer_DoneFlag_Done);
+		ws->OnReceive(ws, 0, (struct packetheader*)ILibWebServer_Session_GetSystemData(ws)->WebSocket_Request, NULL, &tmp_ptr, 0, ILibWebServer_DoneFlag_Done);
 	}
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(ws->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebServer: OnDisconnect[%p]", (void*)ws);
+	ILibRemoteLogging_printf(ILibChainGetLogger(ws->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebServer: OnDisconnect[%p]", (void*)ws);
 
 	//
 	// Notify the user that this session disconnected
@@ -599,55 +629,55 @@ int ILibWebServer_ProcessWebSocketData(struct ILibWebServer_Session *ws, char* b
 	if (OPCODE < 0x8)
 	{
 		// NON-CONTROL OP-CODE
-		if (ws->Reserved20 == 0)
+		if (ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentMaxBufferSize == 0)
 		{
 			// We will just pass the data up, and let the app handle fragment re-assembly
-			ws->Reserved16 = (int)OPCODE;
+			ILibWebServer_Session_GetSystemData(ws)->WebSocketDataFrameType = (int)OPCODE;
 			tempBegin = 0;
-			ws->OnReceive(ws, 0, (struct packetheader*)ws->Reserved_WebSocket_Request, buffer + i, &tempBegin, plen, FIN == 0 ? ILibWebServer_DoneFlag_Partial : ILibWebServer_DoneFlag_LastPartial);
+			ws->OnReceive(ws, 0, (struct packetheader*)ILibWebServer_Session_GetSystemData(ws)->WebSocket_Request, buffer + i, &tempBegin, plen, FIN == 0 ? ILibWebServer_DoneFlag_Partial : ILibWebServer_DoneFlag_LastPartial);
 		}
 		else
 		{
 			// We will try to automatically re-assemble fragments, up to the max buffer size the user specified
-			if (OPCODE != 0) { ws->Reserved16 = (int)OPCODE; } // Set the DataFrame Type, so the user can query it
+			if (OPCODE != 0) { ILibWebServer_Session_GetSystemData(ws)->WebSocketDataFrameType = (int)OPCODE; } // Set the DataFrame Type, so the user can query it
 
-			if (FIN != 0 && ws->Reserved18 == 0 && ws->Reserved21 == 0)
+			if (FIN != 0 && ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex == 0 && ILibWebServer_Session_GetSystemData(ws)->WebSocketCouldNotAutoReassemble == 0)
 			{
 				// We have an entire fragment, and we didn't save any of it yet... We can just forward it up without copying the buffer
 				tempBegin = 0;
-				ws->OnReceive(ws, 0, (struct packetheader*)ws->Reserved_WebSocket_Request, buffer + i, &tempBegin, plen, ILibWebServer_DoneFlag_NotDone);
+				ws->OnReceive(ws, 0, (struct packetheader*)ILibWebServer_Session_GetSystemData(ws)->WebSocket_Request, buffer + i, &tempBegin, plen, ILibWebServer_DoneFlag_NotDone);
 			}
 			else
 			{
-				if (ws->Reserved18 + plen >= ws->Reserved19)
+				if (ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex + plen >= ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBufferSize)
 				{
 					// Need to grow the buffer
 
-					if (ws->Reserved19 == ws->Reserved20)
+					if (ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBufferSize == ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentMaxBufferSize)
 					{
 						// We are already maxed out, so just send what we have as an unfinished fragment	
-						ws->Reserved21 = 1; // Set this flag, becuase we can't reassemble, so our FIN flag will be different to reflect that					
+						ILibWebServer_Session_GetSystemData(ws)->WebSocketCouldNotAutoReassemble = 1; // Set this flag, becuase we can't reassemble, so our FIN flag will be different to reflect that					
 						tempBegin = 0;
-						ws->OnReceive(ws, 0, (struct packetheader*)ws->Reserved_WebSocket_Request, ws->Reserved17, &tempBegin, ws->Reserved18, ILibWebServer_DoneFlag_Partial);
-						ws->Reserved18 = 0; // Reset the index, becuase new data is going to go to the front
+						ws->OnReceive(ws, 0, (struct packetheader*)ILibWebServer_Session_GetSystemData(ws)->WebSocket_Request, ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBuffer, &tempBegin, ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex, ILibWebServer_DoneFlag_Partial);
+						ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex = 0; // Reset the index, becuase new data is going to go to the front
 					}
 					else
 					{
 						// We can grow the buffer
-						ws->Reserved19 = ws->Reserved19 * 2;
-						if (ws->Reserved19 > ws->Reserved20) { ws->Reserved19 = ws->Reserved20; }
-						if ((ws->Reserved17 = (char*)realloc(ws->Reserved17, ws->Reserved19)) == NULL) { ILIBCRITICALEXIT(254); }
+						ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBufferSize = ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBufferSize * 2;
+						if (ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBufferSize > ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentMaxBufferSize) { ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBufferSize = ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentMaxBufferSize; }
+						if ((ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBuffer = (char*)realloc(ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBuffer, ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBufferSize)) == NULL) { ILIBCRITICALEXIT(254); }
 					}
 				}
 
-				memcpy(ws->Reserved17 + ws->Reserved18, buffer + i, plen);
-				ws->Reserved18 += plen;
+				memcpy_s(ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBuffer + ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex, ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBufferSize - ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex, buffer + i, plen);
+				ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex += plen;
 
 				if (FIN != 0)
 				{
-					ws->OnReceive(ws, 0, (struct packetheader*)ws->Reserved_WebSocket_Request, ws->Reserved17, &tempBegin, ws->Reserved18, ws->Reserved21 == 0 ? ILibWebServer_DoneFlag_NotDone : ILibWebServer_DoneFlag_LastPartial);
-					ws->Reserved21 = 0; // Reset (We can try to auto-assemble)
-					ws->Reserved18 = 0; // Reset (We can write to the start of the buffer)
+					ws->OnReceive(ws, 0, (struct packetheader*)ILibWebServer_Session_GetSystemData(ws)->WebSocket_Request, ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentBuffer, &tempBegin, ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex, ILibWebServer_Session_GetSystemData(ws)->WebSocketCouldNotAutoReassemble == 0 ? ILibWebServer_DoneFlag_NotDone : ILibWebServer_DoneFlag_LastPartial);
+					ILibWebServer_Session_GetSystemData(ws)->WebSocketCouldNotAutoReassemble = 0; // Reset (We can try to auto-assemble)
+					ILibWebServer_Session_GetSystemData(ws)->WebSocketFragmentIndex = 0; // Reset (We can write to the start of the buffer)
 				}
 			}
 		}
@@ -661,16 +691,16 @@ int ILibWebServer_ProcessWebSocketData(struct ILibWebServer_Session *ws, char* b
 		{
 			int sendResponse = 0;
 			// CONNECTION-CLOSE
-			sem_wait(&(ws->Reserved11));
-			if (ws->Reserved22 == 0)	{ ws->Reserved22 = 1; sendResponse = 1; }
-			sem_post(&(ws->Reserved11));
+			sem_wait(&(ILibWebServer_Session_GetSystemData(ws)->SessionLock));
+			if (ILibWebServer_Session_GetSystemData(ws)->WebSocketCloseFrameSent == 0)	{ ILibWebServer_Session_GetSystemData(ws)->WebSocketCloseFrameSent = 1; sendResponse = 1; }
+			sem_post(&(ILibWebServer_Session_GetSystemData(ws)->SessionLock));
 
 			if (sendResponse != 0)
 			{
 				// Echo the Close Frame
 				ILibWebServer_WebSocket_Send(ws, buffer + i, plen > 0 ? 2 : 0, (ILibWebServer_WebSocket_DataTypes)WEBSOCKET_OPCODE_CLOSE, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_WebSocket_FragmentFlag_Complete);
 			}
-			ILibRemoteLogging_printf(ILibChainGetLogger(ws->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibWebServer: << [Close OP-Code] on %p", (void*)ws);
+			ILibRemoteLogging_printf(ILibChainGetLogger(ws->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibWebServer: << [Close OP-Code] on %p", (void*)ws);
 			ILibWebServer_DisconnectSession(ws);
 		}
 			break;
@@ -690,14 +720,14 @@ int ILibWebServer_ProcessWebSocketData(struct ILibWebServer_Session *ws, char* b
 	return(i + plen);
 }
 
-void ILibWebServer_WebSocket_Close(struct ILibWebServer_Session *ws)
+ILibExportMethod void ILibWebServer_WebSocket_Close(struct ILibWebServer_Session *ws)
 {
 	int sent = 0;
 	unsigned short code = htons(1000); // Normal Closure
 
-	sem_wait(&(ws->Reserved11));
-	if (ws->Reserved22 == 0)	{ ws->Reserved22 = 1; sent = 1; }
-	sem_post(&(ws->Reserved11));
+	sem_wait(&(ILibWebServer_Session_GetSystemData(ws)->SessionLock));
+	if (ILibWebServer_Session_GetSystemData(ws)->WebSocketCloseFrameSent == 0)	{ ILibWebServer_Session_GetSystemData(ws)->WebSocketCloseFrameSent = 1; sent = 1; }
+	sem_post(&(ILibWebServer_Session_GetSystemData(ws)->SessionLock));
 
 	if (sent != 0)
 	{
@@ -727,10 +757,10 @@ void ILibWebServer_OnReceive(void *AsyncServerSocketModule, void *ConnectionToke
 	UNREFERENCED_PARAMETER(AsyncServerSocketModule);
 	UNREFERENCED_PARAMETER(OnInterrupt);
 
-	if (ws->Reserved_WebSocket_Request == NULL)
+	if (ILibWebServer_Session_GetSystemData(ws)->WebSocket_Request == NULL)
 	{
 		// Normal HTTP Processing Rules
-		ILibWebClient_OnData(ConnectionToken, buffer, p_beginPointer, endPointer, NULL, &(ws->Reserved3), PAUSE);
+		ILibWebClient_OnData(ConnectionToken, buffer, p_beginPointer, endPointer, NULL, &(ILibWebServer_Session_GetSystemData(ws)->WebClientDataObject), PAUSE);
 	}
 	else
 	{
@@ -755,7 +785,7 @@ void ILibWebServer_OnInterrupt(void *AsyncServerSocketModule, void *ConnectionTo
 	UNREFERENCED_PARAMETER(ConnectionToken);
 
 	// This is ok, because this is MicroStackThread
-	ILibWebClient_DestroyWebClientDataObject(session->Reserved3);
+	ILibWebClient_DestroyWebClientDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 }
 
 //
@@ -765,43 +795,43 @@ void ILibWebServer_OnInterrupt(void *AsyncServerSocketModule, void *ConnectionTo
 // <returns>Flag indicating if the session was closed</returns>
 enum ILibWebServer_Status ILibWebServer_RequestAnswered(struct ILibWebServer_Session *session)
 {
-	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	struct packetheader_field_node *f;
 	int PersistentConnection = 0;
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebSession[%p] (Request Answered)", (void*)session);
+	ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "WebSession[%p] (Request Answered)", (void*)session);
 
 	if (hdr == NULL) return ILibWebServer_ALL_DATA_SENT;
 
 	//
-	// Reserved7 = Virtual Directory State Object
+	// Virtual Directory State Object
 	//	We delete this, because the request is finished, so we don't need to direct
 	//	data to this handler anymore. It needs to be recalculated next time
 	//
-	session->Reserved7 = NULL;
+	ILibWebServer_Session_GetSystemData(session)->VirtualDirectory = NULL;
 
 	//
 	// Reserved8 = RequestAnswered method called
 	//If this is set, this method was already called, so we can just exit
 	//
-	if (session->Reserved8 != 0) return ILibWebServer_ALL_DATA_SENT;
+	if (ILibWebServer_Session_GetSystemData(session)->RequestAnsweredMethod != 0) return ILibWebServer_ALL_DATA_SENT;
 
 	//
 	// Set the flags, so if this re-enters, we don't process this again
 	//
-	session->Reserved8 = 1;
+	ILibWebServer_Session_GetSystemData(session)->RequestAnsweredMethod = 1;
 	f = hdr->FirstField;
 
 	//
-	// Reserved5 = Request Made. Since the request was answered, we can clear this.
+	// Request Made. Since the request was answered, we can clear this.
 	//
-	session->Reserved5 = 0;
+	ILibWebServer_Session_GetSystemData(session)->RequestMadeFlag = 0;
 
 	//
 	// Reserved6 = CloseOverrideFlag
 	//	which means the session must be closed when request is complete
 	//
-	if (session->Reserved6 == 0)
+	if (ILibWebServer_Session_GetSystemData(session)->CloseOverrideFlag == 0)
 	{
 		//{{{ REMOVE_THIS_FOR_HTTP/1.0_ONLY_SUPPORT--> }}}
 		if (hdr->VersionLength == 3 && memcmp(hdr->Version, "1.0", 3) != 0)
@@ -826,25 +856,25 @@ enum ILibWebServer_Status ILibWebServer_RequestAnswered(struct ILibWebServer_Ses
 
 	if (PersistentConnection == 0)
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WebSession[%p] is NON-PERSISTENT", (void*)session);
+		ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WebSession[%p] is NON-PERSISTENT", (void*)session);
 		//
 		// Ensure calling on MicroStackThread. This will just result dispatching the callback on
 		// the microstack thread
 		//
-		ILibLifeTime_Add(((struct ILibWebServer_StateModule*)session->Parent)->LifeTime, session->Reserved2, 0, &ILibAsyncSocket_Disconnect, NULL);
+		ILibLifeTime_Add(((struct ILibWebServer_StateModule*)session->Parent)->LifeTime, ILibWebServer_Session_GetSystemData(session)->ConnectionToken, 0, &ILibAsyncSocket_Disconnect, NULL);
 	}
 	else
 	{
-		ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WebSession[%p] is PERSISTENT", (void*)session);
+		ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WebSession[%p] is PERSISTENT", (void*)session);
 		//
 		// This is a persistent connection. Set a timed callback, to idle this session if necessary
 		//
 		ILibLifeTime_Add(((struct ILibWebServer_StateModule*)session->Parent)->LifeTime, session, HTTP_SESSION_IDLE_TIMEOUT, &ILibWebServer_IdleSink, NULL);
-		ILibWebClient_FinishedResponse_Server(session->Reserved3);
+		ILibWebClient_FinishedResponse_Server(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 		//
 		// Since we're done with this request, resume the underlying socket, so we can continue
 		//
-		ILibWebClient_Resume(session->Reserved3);
+		ILibWebClient_Resume(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	}
 	return (PersistentConnection == 0 ? ILibWebServer_SEND_RESULTED_IN_DISCONNECT : ILibWebServer_ALL_DATA_SENT);
 }
@@ -863,10 +893,7 @@ void ILibWebServer_OnSendOK(void *AsyncServerSocketModule, void *ConnectionToken
 	UNREFERENCED_PARAMETER(AsyncServerSocketModule);
 	UNREFERENCED_PARAMETER(ConnectionToken);
 
-	//
-	// Reserved4 = RequestAnsweredFlag
-	//
-	if (session->Reserved4 != 0)
+	if (ILibWebServer_Session_GetSystemData(session)->RequestAnsweredFlag != 0)
 	{
 		// This is normally called when the response was sent. But since it couldn't get through
 		// the first time, this method gets dispatched when it did, so now we have to call it.
@@ -880,6 +907,91 @@ void ILibWebServer_OnSendOK(void *AsyncServerSocketModule, void *ConnectionToken
 }
 
 #ifndef MICROSTACK_NOTLS
+X509 *ILibWebServer_Session_SslGetCert(ILibWebServer_Session* session)
+{
+	return(ILibAsyncSocket_SslGetCert(ILibWebServer_Session_GetSystemData(session)->ConnectionToken));
+}
+STACK_OF(X509) *ILibWebServer_Session_SslGetCerts(ILibWebServer_Session* session)
+{
+	return(ILibAsyncSocket_SslGetCerts(ILibWebServer_Session_GetSystemData(session)->ConnectionToken));
+}
+static int ILibWebServer_Session_Verify(int preverify_ok, X509_STORE_CTX *ctx)
+{
+	int retVal = 0;
+	SSL *ssl = (SSL*)X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+	struct ILibWebServer_StateModule *wsm = (struct ILibWebServer_StateModule*)SSL_get_ex_data(ssl, ILibWebServerSSLCTXIndex);
+	void *ConnectionToken = (void*)SSL_get_ex_data(ssl, ILibWebServerConnectionSSLCTXIndex);
+	struct sockaddr_in6 addr;
+
+	ILibAsyncSocket_GetRemoteInterface(ConnectionToken, (struct sockaddr*)&addr);
+
+	if (wsm->onHTTPS != NULL)
+	{
+		STACK_OF(X509) *certChain = X509_STORE_CTX_get_chain(ctx);
+		retVal = wsm->onHTTPS(wsm, preverify_ok, certChain, &addr);
+	}
+
+	return(retVal);
+}
+void ILibWebServer_HTTPS_OnSSLContext(ILibAsyncServerSocket_ServerModule AsyncServerSocketModule, void *ConnectionToken, SSL* ctx, void **user)
+{
+	struct ILibWebServer_StateModule *wsm = (struct ILibWebServer_StateModule*)ILibAsyncServerSocket_GetTag(AsyncServerSocketModule);
+
+	if (ctx != NULL && ILibWebServerSSLCTXIndex >= 0 && ILibWebServerConnectionSSLCTXIndex >= 0)
+	{
+		SSL_set_ex_data(ctx, ILibWebServerSSLCTXIndex, wsm);
+		SSL_set_ex_data(ctx, ILibWebServerConnectionSSLCTXIndex, ConnectionToken);
+	}
+}
+int ILibWebServer_EnableHTTPS(ILibWebServer_ServerToken object, struct util_cert* leafCert, X509* nonLeafCert, int requestClientCert, ILibWebServer_OnHttpsConnection onHTTPS)
+{
+	struct ILibWebServer_StateModule *module = (struct ILibWebServer_StateModule*)object;
+	SSL_CTX* ctx;
+
+	if (leafCert == NULL) 
+	{ 
+		ILibRemoteLogging_printf(ILibChainGetLogger(module->ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibWebServer_EnableHTTPS(): Cert was not specified on WebServer: %p", (void*)object);
+		return(1); 
+	}
+	
+	ctx = SSL_CTX_new(SSLv23_server_method());		// HTTPS Server
+	if (ctx == NULL)
+	{
+		ILibRemoteLogging_printf(ILibChainGetLogger(module->ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "ILibWebServer_EnableHTTPS(): Error initializing OpenSSL on WebServer: %p", (void*)object);
+		return(1);
+	}
+
+	SSL_CTX_set_options(ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
+
+	SSL_CTX_use_certificate(ctx, leafCert->x509);
+	SSL_CTX_use_PrivateKey(ctx, leafCert->pkey);
+
+	if (nonLeafCert != NULL)
+	{
+		SSL_CTX_add_extra_chain_cert(ctx, X509_dup(nonLeafCert));
+	}
+
+	if (requestClientCert != 0) { SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE, ILibWebServer_Session_Verify); } // Ask for client authentication
+
+	if (ILibWebServerSSLCTXIndex < 0)
+	{
+		ILibWebServerSSLCTXIndex = SSL_get_ex_new_index(0, "ILibWebServer_ServerToken index", NULL, NULL, NULL);
+	}
+	if (ILibWebServerConnectionSSLCTXIndex < 0)
+	{
+		ILibWebServerConnectionSSLCTXIndex = SSL_get_ex_new_index(0, "ILibWebServer_ConnectionToken index", NULL, NULL, NULL);
+	}
+
+#ifdef MICROSTACK_TLS_DETECT
+	ILibAsyncServerSocket_SetSSL_CTX(module->ServerSocket, ctx, 1);
+#else
+	ILibAsyncServerSocket_SetSSL_CTX(module->ServerSocket, ctx);
+#endif
+	module->HTTPS_SetCTX = ctx;
+	module->onHTTPS = onHTTPS;
+	ILibAsyncServerSocket_SSL_SetSink(module->ServerSocket, ILibWebServer_HTTPS_OnSSLContext);
+	return(0);
+}
 #ifdef MICROSTACK_TLS_DETECT
 void ILibWebServer_SetTLS(ILibWebServer_ServerToken object, void *ssl_ctx, int enableTLSDetect)
 {
@@ -895,22 +1007,21 @@ void ILibWebServer_SetTLS(ILibWebServer_ServerToken object, void *ssl_ctx)
 #endif
 #endif
 
-/*! \fn ILibWebServer_Create(void *Chain, int MaxConnections, int PortNumber,ILibWebServer_Session_OnSession OnSession, void *User)
-\brief Constructor for ILibWebServer
+/*! \fn ILibWebServer_CreateEx2(void *Chain, int MaxConnections, int PortNumber,ILibWebServer_Session_OnSession OnSession, void *User)
+\brief Constructor for ILibWebServer, with optional ExtraMemory
 \param Chain The Chain to add this module to. (Chain must <B>not</B> be running)
 \param MaxConnections The maximum number of simultaneous connections
 \param PortNumber The Port number to listen to (0 = Random)
 \param OnSession Function Pointer to dispatch on when new Sessions are established
+\param ExtraMemorySize Size of extra memory to allocate
 \param User User state object to pass to OnSession
 */
-ILibWebServer_ServerToken ILibWebServer_CreateEx(void *Chain, int MaxConnections, unsigned short PortNumber, int loopbackFlag, ILibWebServer_Session_OnSession OnSession, void *User)
+ILibExportMethod ILibWebServer_ServerToken ILibWebServer_CreateEx2(void *Chain, int MaxConnections, unsigned short PortNumber, int loopbackFlag, ILibWebServer_Session_OnSession OnSession, int ExtraMemorySize, void *User)
 {
-	struct ILibWebServer_StateModule *RetVal = (struct ILibWebServer_StateModule*)malloc(sizeof(struct ILibWebServer_StateModule));
+	struct ILibWebServer_StateModule *RetVal = (struct ILibWebServer_StateModule *)ILibChain_Link_Allocate(sizeof(struct ILibWebServer_StateModule), ExtraMemorySize);
 
-	if (RetVal == NULL) { PRINTERROR(); return NULL; }
-	memset(RetVal, 0, sizeof(struct ILibWebServer_StateModule));
-	RetVal->Destroy = &ILibWebServer_Destroy;
-	RetVal->Chain = Chain;
+	RetVal->ChainLink.DestroyHandler = &ILibWebServer_Destroy;
+	RetVal->ChainLink.ParentChain = Chain;
 	RetVal->OnSession = OnSession;
 	RetVal->DigestAuth_NonceDuration = DIGEST_AUTHENTICATION_NONCE_DEFAULT_DURATION_MINUTES;
 
@@ -941,6 +1052,18 @@ ILibWebServer_ServerToken ILibWebServer_CreateEx(void *Chain, int MaxConnections
 	ILibAddToChain(Chain, RetVal);
 	return RetVal;
 }
+/*! \fn ILibWebServer_CreateEx(void *Chain, int MaxConnections, int PortNumber,ILibWebServer_Session_OnSession OnSession, void *User)
+\brief Constructor for ILibWebServer
+\param Chain The Chain to add this module to. (Chain must <B>not</B> be running)
+\param MaxConnections The maximum number of simultaneous connections
+\param PortNumber The Port number to listen to (0 = Random)
+\param OnSession Function Pointer to dispatch on when new Sessions are established
+\param User User state object to pass to OnSession
+*/
+ILibWebServer_ServerToken ILibWebServer_CreateEx(void *Chain, int MaxConnections, unsigned short PortNumber, int loopbackFlag, ILibWebServer_Session_OnSession OnSession, void *User)
+{
+	return(ILibWebServer_CreateEx2(Chain, MaxConnections, PortNumber, loopbackFlag, OnSession, 0, User));
+}
 
 /*! \fn ILibWebServer_GetPortNumber(ILibWebServer_ServerToken WebServerToken)
 \brief Returns the port number that this module is listening to
@@ -959,16 +1082,16 @@ void ILibWebServer_Digest_CalculateNonce(struct ILibWebServer_Session *session, 
 	if (expiration == 0)
 	{
 		char tmp[8];
-		util_hexToBuf((char*)ILibGetEntry(session->Reserved_DigestTable, "opaque", 6), 16, tmp);
+		util_hexToBuf((char*)ILibGetEntry(ILibWebServer_Session_GetSystemData(session)->DigestTable, "opaque", 6), 16, tmp);
 		expiration = ((long long*)tmp)[0];
 	}
-	memcpy(temp, &expiration, 8);
-	memcpy(temp + 8, &(session->Parent), sizeof(void*));
+	memcpy_s(temp, sizeof(temp), &expiration, 8);
+	memcpy_s(temp + 8, sizeof(temp) - 8, &(session->Parent), sizeof(void*));
 
 	util_md5hex(temp, 8 + sizeof(void*), buffer);
 }
 
-void ILibWebServer_Digest_SendUnauthorized(struct ILibWebServer_Session *session, char* realm, int realmLen, char* html, int htmllen)
+ILibExportMethod void ILibWebServer_Digest_SendUnauthorized(struct ILibWebServer_Session *session, char* realm, int realmLen, char* html, int htmllen)
 {
 	long long nonceExpiration = ILibGetUptime() + (long long)(((struct ILibWebServer_StateModule*)session->Parent)->DigestAuth_NonceDuration * 60000);
 	char nonce[33];
@@ -977,15 +1100,8 @@ void ILibWebServer_Digest_SendUnauthorized(struct ILibWebServer_Session *session
 
 	if (realm == NULL)
 	{
-		realm = (char*)ILibGetEntry(session->Reserved_DigestTable, "realm", 5);
-		if (realm != NULL)
-		{
-			realmLen = strlen(realm);
-		}
-		else
-		{
-			return;
-		}
+		ILibGetEntryEx(ILibWebServer_Session_GetSystemData(session)->DigestTable, "realm", 5, (void**)&realm, &realmLen);
+		if (realm == NULL) { return; }
 	}
 
 	ILibWebServer_Digest_CalculateNonce(session, nonceExpiration, nonce);
@@ -995,15 +1111,28 @@ void ILibWebServer_Digest_SendUnauthorized(struct ILibWebServer_Session *session
 	ILibWebServer_Send_Raw(session, realm, realmLen, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_NotDone);
 	ILibWebServer_Send_Raw(session, "\", nonce=\"", 10, ILibAsyncSocket_MemoryOwnership_STATIC, ILibWebServer_DoneFlag_NotDone);
 	ILibWebServer_Send_Raw(session, nonce, 32, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_NotDone);
-	ILibWebServer_Send_Raw(session, "\", opaque=\"", 11, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_NotDone);
+
+	ILibWebServer_Send_Raw(session, "\", opaque=\"", -1, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_NotDone);
+	//if (ILibWebServer_IsUsingTLS(session) == 0)
+	//{
+	//	ILibWebServer_Send_Raw(session, "\", qop=\"auth\", opaque=\"", -1, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_NotDone);
+	//}
+	//else
+	//{
+	//	ILibWebServer_Send_Raw(session, "\", qop=\"auth, auth-int\", opaque=\"", -1, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_NotDone);
+	//}
+
+
 	ILibWebServer_Send_Raw(session, opaque, 16, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_NotDone);
-	l = snprintf(nonce, 33, "\"\r\nContent-Length: %d\r\n\r\n", htmllen);
+	l = sprintf_s(nonce, 33, "\"\r\nContent-Length: %d\r\n\r\n", htmllen);
 	ILibWebServer_Send_Raw(session, nonce, l, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_NotDone);
 	ILibWebServer_Send_Raw(session, html, htmllen, ILibAsyncSocket_MemoryOwnership_USER, ILibWebServer_DoneFlag_Done);
+
+
 }
 
 
-int ILibWebServer_Digest_ParseAuthenticationHeader2(char* value, int valueLen, char **token, char **tokenValue)
+int ILibWebServer_Digest_ParseAuthenticationHeader2(char* value, int valueLen, char **token, int *tokenLen, char **tokenValue, int *tokenValueLen)
 {
 	int len;
 	int i = ILibString_IndexOf(value, valueLen, "=", 1);
@@ -1013,6 +1142,7 @@ int ILibWebServer_Digest_ParseAuthenticationHeader2(char* value, int valueLen, c
 
 	len = ILibTrimString(token, i);
 	(*token)[len] = 0;
+	*tokenLen = len;
 
 	*tokenValue = value + i + 1;
 	len = valueLen - (i + 1);
@@ -1028,6 +1158,7 @@ int ILibWebServer_Digest_ParseAuthenticationHeader2(char* value, int valueLen, c
 		len -= 1;
 	}
 	(*tokenValue)[len] = 0;
+	*tokenValueLen = len;
 	return(0);
 }
 void ILibWebServer_Digest_ParseAuthenticationHeader(void* table, char* value, int valueLen)
@@ -1039,9 +1170,10 @@ void ILibWebServer_Digest_ParseAuthenticationHeader(void* table, char* value, in
 	{
 		char *token;
 		char* tokenValue;
-		if (ILibWebServer_Digest_ParseAuthenticationHeader2(f->data, f->datalength, &token, &tokenValue) == 0)
+		int tokenLen, tokenValueLen;
+		if (ILibWebServer_Digest_ParseAuthenticationHeader2(f->data, f->datalength, &token, &tokenLen, &tokenValue, &tokenValueLen) == 0)
 		{
-			ILibAddEntry(table, token, strlen(token), tokenValue);
+			ILibAddEntryEx(table, token, tokenLen, tokenValue, tokenValueLen);
 		}
 		f = f->NextResult;
 	}
@@ -1051,11 +1183,14 @@ void ILibWebServer_Digest_ParseAuthenticationHeader(void* table, char* value, in
 
 int ILibWebServer_Digest_IsCorrectRealmAndNonce(struct ILibWebServer_Session *session, char* realm, int realmLen)
 {
-	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	char* auth;
+	int authLen;
 	char* userRealm = NULL;
+	int userRealmLen;
 	char* nonce = NULL;
 	char* opaque = NULL;
+	int opaqueLen;
 	long long current;
 	char expiration[8];
 	char calculatedNonce[33];
@@ -1064,19 +1199,19 @@ int ILibWebServer_Digest_IsCorrectRealmAndNonce(struct ILibWebServer_Session *se
 	current = ILibGetUptime();
 
 
-	if (session->Reserved_DigestTable != NULL) { ILibDestroyHashTree(session->Reserved_DigestTable); }
-	session->Reserved_DigestTable = ILibInitHashTree_CaseInSensitive();
-	auth = ILibGetHeaderLine(hdr, "Authorization", 13);
+	if (ILibWebServer_Session_GetSystemData(session)->DigestTable != NULL) { ILibDestroyHashTree(ILibWebServer_Session_GetSystemData(session)->DigestTable); }
+	ILibWebServer_Session_GetSystemData(session)->DigestTable = ILibInitHashTree_CaseInSensitive();
+	auth = ILibGetHeaderLineEx(hdr, "Authorization", 13, &authLen);
 
-	ILibWebServer_Digest_ParseAuthenticationHeader(session->Reserved_DigestTable, auth, strlen(auth));
-	userRealm = (char*)ILibGetEntry(session->Reserved_DigestTable, "realm", 5);
-	nonce = (char*)ILibGetEntry(session->Reserved_DigestTable, "nonce", 5);
-	opaque = (char*)ILibGetEntry(session->Reserved_DigestTable, "opaque", 6);
+	ILibWebServer_Digest_ParseAuthenticationHeader(ILibWebServer_Session_GetSystemData(session)->DigestTable, auth, authLen);
+	ILibGetEntryEx(ILibWebServer_Session_GetSystemData(session)->DigestTable, "realm", 5, (void**)&userRealm, &userRealmLen);
+	nonce = (char*)ILibGetEntry(ILibWebServer_Session_GetSystemData(session)->DigestTable, "nonce", 5);
+	ILibGetEntryEx(ILibWebServer_Session_GetSystemData(session)->DigestTable, "opaque", 6, (void**)&opaque, &opaqueLen);
 
-	if (opaque != NULL && userRealm != NULL && (int)strlen(userRealm) == realmLen && strncmp(userRealm, realm, realmLen) == 0)
+	if (opaque != NULL && userRealm != NULL && userRealmLen == realmLen && strncmp(userRealm, realm, realmLen) == 0)
 	{
 		// Realm is correct, now check the Nonce & Opaque Values
-		if (strlen(opaque) != 16) { return(0); } // Invalid Opaque Block
+		if (opaqueLen != 16) { return(0); } // Invalid Opaque Block
 
 		util_hexToBuf(opaque, 16, expiration);
 		if (((long long*)expiration)[0] < current) { return(0); } // Opaque Block Expired
@@ -1092,9 +1227,9 @@ int ILibWebServer_Digest_IsCorrectRealmAndNonce(struct ILibWebServer_Session *se
 
 // Returns true if authentication headers present
 // NOTE: This call can only be made once per HTTP request, this call changes the HTTP headers.
-int ILibWebServer_Digest_IsAuthenticated(struct ILibWebServer_Session *session, char* realm, int realmLen)
+ILibExportMethod int ILibWebServer_Digest_IsAuthenticated(struct ILibWebServer_Session *session, char* realm, int realmLen)
 {
-	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	char* auth;
 
 	if (hdr == NULL) return 0;
@@ -1103,33 +1238,37 @@ int ILibWebServer_Digest_IsAuthenticated(struct ILibWebServer_Session *session, 
 	return 0;
 }
 
-char* ILibWebServer_Digest_GetUsername(struct ILibWebServer_Session *session)
+ILibExportMethod char* ILibWebServer_Digest_GetUsername(struct ILibWebServer_Session *session)
 {
-	if (session->Reserved_DigestTable == NULL) return NULL;
-	return((char*)ILibGetEntry(session->Reserved_DigestTable, "username", 8));
+	if (ILibWebServer_Session_GetSystemData(session)->DigestTable == NULL) return NULL;
+	return((char*)ILibGetEntry(ILibWebServer_Session_GetSystemData(session)->DigestTable, "username", 8));
 }
 
-int ILibWebServer_Digest_ValidatePassword(struct ILibWebServer_Session *session, char* password, int passwordLen)
+ILibExportMethod int ILibWebServer_Digest_ValidatePassword(struct ILibWebServer_Session *session, char* password, int passwordLen)
 {
-	int retVal, l;
-	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	int retVal;
+	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	char nonce[33];
 	char result1[33];
 	char result2[33];
 	char result3[33];
-	char value[100];
-	char *tmp;
-	int tmpLen;
+
+	char val[16];
 
 	char* username;
+	int usernameLen;
 	char* realm;
+	int realmLen;
 	char* uri;
+	int uriLen;
 	char* response;
+	int responseLen;
+	MD5_CTX mctx;
 
-	username = (char*)ILibGetEntry(session->Reserved_DigestTable, "username", 8);
-	realm = (char*)ILibGetEntry(session->Reserved_DigestTable, "realm", 5);
-	uri = (char*)ILibGetEntry(session->Reserved_DigestTable, "uri", 3);
-	response = (char*)ILibGetEntry(session->Reserved_DigestTable, "response", 8);
+	ILibGetEntryEx(ILibWebServer_Session_GetSystemData(session)->DigestTable, "username", 8, (void**)&username, &usernameLen);
+	ILibGetEntryEx(ILibWebServer_Session_GetSystemData(session)->DigestTable, "realm", 5, (void**)&realm, &realmLen);
+	ILibGetEntryEx(ILibWebServer_Session_GetSystemData(session)->DigestTable, "uri", 3, (void**)&uri, &uriLen);
+	ILibGetEntryEx(ILibWebServer_Session_GetSystemData(session)->DigestTable, "response", 8, (void**)&response, &responseLen);
 
 	if (username == NULL || uri == NULL || password == NULL || passwordLen == 0)
 	{
@@ -1138,28 +1277,32 @@ int ILibWebServer_Digest_ValidatePassword(struct ILibWebServer_Session *session,
 	}
 
 	ILibWebServer_Digest_CalculateNonce(session, 0, nonce);
-
-	l = strlen(username) + strlen(realm) + passwordLen + 3;
-	if ((tmp = (char*)malloc(l)) == NULL) ILIBCRITICALEXIT(254);
-	tmpLen = snprintf(tmp, l, "%s:%s:", username, realm);
-	memcpy(tmp + tmpLen, password, passwordLen);
-	tmpLen += passwordLen;
-	tmp[tmpLen] = 0;
-	util_md5hex(tmp, tmpLen, result1);
-	free(tmp);
-
-	l = hdr->DirectiveLength + strlen(uri) + 2;
-	if ((tmp = (char*)malloc(l)) == NULL) ILIBCRITICALEXIT(254);
 	hdr->Directive[hdr->DirectiveLength] = 0;
-	//ILibToLower(hdr->Directive, hdr->DirectiveLength, hdr->Directive);
-	tmpLen = snprintf(tmp, l, "%s:%s", hdr->Directive, uri);
-	tmp[tmpLen] = 0;
-	util_md5hex(tmp, tmpLen, result2);
 
-	free(tmp);
-	tmpLen = snprintf(value, 100, "%s:%s:%s", result1, nonce, result2);
-	value[tmpLen] = 0;
-	util_md5hex(value, tmpLen, result3);
+	MD5_Init(&mctx);
+	MD5_Update(&mctx, username, usernameLen);
+	MD5_Update(&mctx, ":", 1);
+	MD5_Update(&mctx, realm, realmLen);
+	MD5_Update(&mctx, ":", 1);
+	MD5_Update(&mctx, password, passwordLen);
+	MD5_Final((unsigned char*)val, &mctx);
+	util_tohex_lower(val, 16, result1);
+
+	MD5_Init(&mctx);
+	MD5_Update(&mctx, hdr->Directive, hdr->DirectiveLength);
+	MD5_Update(&mctx, ":", 1);
+	MD5_Update(&mctx, uri, uriLen);
+	MD5_Final((unsigned char*)val, &mctx);
+	util_tohex_lower(val, 16, result2);
+
+	MD5_Init(&mctx);
+	MD5_Update(&mctx, result1, 32);
+	MD5_Update(&mctx, ":", 1);
+	MD5_Update(&mctx, nonce, 32);
+	MD5_Update(&mctx, ":", 1);
+	MD5_Update(&mctx, result2, 32);
+	MD5_Final((unsigned char*)val, &mctx);
+	util_tohex_lower(val, 16, result3);
 
 	retVal = strcmp(result3, response) == 0 ? 1 : 0;
 	// if (retVal == 0) { ILibWebServer_Digest_SendUnauthorized(session, realm, strlen(realm)); }
@@ -1172,10 +1315,10 @@ ILibTransport_DoneState ILibWebServer_WebSocket_TransportSend(void *transport, c
 	return((ILibTransport_DoneState)ILibWebServer_WebSocket_Send((struct ILibWebServer_Session*)transport, buffer, bufferLength, ILibWebServer_WebSocket_DataType_BINARY, (enum ILibAsyncSocket_MemoryOwnership)ownership, (ILibWebServer_WebSocket_FragmentFlags)done));
 }
 
-char* ILibWebServer_IsCrossSiteRequest(ILibWebServer_Session* session)
+ILibExportMethod char* ILibWebServer_IsCrossSiteRequest(ILibWebServer_Session* session)
 {
 	char* retVal = NULL;
-	ILibHTTPPacket* hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	ILibHTTPPacket* hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	if (hdr != NULL)
 	{
 		char* host = ILibGetHeaderLine(hdr, "Host", 4);
@@ -1195,28 +1338,35 @@ char* ILibWebServer_IsCrossSiteRequest(ILibWebServer_Session* session)
 
 	return(retVal);
 }
-int ILibWebServer_UpgradeWebSocket(struct ILibWebServer_Session *session, int autoFragmentReassemblyMaxBufferSize)
+ILibExportMethod ILibWebServer_WebSocket_DataTypes ILibWebServer_WebSocket_GetDataType(ILibWebServer_Session *session)
 {
+	ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_2, "ILibWebServer: WebSocket_GetDataType [Session/%p] = %d", (void*)session, (ILibWebServer_WebSocket_DataTypes)ILibWebServer_Session_GetSystemData(session)->WebSocketDataFrameType);
+	return((ILibWebServer_WebSocket_DataTypes)ILibWebServer_Session_GetSystemData(session)->WebSocketDataFrameType);
+}
+ILibExportMethod int ILibWebServer_UpgradeWebSocket(struct ILibWebServer_Session *session, int autoFragmentReassemblyMaxBufferSize)
+{
+	char wsguid[] = WEBSOCKET_GUID;
 	SHA_CTX c;
 	char shavalue[21];
 	char* websocketKey;
+	int websocketKeyLen;
 	char* keyResult;
 	int keyResultLen;
-	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	struct packetheader *hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	if (hdr == NULL) { return(1); }
 
-	session->Reserved20 = autoFragmentReassemblyMaxBufferSize;
-	if (session->Reserved20 > 0)
+	ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentMaxBufferSize = autoFragmentReassemblyMaxBufferSize;
+	if (ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentMaxBufferSize > 0)
 	{
-		session->Reserved19 = session->Reserved20 < 4096 ? session->Reserved20 : 4096;
-		if ((session->Reserved17 = (char*)malloc(session->Reserved19)) == NULL) ILIBCRITICALEXIT(254);
+		ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentBufferSize = ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentMaxBufferSize < 4096 ? ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentMaxBufferSize : 4096;
+		if ((ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentBuffer = (char*)malloc(ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentBufferSize)) == NULL) ILIBCRITICALEXIT(254);
 	}
 
-	websocketKey = ILibGetHeaderLine(hdr, "Sec-WebSocket-Key", 17);
-	keyResult = ILibString_Cat(websocketKey, strlen(websocketKey), WEBSOCKET_GUID, strlen(WEBSOCKET_GUID));
+	websocketKey = ILibGetHeaderLineEx(hdr, "Sec-WebSocket-Key", 17, &websocketKeyLen);
+	keyResult = ILibString_Cat(websocketKey, websocketKeyLen, wsguid, sizeof(wsguid));
 
 	SHA1_Init(&c);
-	SHA1_Update(&c, keyResult, strlen(keyResult));
+	SHA1_Update(&c, keyResult, strnlen_s(keyResult, sizeof(wsguid) + websocketKeyLen));
 	SHA1_Final((unsigned char*)shavalue, &c);
 	shavalue[20] = 0;
 	free(keyResult);
@@ -1224,19 +1374,19 @@ int ILibWebServer_UpgradeWebSocket(struct ILibWebServer_Session *session, int au
 
 	keyResultLen = ILibBase64Encode((unsigned char*)shavalue, 20, (unsigned char**)&keyResult);
 
-	session->Reserved_WebSocket_Request = ILibClonePacket(hdr);
+	ILibWebServer_Session_GetSystemData(session)->WebSocket_Request = ILibClonePacket(hdr);
 
 	ILibWebServer_Send_Raw(session, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ", 97, ILibAsyncSocket_MemoryOwnership_STATIC, ILibWebServer_DoneFlag_NotDone);
 	ILibWebServer_Send_Raw(session, keyResult, keyResultLen, ILibAsyncSocket_MemoryOwnership_CHAIN, ILibWebServer_DoneFlag_NotDone);
 	ILibWebServer_Send_Raw(session, "\r\n\r\n", 4, ILibAsyncSocket_MemoryOwnership_STATIC, ILibWebServer_DoneFlag_NotDone);
 
-	session->Reserved8 = 1; // Set this flag, so we continue reading from the socket, as we're going to bypass HTTP parsing
-	session->Reserved_Flags = (unsigned int)ILibTransports_WebSocket;
-	session->closePtr = (ILibTransport_ClosePtr)&ILibWebServer_WebSocket_Close;
-	session->sendPtr = (ILibTransport_SendPtr)&ILibWebServer_WebSocket_TransportSend;
-	session->pendingPtr = (ILibTransport_PendingBytesToSendPtr)&ILibWebServer_Session_GetPendingBytesToSend;
+	ILibWebServer_Session_GetSystemData(session)->RequestAnsweredMethod = 1; // Set this flag, so we continue reading from the socket, as we're going to bypass HTTP parsing
+	session->Reserved_Transport.IdentifierFlags = (unsigned int)ILibTransports_WebSocket;
+	session->Reserved_Transport.ClosePtr = (ILibTransport_ClosePtr)&ILibWebServer_WebSocket_Close;
+	session->Reserved_Transport.SendPtr = (ILibTransport_SendPtr)&ILibWebServer_WebSocket_TransportSend;
+	session->Reserved_Transport.PendingBytesPtr = (ILibTransport_PendingBytesToSendPtr)&ILibWebServer_Session_GetPendingBytesToSend;
 
-	ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Chain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WebSession[%p] Upgraded to WebSocket", (void*)session);
+	ILibRemoteLogging_printf(ILibChainGetLogger(session->Reserved_Transport.ChainLink.ParentChain), ILibRemoteLogging_Modules_Microstack_Web, ILibRemoteLogging_Flags_VerbosityLevel_1, "...WebSession[%p] Upgraded to WebSocket", (void*)session);
 
 	return 0;
 }
@@ -1248,21 +1398,21 @@ int ILibWebServer_UpgradeWebSocket(struct ILibWebServer_Session *session, int au
 \param packet The packet to respond with
 \returns Flag indicating send status.
 */
-enum ILibWebServer_Status ILibWebServer_Send(struct ILibWebServer_Session *session, struct packetheader *packet)
+ILibExportMethod enum ILibWebServer_Status ILibWebServer_Send(struct ILibWebServer_Session *session, struct packetheader *packet)
 {
 	char *buffer;
 	int bufferSize;
 	enum ILibWebServer_Status RetVal = ILibWebServer_ALL_DATA_SENT;
 
-	if (session == NULL || session->SessionInterrupted != 0 || session->Reserved_WebSocket_Request != NULL)
+	if (session == NULL || session->SessionInterrupted != 0 || ILibWebServer_Session_GetSystemData(session)->WebSocket_Request != NULL)
 	{
 		ILibDestructPacket(packet);
 		return(ILibWebServer_INVALID_SESSION);
 	}
-	session->Reserved4 = 1;
+	ILibWebServer_Session_GetSystemData(session)->RequestAnsweredFlag = 1;
 	bufferSize = ILibGetRawPacket(packet, &buffer);
 
-	if ((RetVal = ILibAsyncServerSocket_Send(session->Reserved1, session->Reserved2, buffer, bufferSize, ILibAsyncSocket_MemoryOwnership_CHAIN)) == 0)
+	if ((RetVal = (enum ILibWebServer_Status)ILibAsyncServerSocket_Send(ILibWebServer_Session_GetSystemData(session)->AsyncServerSocket, ILibWebServer_Session_GetSystemData(session)->ConnectionToken, buffer, bufferSize, ILibAsyncSocket_MemoryOwnership_CHAIN)) == ILibWebServer_ALL_DATA_SENT)
 	{
 		// Completed Send
 		if (ILibWebServer_RequestAnswered(session) == ILibWebServer_SEND_RESULTED_IN_DISCONNECT) { RetVal = ILibWebServer_SEND_RESULTED_IN_DISCONNECT; }
@@ -1303,7 +1453,7 @@ int ILibWebServer_WebSocket_CreateHeader(char* header, unsigned short FLAGS, uns
 	return(retVal);
 }
 
-enum ILibWebServer_Status ILibWebServer_WebSocket_Send(struct ILibWebServer_Session *session, char* buffer, int bufferLen, ILibWebServer_WebSocket_DataTypes bufferType, enum ILibAsyncSocket_MemoryOwnership userFree, ILibWebServer_WebSocket_FragmentFlags fragmentStatus)
+ILibExportMethod enum ILibWebServer_Status ILibWebServer_WebSocket_Send(struct ILibWebServer_Session *session, char* buffer, int bufferLen, ILibWebServer_WebSocket_DataTypes bufferType, enum ILibAsyncSocket_MemoryOwnership userFree, ILibWebServer_WebSocket_FragmentFlags fragmentStatus)
 {
 	char header[4];
 	int headerLen;
@@ -1326,7 +1476,7 @@ enum ILibWebServer_Status ILibWebServer_WebSocket_Send(struct ILibWebServer_Sess
 
 	if (fragmentStatus == ILibWebServer_WebSocket_FragmentFlag_Complete)
 	{
-		if (session->Reserved15 == 0)
+		if (ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentFlag == 0)
 		{
 			// This is a self contained fragment
 			headerLen = ILibWebServer_WebSocket_CreateHeader(header, WEBSOCKET_FIN, (unsigned short)bufferType, bufferLen);
@@ -1334,16 +1484,16 @@ enum ILibWebServer_Status ILibWebServer_WebSocket_Send(struct ILibWebServer_Sess
 		else
 		{
 			// Termination of an ongoing Fragment
-			session->Reserved15 = 0;
+			ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentFlag = 0;
 			headerLen = ILibWebServer_WebSocket_CreateHeader(header, WEBSOCKET_FIN, WEBSOCKET_OPCODE_FRAMECONT, bufferLen);
 		}
 	}
 	else
 	{
-		if (session->Reserved15 == 0)
+		if (ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentFlag == 0)
 		{
 			// Start a new fragment
-			session->Reserved15 = 1;
+			ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentFlag = 1;
 			headerLen = ILibWebServer_WebSocket_CreateHeader(header, 0, (unsigned short)bufferType, bufferLen);
 		}
 		else
@@ -1353,13 +1503,13 @@ enum ILibWebServer_Status ILibWebServer_WebSocket_Send(struct ILibWebServer_Sess
 		}
 	}
 
-	sem_wait(&(session->Reserved11)); // We need to do this, because we need to be able to correctly interleave sends
-	RetVal = (enum ILibWebServer_Status)ILibAsyncServerSocket_Send(session->Reserved1, session->Reserved2, header, headerLen, ILibAsyncSocket_MemoryOwnership_USER);
+	sem_wait(&(ILibWebServer_Session_GetSystemData(session)->SessionLock)); // We need to do this, because we need to be able to correctly interleave sends
+	RetVal = (enum ILibWebServer_Status)ILibAsyncServerSocket_Send(ILibWebServer_Session_GetSystemData(session)->AsyncServerSocket, ILibWebServer_Session_GetSystemData(session)->ConnectionToken, header, headerLen, ILibAsyncSocket_MemoryOwnership_USER);
 	if (bufferLen > 0)
 	{
-		RetVal = (enum ILibWebServer_Status)ILibAsyncServerSocket_Send(session->Reserved1, session->Reserved2, buffer, bufferLen, userFree);
+		RetVal = (enum ILibWebServer_Status)ILibAsyncServerSocket_Send(ILibWebServer_Session_GetSystemData(session)->AsyncServerSocket, ILibWebServer_Session_GetSystemData(session)->ConnectionToken, buffer, bufferLen, userFree);
 	}
-	sem_post(&(session->Reserved11));
+	sem_post(&(ILibWebServer_Session_GetSystemData(session)->SessionLock));
 	return(RetVal);
 }
 
@@ -1372,9 +1522,10 @@ enum ILibWebServer_Status ILibWebServer_WebSocket_Send(struct ILibWebServer_Sess
 \param done Flag indicating if this is everything
 \returns Send Status
 */
-enum ILibWebServer_Status ILibWebServer_Send_Raw(struct ILibWebServer_Session *session, char *buffer, int bufferSize, enum ILibAsyncSocket_MemoryOwnership userFree, ILibWebServer_DoneFlag done)
+ILibExportMethod enum ILibWebServer_Status ILibWebServer_Send_Raw(struct ILibWebServer_Session *session, char *buffer, int bufferSize, enum ILibAsyncSocket_MemoryOwnership userFree, ILibWebServer_DoneFlag done)
 {
 	enum ILibWebServer_Status RetVal = ILibWebServer_ALL_DATA_SENT;
+	if (bufferSize < 0) { bufferSize = (int)strnlen_s(buffer, ILibWebServer_StreamHeader_Raw_MaxHeaderLength); }
 
 	if (session == NULL || (session != NULL && session->SessionInterrupted != 0))
 	{
@@ -1382,8 +1533,8 @@ enum ILibWebServer_Status ILibWebServer_Send_Raw(struct ILibWebServer_Session *s
 		return(ILibWebServer_INVALID_SESSION);
 	}
 
-	session->Reserved4 = done;
-	RetVal = (enum ILibWebServer_Status)ILibAsyncServerSocket_Send(session->Reserved1, session->Reserved2, buffer, bufferSize, userFree);
+	ILibWebServer_Session_GetSystemData(session)->RequestAnsweredFlag = done;
+	RetVal = (enum ILibWebServer_Status)ILibAsyncServerSocket_Send(ILibWebServer_Session_GetSystemData(session)->AsyncServerSocket, ILibWebServer_Session_GetSystemData(session)->ConnectionToken, buffer, bufferSize, userFree);
 	if (RetVal == ILibWebServer_ALL_DATA_SENT && done != 0)
 	{
 		// Completed Send
@@ -1415,14 +1566,15 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader_Raw(struct ILibWebServer_Se
 	struct parser_result *pr, *pr2;
 	struct parser_result_field *prf;
 	enum ILibWebServer_Status RetVal = ILibWebServer_ALL_DATA_SENT;
+	int StatusDataLen = StatusData != NULL ? (int)strnlen_s(StatusData, ILibWebServer_StreamHeader_Raw_MaxHeaderLength) : 0;
 
-	if (session == NULL || session->SessionInterrupted != 0 || session->Reserved_WebSocket_Request != NULL)
+	if (session == NULL || session->SessionInterrupted != 0 || ILibWebServer_Session_GetSystemData(session)->WebSocket_Request != NULL)
 	{
 		if (ResponseHeaders_FREE == ILibAsyncSocket_MemoryOwnership_CHAIN) { free(ResponseHeaders); }
 		return ILibWebServer_INVALID_SESSION;
 	}
 
-	hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	if (hdr == NULL)
 	{
 		if (ResponseHeaders_FREE == ILibAsyncSocket_MemoryOwnership_CHAIN) { free(ResponseHeaders); }
@@ -1433,9 +1585,9 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader_Raw(struct ILibWebServer_Se
 	// Allocate the response header buffer
 	// ToDo: May want to make the response version dynamic or at least #define
 	//
-	if ((buffer = (char*)malloc(20 + strlen(StatusData))) == NULL) ILIBCRITICALEXIT(254);
+	if ((buffer = (char*)malloc(20 + StatusDataLen)) == NULL) ILIBCRITICALEXIT(254);
 	if (buffer == NULL) ILIBCRITICALEXIT(254);
-	bufferLength = snprintf(buffer, 20 + strlen(StatusData), "HTTP/%s %d %s", HTTPVERSION, StatusCode, StatusData);
+	bufferLength = sprintf_s(buffer, 20 + StatusDataLen, "HTTP/%s %d %s", HTTPVERSION, StatusCode, StatusData);
 
 	//
 	// Send the first portion of the headers across
@@ -1460,7 +1612,7 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader_Raw(struct ILibWebServer_Se
 			//
 			// Since we are streaming over HTTP/1.0 , we are required to close the socket when done
 			//
-			session->Reserved6 = 1;
+			ILibWebServer_Session_GetSystemData(session)->CloseOverrideFlag = 1;
 			//{{{ REMOVE_THIS_FOR_HTTP/1.0_ONLY_SUPPORT--> }}}
 		}
 		//{{{ <--REMOVE_THIS_FOR_HTTP/1.0_ONLY_SUPPORT }}}
@@ -1469,7 +1621,7 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader_Raw(struct ILibWebServer_Se
 			//
 			// Send the user specified headers
 			//
-			len = (int)strlen(ResponseHeaders);
+			len = (int)strnlen_s(ResponseHeaders, ILibWebServer_StreamHeader_Raw_MaxHeaderLength);
 			if (len < MAX_HEADER_LENGTH)
 			{
 				RetVal = ILibWebServer_Send_Raw(session, ResponseHeaders, len, ResponseHeaders_FREE, ILibWebServer_DoneFlag_NotDone);
@@ -1522,9 +1674,9 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader_Raw(struct ILibWebServer_Se
 		}
 		else
 		{
-			if (RetVal != ILibWebServer_ALL_DATA_SENT && session->Reserved10 != NULL)
+			if (RetVal != ILibWebServer_ALL_DATA_SENT && ILibWebServer_Session_GetSystemData(session)->DisconnectFlagPointer != NULL)
 			{
-				session->Reserved10 = NULL;
+				ILibWebServer_Session_GetSystemData(session)->DisconnectFlagPointer = NULL;
 			}
 			return (RetVal);
 		}
@@ -1532,9 +1684,9 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader_Raw(struct ILibWebServer_Se
 	//
 	// ToDo: May want to check logic if the sends didn't go through
 	//
-	if (RetVal != ILibWebServer_ALL_DATA_SENT && session->Reserved10 != NULL)
+	if (RetVal != ILibWebServer_ALL_DATA_SENT && ILibWebServer_Session_GetSystemData(session)->DisconnectFlagPointer != NULL)
 	{
-		session->Reserved10 = NULL;
+		ILibWebServer_Session_GetSystemData(session)->DisconnectFlagPointer = NULL;
 	}
 	return (RetVal);
 }
@@ -1554,13 +1706,13 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader(struct ILibWebServer_Sessio
 	char *buffer;
 	enum ILibWebServer_Status RetVal = ILibWebServer_INVALID_SESSION;
 
-	if (session == NULL || session->SessionInterrupted != 0 || session->Reserved_WebSocket_Request != NULL)
+	if (session == NULL || session->SessionInterrupted != 0 || ILibWebServer_Session_GetSystemData(session)->WebSocket_Request != NULL)
 	{
 		ILibDestructPacket(header);
 		return(ILibWebServer_INVALID_SESSION);
 	}
 
-	hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	if (hdr == NULL)
 	{
 		ILibDestructPacket(header);
@@ -1589,7 +1741,7 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader(struct ILibWebServer_Sessio
 			// If it wasn't, we'll set the CloseOverrideFlag, because in order to be compliant
 			// we must close the socket when done
 			//
-			session->Reserved6 = 1;
+			ILibWebServer_Session_GetSystemData(session)->CloseOverrideFlag = 1;
 		}
 		//{{{ REMOVE_THIS_FOR_HTTP/1.0_ONLY_SUPPORT--> }}}
 	}
@@ -1604,9 +1756,9 @@ enum ILibWebServer_Status ILibWebServer_StreamHeader(struct ILibWebServer_Sessio
 	//
 	RetVal = ILibWebServer_Send_Raw(session, buffer, bufferLength, ILibAsyncSocket_MemoryOwnership_CHAIN, ILibWebServer_DoneFlag_NotDone);
 	ILibDestructPacket(header);
-	if (RetVal != ILibWebServer_ALL_DATA_SENT && session->Reserved10 != NULL)
+	if (RetVal != ILibWebServer_ALL_DATA_SENT && ILibWebServer_Session_GetSystemData(session)->DisconnectFlagPointer != NULL)
 	{
-		session->Reserved10 = NULL;
+		ILibWebServer_Session_GetSystemData(session)->DisconnectFlagPointer = NULL;
 	}
 	return (RetVal);
 }
@@ -1627,13 +1779,13 @@ enum ILibWebServer_Status ILibWebServer_StreamBody(struct ILibWebServer_Session 
 	int hexLen;
 	enum ILibWebServer_Status RetVal = ILibWebServer_INVALID_SESSION;
 
-	if (session == NULL || session->SessionInterrupted != 0 || session->Reserved_WebSocket_Request != NULL)
+	if (session == NULL || session->SessionInterrupted != 0 || ILibWebServer_Session_GetSystemData(session)->WebSocket_Request != NULL)
 	{
 		if (userFree == ILibAsyncSocket_MemoryOwnership_CHAIN) { free(buffer); }
 		return(ILibWebServer_INVALID_SESSION);
 	}
 
-	hdr = ILibWebClient_GetHeaderFromDataObject(session->Reserved3);
+	hdr = ILibWebClient_GetHeaderFromDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 	if (hdr == NULL)
 	{
 		if (userFree == ILibAsyncSocket_MemoryOwnership_CHAIN) { free(buffer); }
@@ -1674,7 +1826,7 @@ enum ILibWebServer_Status ILibWebServer_StreamBody(struct ILibWebServer_Session 
 			// Calculate the length of the body in hex, and create the chunk header
 			//
 			if ((hex = (char*)malloc(16)) == NULL) ILIBCRITICALEXIT(254);
-			hexLen = snprintf(hex, 16, "%X\r\n", bufferSize);
+			hexLen = sprintf_s(hex, 16, "%X\r\n", bufferSize);
 			RetVal = ILibWebServer_TRIED_TO_SEND_ON_CLOSED_SOCKET;
 
 			//
@@ -1730,9 +1882,9 @@ enum ILibWebServer_Status ILibWebServer_StreamBody(struct ILibWebServer_Session 
 	}
 	//{{{ <--REMOVE_THIS_FOR_HTTP/1.0_ONLY_SUPPORT }}}
 
-	if (RetVal != ILibWebServer_ALL_DATA_SENT && session->Reserved10 != NULL)
+	if (RetVal != ILibWebServer_ALL_DATA_SENT && ILibWebServer_Session_GetSystemData(session)->DisconnectFlagPointer != NULL)
 	{
-		session->Reserved10 = NULL;
+		ILibWebServer_Session_GetSystemData(session)->DisconnectFlagPointer = NULL;
 	}
 	return(RetVal);
 }
@@ -1745,7 +1897,7 @@ enum ILibWebServer_Status ILibWebServer_StreamBody(struct ILibWebServer_Session 
 */
 int ILibWebServer_GetRemoteInterface(struct ILibWebServer_Session *session, struct sockaddr *remoteAddress)
 {
-	return ILibAsyncSocket_GetRemoteInterface(session->Reserved2, remoteAddress);
+	return ILibAsyncSocket_GetRemoteInterface(ILibWebServer_Session_GetSystemData(session)->ConnectionToken, remoteAddress);
 }
 
 /*! \fn ILibWebServer_GetLocalInterface(struct ILibWebServer_Session *session)
@@ -1755,7 +1907,7 @@ int ILibWebServer_GetRemoteInterface(struct ILibWebServer_Session *session, stru
 */
 int ILibWebServer_GetLocalInterface(struct ILibWebServer_Session *session, struct sockaddr *localAddress)
 {
-	return ILibAsyncSocket_GetLocalInterface(session->Reserved2, localAddress);
+	return ILibAsyncSocket_GetLocalInterface(ILibWebServer_Session_GetSystemData(session)->ConnectionToken, localAddress);
 }
 
 
@@ -1826,9 +1978,10 @@ int ILibWebServer_UnRegisterVirtualDirectory(ILibWebServer_ServerToken WebServer
 void ILibWebServer_AddRef(struct ILibWebServer_Session *session)
 {
 	SESSION_TRACK(session, "AddRef");
-	sem_wait(&(session->Reserved11));
-	++session->Reserved12;
-	sem_post(&(session->Reserved11));
+
+	sem_wait(&(ILibWebServer_Session_GetSystemData(session)->SessionLock));
+	++ILibWebServer_Session_GetSystemData(session)->ReferenceCounter;
+	sem_post(&(ILibWebServer_Session_GetSystemData(session)->SessionLock));
 }
 
 /*! \fn ILibWebServer_Release(struct ILibWebServer_Session *session)
@@ -1842,8 +1995,8 @@ void ILibWebServer_Release(struct ILibWebServer_Session *session)
 	int OkToFree = 0;
 
 	SESSION_TRACK(session, "Release");
-	sem_wait(&(session->Reserved11));
-	if (--session->Reserved12 == 0)
+	sem_wait(&(ILibWebServer_Session_GetSystemData(session)->SessionLock));
+	if (--ILibWebServer_Session_GetSystemData(session)->ReferenceCounter == 0)
 	{
 		//
 		// There are no more outstanding references, so we can
@@ -1851,7 +2004,7 @@ void ILibWebServer_Release(struct ILibWebServer_Session *session)
 		//
 		OkToFree = 1;
 	}
-	sem_post(&(session->Reserved11));
+	sem_post(&(ILibWebServer_Session_GetSystemData(session)->SessionLock));
 	if (session->SessionInterrupted == 0)
 	{
 		ILibLifeTime_Remove(((struct ILibWebServer_StateModule*)session->Parent)->LifeTime, session);
@@ -1861,13 +2014,13 @@ void ILibWebServer_Release(struct ILibWebServer_Session *session)
 	{
 		if (session->SessionInterrupted == 0)
 		{
-			ILibWebClient_DestroyWebClientDataObject(session->Reserved3);
+			ILibWebClient_DestroyWebClientDataObject(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 		}
 		SESSION_TRACK(session, "** Destroyed **");
-		sem_destroy(&(session->Reserved11));
-		if (session->Reserved_DigestTable != NULL) { ILibDestroyHashTree(session->Reserved_DigestTable); }
-		if (session->Reserved17 != NULL)	{ free(session->Reserved17); }
-		if (session->Reserved_WebSocket_Request != NULL) { ILibDestructPacket((struct packetheader*)session->Reserved_WebSocket_Request); }
+		sem_destroy(&(ILibWebServer_Session_GetSystemData(session)->SessionLock));
+		if (ILibWebServer_Session_GetSystemData(session)->DigestTable != NULL) { ILibDestroyHashTree(ILibWebServer_Session_GetSystemData(session)->DigestTable); }
+		if (ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentBuffer != NULL)	{ free(ILibWebServer_Session_GetSystemData(session)->WebSocketFragmentBuffer); }
+		if (ILibWebServer_Session_GetSystemData(session)->WebSocket_Request != NULL) { ILibDestructPacket((struct packetheader*)ILibWebServer_Session_GetSystemData(session)->WebSocket_Request); }
 		free(session);
 	}
 }
@@ -1880,7 +2033,7 @@ managed by the system, such that it can take advantage of persistent connections
 */
 void ILibWebServer_DisconnectSession(struct ILibWebServer_Session *session)
 {
-	ILibWebClient_Disconnect(session->Reserved3);
+	ILibWebClient_Disconnect(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 }
 /*! \fn void ILibWebServer_Pause(struct ILibWebServer_Session *session)
 \brief Pauses the ILibWebServer_Session, such that reading of more data off the network is
@@ -1889,17 +2042,17 @@ temporarily suspended.
 <B>Note:</B> This method <B>MUST</B> only be called from either the \a ILibWebServer_Session_OnReceive or \a ILibWebServer_VirtualDirectory handlers.
 \param session The ILibWebServer_Session object to pause.
 */
-__inline void ILibWebServer_Pause(struct ILibWebServer_Session *session)
+ILibExportMethod void ILibWebServer_Pause(struct ILibWebServer_Session *session)
 {
-	ILibWebClient_Pause(session->Reserved3);
+	ILibWebClient_Pause(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 }
 /*! \fn void ILibWebServer_Resume(struct ILibWebServer_Session *session)
 \brief Resumes a paused ILibWebServer_Session object.
 \param session The ILibWebServer_Session object to resume.
 */
-__inline void ILibWebServer_Resume(struct ILibWebServer_Session *session)
+ILibExportMethod void ILibWebServer_Resume(struct ILibWebServer_Session *session)
 {
-	ILibWebClient_Resume(session->Reserved3);
+	ILibWebClient_Resume(ILibWebServer_Session_GetSystemData(session)->WebClientDataObject);
 }
 /*! \fn void ILibWebServer_OverrideReceiveHandler(struct ILibWebServer_Session *session, ILibWebServer_Session_OnReceive OnReceive)
 \brief Overrides the Receive handler, so that the passed in handler will get called whenever data is received.
@@ -1909,7 +2062,7 @@ __inline void ILibWebServer_Resume(struct ILibWebServer_Session *session)
 __inline void ILibWebServer_OverrideReceiveHandler(struct ILibWebServer_Session *session, ILibWebServer_Session_OnReceive OnReceive)
 {
 	session->OnReceive = OnReceive;
-	session->Reserved13 = 1;
+	ILibWebServer_Session_GetSystemData(session)->OverrideVirDirStruct = 1;
 }
 
 /*
