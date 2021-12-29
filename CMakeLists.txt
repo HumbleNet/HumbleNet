@@ -182,31 +182,28 @@ if(HUMBLENET_NATIVE)
 		set(ZLIB_LIBRARY ZLIB)
 	endif()
 
-	add_library(websockets STATIC IMPORTED)
-	set_target_properties(websockets
-		PROPERTIES
-			INTERFACE_INCLUDE_DIRECTORIES ${INSTALL_DIR}/include
-	)
-
 	if (CMAKE_CONFIGURATION_TYPES)
-		set_target_properties(websockets
-			PROPERTIES
-				IMPORTED_LOCATION ${BINARY_DIR}/lib/Release/${CMAKE_STATIC_LIBRARY_PREFIX}websockets${WEBSOCKET_SUFFIX}${CMAKE_STATIC_LIBRARY_SUFFIX}
-				IMPORTED_LOCATION_DEBUG ${BINARY_DIR}/lib/Debug/${CMAKE_STATIC_LIBRARY_PREFIX}websockets${WEBSOCKET_SUFFIX}${CMAKE_STATIC_LIBRARY_SUFFIX}
+		set(WEBSOCKET_LIBRARY
+			${BINARY_DIR}/lib/$<CONFIG>/${CMAKE_STATIC_LIBRARY_PREFIX}websockets${WEBSOCKET_SUFFIX}${CMAKE_STATIC_LIBRARY_SUFFIX}
 		)
 	else()
-		set_target_properties(websockets
-			PROPERTIES
-				IMPORTED_LOCATION ${INSTALL_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}websockets${WEBSOCKET_SUFFIX}${CMAKE_STATIC_LIBRARY_SUFFIX}
+		set(WEBSOCKET_LIBRARY
+			${BINARY_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}websockets${WEBSOCKET_SUFFIX}${CMAKE_STATIC_LIBRARY_SUFFIX}
 		)
 	endif()
 
-	set_target_properties(websockets
-		PROPERTIES
-			INTERFACE_LINK_LIBRARIES "${ZLIB_LIBRARY};${LWS_BORING_INTERFACE}"
+	CreateInterface(websockets
+	INCLUDES
+		INTERFACE
+			${INSTALL_DIR}/include
+	LINK
+		INTERFACE
+			${ZLIB_LIBRARY}
+			${LWS_BORING_INTERFACE}
+			${WEBSOCKET_LIBRARY}
+	DEPENDS
+		websockets-build
 	)
-
-	add_dependencies(websockets websockets-build)
 	# endregion
 
 	# region Flatbuffers
