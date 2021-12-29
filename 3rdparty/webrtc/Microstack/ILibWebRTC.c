@@ -1273,7 +1273,7 @@ int ILib_Stun_GetAttributeChangeRequestPacket(int flags, char* TransactionId, ch
 	((unsigned int*)rbuffer)[1] = htonl(0x2112A442);											// Set the magic string
 	util_random(12, TransactionId);																// Random used for transaction id
 
-	TransactionId[0] = 255;																		// Set the first byte to 255, so it doesn't collide with IceStateSlot
+	TransactionId[0] = (char)255;																		// Set the first byte to 255, so it doesn't collide with IceStateSlot
 	memcpy(rbuffer + 8, TransactionId, 12);
 
 	((unsigned short*)(rbuffer + rptr))[0] = htons(STUN_ATTRIB_CHANGE_REQUEST);					// Attribute header
@@ -1295,8 +1295,8 @@ void ILib_Stun_SendAttributeChangeRequest(void* module, struct sockaddr* StunSer
 	((unsigned int*)rbuffer)[1] = htonl(0x2112A442);											// Set the magic string
 	util_random(12, StunModule->TransactionId);													// Random used for transaction id
 
-	StunModule->TransactionId[0] = 255;															// Set the first byte to 255, so it doesn't collide with IceStateSlot
-	NAT_MAPPING_DETECTION(StunModule->TransactionId) = ((flags & 0x8000)==0x8000)?255:0;		// Mapping Detection vs Public Interface Only Detection
+	StunModule->TransactionId[0] = (char)255;															// Set the first byte to 255, so it doesn't collide with IceStateSlot
+	NAT_MAPPING_DETECTION(StunModule->TransactionId) = ((flags & 0x8000)==0x8000)?(char)255:0;		// Mapping Detection vs Public Interface Only Detection
 	memcpy(rbuffer + 8, StunModule->TransactionId, 12);
 
 	((unsigned short*)(rbuffer + rptr))[0] = htons(STUN_ATTRIB_CHANGE_REQUEST);					// Attribute header
@@ -6158,4 +6158,3 @@ unsigned int crc32c(unsigned int crci, const void *buf, unsigned int len)
 	while (len) { crc = crc32c_table[0][(crc ^ *next++) & 0xff] ^ (crc >> 8); len--; }
 	return (unsigned int)crc ^ 0xffffffff;
 }
-

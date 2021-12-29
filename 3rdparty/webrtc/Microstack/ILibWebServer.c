@@ -1262,7 +1262,7 @@ enum ILibWebServer_Status ILibWebServer_Send(struct ILibWebServer_Session *sessi
 	session->Reserved4 = 1;
 	bufferSize = ILibGetRawPacket(packet, &buffer);
 
-	if ((RetVal = ILibAsyncServerSocket_Send(session->Reserved1, session->Reserved2, buffer, bufferSize, ILibAsyncSocket_MemoryOwnership_CHAIN)) == 0)
+	if ((RetVal = (enum ILibWebServer_Status)ILibAsyncServerSocket_Send(session->Reserved1, session->Reserved2, buffer, bufferSize, ILibAsyncSocket_MemoryOwnership_CHAIN)) == 0)
 	{
 		// Completed Send
 		if (ILibWebServer_RequestAnswered(session) == ILibWebServer_SEND_RESULTED_IN_DISCONNECT) { RetVal = ILibWebServer_SEND_RESULTED_IN_DISCONNECT; }
@@ -1950,4 +1950,3 @@ void ILibWebServer_StreamFile(struct ILibWebServer_Session *session, FILE* pfile
 	session->User3 = (void*)pfile;
 	ILibWebServer_StreamFileSendOK(session);
 }
-
