@@ -1982,6 +1982,7 @@ void ILib_WindowsExceptionDebug(CONTEXT *exceptionContext)
 	ILIBCRITICALEXITMSG(254, buffer);
 }
 #elif defined(_POSIX)
+#include <execinfo.h>
 char ILib_POSIX_CrashParamBuffer[5 * sizeof(void*)];
 void ILib_POSIX_CrashHandler(int code)
 {
@@ -9002,5 +9003,3 @@ int ILibLinkedList_FileBacked_AddTail(ILibLinkedList_FileBacked_Root* root, char
 	fflush(source);
 	return(0);
 }
-
-

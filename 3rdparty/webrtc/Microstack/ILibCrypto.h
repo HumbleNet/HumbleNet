@@ -55,6 +55,7 @@ void  __fastcall util_randomtext(int length, char* result);
 #include <openssl/md5.h>
 #include <openssl/sha.h>
 #include <openssl/err.h>
+#include "compat-ssl.h"
 
 // Certificate structure
 typedef struct util_cert

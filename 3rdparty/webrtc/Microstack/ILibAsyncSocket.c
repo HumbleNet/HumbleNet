@@ -50,6 +50,7 @@ limitations under the License.
 #ifndef MICROSTACK_NOTLS
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include "compat-ssl.h"
 #endif
 #include <assert.h>
 
@@ -2218,4 +2219,3 @@ STACK_OF(X509) *ILibAsyncSocket_SslGetCerts(ILibAsyncSocket_SocketModule socketM
 	return SSL_get_peer_cert_chain(sm->ssl);
 }
 #endif
-

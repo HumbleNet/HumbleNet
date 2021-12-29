@@ -43,11 +43,6 @@ limitations under the License.
 	#define ILibWebRTC_LoggingServerPort 0
 #endif
 
-#ifdef OPENSSL_IS_BORINGSSL
-#define HMAC_CTX_free HMAC_CTX_cleanup
-inline HMAC_CTX* HMAC_CTX_new() { HMAC_CTX* ctx;  HMAC_CTX_init(ctx); return ctx; }
-#endif
-
 #define STUN_NUM_ADDR 5
 #define ILibStunClient_TIMEOUT 2
 #define ILibRUDP_WindowSize 32000
@@ -1421,7 +1416,7 @@ int ILib_Stun_GetAttributeChangeRequestPacket(int flags, char* TransactionId, ch
 	((unsigned int*)rbuffer)[1] = htonl(0x2112A442);											// Set the magic string
 	util_random(12, TransactionId);																// Random used for transaction id
 
-	TransactionId[0] = 255;																		// Set the first byte to 255, so it doesn't collide with IceStateSlot
+	TransactionId[0] = (char)255;																		// Set the first byte to 255, so it doesn't collide with IceStateSlot
 	memcpy_s(rbuffer + 8, 12, TransactionId, 12);
 
 	((unsigned short*)(rbuffer + rptr))[0] = htons(STUN_ATTRIB_CHANGE_REQUEST);					// Attribute header
@@ -1443,8 +1438,8 @@ void ILib_Stun_SendAttributeChangeRequest(void* module, struct sockaddr* StunSer
 	((unsigned int*)rbuffer)[1] = htonl(0x2112A442);											// Set the magic string
 	util_random(12, StunModule->TransactionId);													// Random used for transaction id
 
-	StunModule->TransactionId[0] = 255;															// Set the first byte to 255, so it doesn't collide with IceStateSlot
-	NAT_MAPPING_DETECTION(StunModule->TransactionId) = ((flags & 0x8000)==0x8000)?255:0;		// Mapping Detection vs Public Interface Only Detection
+	StunModule->TransactionId[0] = (char)255;															// Set the first byte to 255, so it doesn't collide with IceStateSlot
+	NAT_MAPPING_DETECTION(StunModule->TransactionId) = ((flags & 0x8000)==0x8000)?(char)255:0;		// Mapping Detection vs Public Interface Only Detection
 	memcpy_s(rbuffer + 8, sizeof(rbuffer) - 8, StunModule->TransactionId, 12);
 
 	((unsigned short*)(rbuffer + rptr))[0] = htons(STUN_ATTRIB_CHANGE_REQUEST);					// Attribute header
@@ -7367,4 +7362,3 @@ unsigned int crc32c(unsigned int crci, const void *buf, unsigned int len)
 }
 
 #endif
-

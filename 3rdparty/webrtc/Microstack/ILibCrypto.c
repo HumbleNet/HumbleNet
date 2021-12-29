@@ -18,6 +18,17 @@
 #include <openssl/rand.h>
 #include <openssl/err.h>
 #include <openssl/hmac.h>
+#ifdef OPENSSL_IS_BORINGSSL
+void HMAC_CTX_free(HMAC_CTX* ctx) {
+	free(ctx);
+}
+
+HMAC_CTX* HMAC_CTX_new() {
+	HMAC_CTX* ctx = malloc(sizeof(HMAC_CTX));
+	HMAC_CTX_init(ctx);
+	return ctx;
+}
+#endif
 #else
 #include "md5.h"
 #include "sha1.h"

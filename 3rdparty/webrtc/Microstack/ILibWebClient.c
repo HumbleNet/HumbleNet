@@ -1394,7 +1394,7 @@ int ILibWebClient_ProcessWebSocketData(char* buffer, int offset, int length, ILi
 		case WEBSOCKET_OPCODE_PING:
 			if (state->pingHandler == NULL || state->pingHandler(wcdo, state->pingPongUser) == ILibWebClient_WebSocket_PingResponse_Respond)
 			{
-				ILibWebClient_WebSocket_Send(wcdo, (ILibWebClient_WebSocket_DataTypes)WEBSOCKET_OPCODE_PONG, NULL, 0, ILibAsyncSocket_MemoryOwnership_STATIC, ILibWebServer_WebSocket_FragmentFlag_Complete);
+				ILibWebClient_WebSocket_Send(wcdo, (ILibWebClient_WebSocket_DataTypes)WEBSOCKET_OPCODE_PONG, NULL, 0, ILibAsyncSocket_MemoryOwnership_STATIC, ILibWebClient_WebSocket_FragmentFlag_Complete);
 			}
 			break;
 		case WEBSOCKET_OPCODE_PONG:
@@ -3245,13 +3245,13 @@ ILibTransport_DoneState ILibWebClient_StreamRequestBody(
 		if (body != NULL && bodyLength > 0)
 		{
 			hexLen = sprintf_s(hex, 16, "%X\r\n", bodyLength);
-			result = ILibAsyncSocket_Send(t->wcdo->SOCK, hex, hexLen, ILibAsyncSocket_MemoryOwnership_USER);
+			result = (ILibTransport_DoneState)ILibAsyncSocket_Send(t->wcdo->SOCK, hex, hexLen, ILibAsyncSocket_MemoryOwnership_USER);
 			if (result != ILibTransport_DoneState_ERROR)
 			{
-				result = ILibAsyncSocket_Send(t->wcdo->SOCK, body ,bodyLength, MemoryOwnership);
+				result = (ILibTransport_DoneState)ILibAsyncSocket_Send(t->wcdo->SOCK, body ,bodyLength, MemoryOwnership);
 				if (result != ILibTransport_DoneState_ERROR)
 				{
-					result = ILibAsyncSocket_Send(t->wcdo->SOCK, "\r\n", 2, ILibAsyncSocket_MemoryOwnership_STATIC);
+					result = (ILibTransport_DoneState)ILibAsyncSocket_Send(t->wcdo->SOCK, "\r\n", 2, ILibAsyncSocket_MemoryOwnership_STATIC);
 				}
 			}
 			else if (MemoryOwnership == ILibAsyncSocket_MemoryOwnership_CHAIN)
@@ -3261,7 +3261,7 @@ ILibTransport_DoneState ILibWebClient_StreamRequestBody(
 		}
 		if (result != ILibTransport_DoneState_ERROR && done != 0)
 		{
-			result = ILibAsyncSocket_Send(t->wcdo->SOCK, "0\r\n\r\n", 5, ILibAsyncSocket_MemoryOwnership_STATIC);
+			result = (ILibTransport_DoneState)ILibAsyncSocket_Send(t->wcdo->SOCK, "0\r\n\r\n", 5, ILibAsyncSocket_MemoryOwnership_STATIC);
 		}
 		if (result == ILibTransport_DoneState_COMPLETE && wr != NULL && wr->streamedState != NULL && wr->streamedState->OnSendOK != NULL && done == 0)
 		{
@@ -3709,4 +3709,3 @@ void ILibWebClient_SetProxyEx(ILibWebClient_RequestToken token, struct sockaddr_
 	memcpy_s(&(wcdo->proxy), sizeof(struct sockaddr_in6), proxyServer, sizeof(struct sockaddr_in6));
 }
 #endif
-
