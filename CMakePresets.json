@@ -1,0 +1,64 @@
+{
+	"version": 3,
+	"cmakeMinimumRequired": {
+		"major": 3,
+		"minor": 9,
+		"patch": 0
+	},
+	"configurePresets": [
+		{
+			"name": "base",
+			"binaryDir": "build/${presetName}"
+		},
+		{
+			"name": "make-debug",
+			"inherits": ["base"],
+			"generator": "Unix Makefiles",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": {
+					"type": "BOOL",
+					"value": "Debug"
+				}
+			}
+		},
+		{
+			"name": "make-release",
+			"inherits": ["base", "ninja-debug"],
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": {
+					"type": "BOOL",
+					"value": "Release"
+				}
+			}
+		},
+		{
+			"name": "ninja-multi",
+			"inherits": ["base"],
+			"generator": "Ninja Multi-Config"
+		},
+		{
+			"name": "xcode",
+			"inherits": ["base"],
+			"generator": "Xcode",
+			"toolset": "buildsystem=1"
+		}
+	],
+	"buildPresets": [
+		{
+			"name": "make-debug",
+			"configurePreset": "make-debug"
+		},
+		{
+			"name": "make-release",
+			"configurePreset": "make-release"
+		},
+		{
+			"name": "ninja-multi",
+			"configurePreset": "ninja-multi"
+		},
+		{
+			"name": "xcode",
+			"configurePreset": "xcode"
+		}
+	]
+}
