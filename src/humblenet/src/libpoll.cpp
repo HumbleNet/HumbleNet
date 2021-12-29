@@ -427,7 +427,7 @@ static ILibBaseChain* g_chain;
 // thoughts...to allow deletion of stuffs...
 // allocate a private subchain and add it to the master chain, that way i can just destroy the subchain when a module is done...leaving the master chain intact,
 
-static void poll_async() {
+static void poll_async(void*) {
 	ILibStartChain(g_chain);
 }
 
