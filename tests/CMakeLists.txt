@@ -26,7 +26,7 @@ if(HUMBLENET_DESKTOP)
 		test_loader.cpp
 	LINK
 		humblenet_loader
-	DEPENDENCIES
+	DEPENDS
 		humblenet_shared
 	PROPERTIES
 		FOLDER HumbleNet/Tests
