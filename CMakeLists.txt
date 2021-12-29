@@ -207,8 +207,12 @@ if(HUMBLENET_NATIVE)
 	# endregion
 
 	# region Flatbuffers
+	if(APPLE)
+		set(PATCH_STEP PATCH_COMMAND patch -p1 -N -B ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/flatbuffers < ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/flatbuffers.patch || true)
+	endif()
 	ExternalProject_Add(flatbuffers-build
 		SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/flatbuffers
+		${PATCH_STEP}
 		CMAKE_CACHE_ARGS
 			-DCMAKE_OSX_ARCHITECTURES:STRING=${CMAKE_OSX_ARCHITECTURES}
 			-DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=${CMAKE_OSX_DEPLOYMENT_TARGET}
