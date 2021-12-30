@@ -21,54 +21,54 @@ table ICEServer {
 table HelloServer {
 	version			: uint32;
 	flags			: uint8;
-	gameToken		: string (required);
-	gameSignature	: string (required);
-	authToken		: string;
-	reconnectToken	: string;
+	game_token		: string (required);
+	game_signature	: string (required);
+	auth_token		: string;
+	reconnect_token	: string;
 	attributes		: [Attribute];
 }
 
 table HelloClient {
-	peerId			: uint32;
+	peer_id			: uint32;
 	reconnectToken	: string;
-	iceServers		: [ICEServer];
+	ice_servers		: [ICEServer];
 }
 
 // P2P Handshaking
 
 table P2POffer {
-	peerId			: uint32;
+	peer_id			: uint32;
 	flags			: uint8;
 	offer			: string;
 }
 
 table P2PAnswer {
-	peerId			: uint32;
+	peer_id			: uint32;
 	offer			: string;
 }
 
 table P2PConnected {
-	peerId			: uint32;
+	peer_id			: uint32;
 }
 
 table P2PDisconnect {
-	peerId			: uint32;
+	peer_id			: uint32;
 }
 
 enum P2PRejectReason : uint8 { NotFound = 1, PeerRefused = 2 }
 
 table P2PReject {
-	peerId			: uint32;
+	peer_id			: uint32;
 	reason			: P2PRejectReason = NotFound;
 }
 
 table ICECandidate {
-	peerId			: uint32;
+	peer_id			: uint32;
 	offer			: string;
 }
 
 table P2PRelayData {
-	peerId			: uint32;
+	peer_id			: uint32;
 	data			: [byte];
 }
 
@@ -96,7 +96,7 @@ table AliasLookup {
 
 table AliasResolved {
 	alias			: string (required);
-	peerId			: uint32;
+	peer_id			: uint32;
 }
 
 // Message switch
@@ -114,7 +114,7 @@ union MessageType {
 
 table Message {
 	message			: MessageType;
-	requestId		: uint32;
+	request_id		: uint32;
 }
 
 root_type Message;

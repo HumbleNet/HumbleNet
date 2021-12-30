@@ -13,8 +13,8 @@ namespace humblenet {
 	Game *Server::getVerifiedGame(const HumblePeer::HelloServer* hello)
 	{
 		GameRecord record;
-		auto gameToken = hello->gameToken();
-		auto gameSignature = hello->gameSignature();
+		auto gameToken = hello->game_token();
+		auto gameSignature = hello->game_signature();
 
 		if (!gameToken || !gameSignature) {
 			LOG_ERROR("No game token provided!\n");
@@ -32,11 +32,11 @@ namespace humblenet {
 			HMACContext hmac;
 			HMACInit(&hmac, (const uint8_t*)record.secret.c_str(), record.secret.size());
 
-			auto authToken = hello->authToken();
+			auto authToken = hello->auth_token();
 			if (authToken) {
 				HMACInput(&hmac, authToken->Data(), authToken->size());
 			}
-			auto reconnect = hello->authToken();
+			auto reconnect = hello->reconnect_token();
 			if (reconnect) {
 				HMACInput(&hmac, reconnect->Data(), reconnect->size());
 			}

@@ -55,13 +55,13 @@ SCENARIO( "sendHelloServer", "[client][hello]" )
 		CHECK( msg->flags() == 0x3f );
 
 		THEN( "it has no authToken nor reconnectToken" ) {
-			CHECK_FALSE( msg->authToken());
-			CHECK_FALSE( msg->reconnectToken());
+			CHECK_FALSE( msg->auth_token());
+			CHECK_FALSE( msg->reconnect_token());
 		}
 
 		THEN( "it has the game token and game signature" ) {
-			CHECK( msg->gameToken()->str() == "gameToken" );
-			CHECK( msg->gameSignature() != nullptr );
+			CHECK( msg->game_token()->str() == "gameToken" );
+			CHECK( msg->game_signature() != nullptr );
 		}
 
 		THEN( "has the correct attributes" ) {
@@ -88,13 +88,13 @@ SCENARIO( "sendHelloServer", "[client][hello]" )
 		CHECK( msg->flags() == 0x3f );
 
 		THEN( "it has no authToken nor reconnectToken" ) {
-			CHECK( msg->authToken()->str() == "authToken" );
-			CHECK( msg->reconnectToken()->str() == "reconnectToken" );
+			CHECK( msg->auth_token()->str() == "authToken" );
+			CHECK( msg->reconnect_token()->str() == "reconnectToken" );
 		}
 
 		THEN( "it has the game token and game signature" ) {
-			CHECK( msg->gameToken()->str() == "gameToken" );
-			CHECK( msg->gameSignature() != nullptr );
+			CHECK( msg->game_token()->str() == "gameToken" );
+			CHECK( msg->game_signature() != nullptr );
 		}
 
 		THEN( "has the correct attributes" ) {
@@ -124,14 +124,14 @@ SCENARIO( "sendHelloClient", "[server][hello]" )
 
 		auto msg = reinterpret_cast<const HumblePeer::HelloClient*>(conn.message->message());
 
-		CHECK( msg->peerId() == 0xdeadbeef );
+		CHECK( msg->peer_id() == 0xdeadbeef );
 
 		THEN( "it has no reconnect token" ) {
 			CHECK_FALSE( msg->reconnectToken());
 		}
 
 		THEN( "it has no ice servers" ) {
-			CHECK_FALSE( msg->iceServers());
+			CHECK_FALSE( msg->ice_servers());
 		}
 	}
 
@@ -147,14 +147,14 @@ SCENARIO( "sendHelloClient", "[server][hello]" )
 
 		auto msg = reinterpret_cast<const HumblePeer::HelloClient*>(conn.message->message());
 
-		CHECK( msg->peerId() == 0xdeadbeef );
+		CHECK( msg->peer_id() == 0xdeadbeef );
 
 		THEN( "it has a reconnect token" ) {
 			CHECK( msg->reconnectToken());
 		}
 
 		THEN( "it has ice servers" ) {
-			auto srvs = msg->iceServers();
+			auto srvs = msg->ice_servers();
 			CHECK( srvs->size() == 2 );
 
 			auto v = srvs->Get( 0 );
@@ -242,7 +242,7 @@ SCENARIO( "sendAliasRegister", "[client][alias]" )
 		THEN( "it has the correct properties" ) {
 			CHECK( msg->alias()->str() == "server.host" );
 
-			CHECK( conn.message->requestId() == reqId );
+			CHECK( conn.message->request_id() == reqId );
 		}
 	}
 }
@@ -265,7 +265,7 @@ SCENARIO( "sendAliasUnregister", "[client][alias]" )
 		THEN( "it has the correct properties" ) {
 			CHECK( msg->alias()->str() == "server.host" );
 
-			CHECK( conn.message->requestId() == reqId );
+			CHECK( conn.message->request_id() == reqId );
 		}
 	}
 
@@ -285,7 +285,7 @@ SCENARIO( "sendAliasUnregister", "[client][alias]" )
 		THEN( "it has the correct properties" ) {
 			CHECK( msg->alias() == nullptr );
 
-			CHECK( conn.message->requestId() == reqId );
+			CHECK( conn.message->request_id() == reqId );
 		}
 	}
 }
@@ -308,7 +308,7 @@ SCENARIO( "sendAliasLookup", "[client][alias]" )
 		THEN( "it has the correct properties" ) {
 			CHECK( msg->alias()->str() == "server.host" );
 
-			CHECK( conn.message->requestId() == reqId );
+			CHECK( conn.message->request_id() == reqId );
 		}
 	}
 }
@@ -327,9 +327,9 @@ SCENARIO( "sendAliasResolved", "[server][alias]" )
 		THEN( "it has the correct properties" ) {
 			CHECK( msg->alias()->str() == "server.host" );
 
-			CHECK( msg->peerId() == 0xdeadbeef );
+			CHECK( msg->peer_id() == 0xdeadbeef );
 
-			CHECK( conn.message->requestId() == 0xbeefdead );
+			CHECK( conn.message->request_id() == 0xbeefdead );
 		}
 	}
 
@@ -345,9 +345,9 @@ SCENARIO( "sendAliasResolved", "[server][alias]" )
 		THEN( "it has the correct properties" ) {
 			CHECK( msg->alias()->str() == "server.host" );
 
-			CHECK( msg->peerId() == 0 );
+			CHECK( msg->peer_id() == 0 );
 
-			CHECK( conn.message->requestId() == 0xbeefdead );
+			CHECK( conn.message->request_id() == 0xbeefdead );
 		}
 	}
 }

@@ -29,7 +29,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2POffer:
 			{
 				auto p2p = reinterpret_cast<const HumblePeer::P2POffer*>(msg->message());
-				PeerId peer = static_cast<PeerId>(p2p->peerId());
+				PeerId peer = static_cast<PeerId>(p2p->peer_id());
 
 				if (humbleNetState.pendingPeerConnectionsIn.find(peer) != humbleNetState.pendingPeerConnectionsIn.end()) {
 					// error, already a pending incoming connection to this peer
@@ -76,7 +76,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2PAnswer:
 			{
 				auto p2p = reinterpret_cast<const HumblePeer::P2PAnswer*>(msg->message());
-				PeerId peer = static_cast<PeerId>(p2p->peerId());
+				PeerId peer = static_cast<PeerId>(p2p->peer_id());
 
 				auto it = humbleNetState.pendingPeerConnectionsOut.find(peer);
 				if (it == humbleNetState.pendingPeerConnectionsOut.end()) {
@@ -109,7 +109,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::HelloClient:
 			{
 				auto hello = reinterpret_cast<const HumblePeer::HelloClient*>(msg->message());
-				PeerId peer = static_cast<PeerId>(hello->peerId());
+				PeerId peer = static_cast<PeerId>(hello->peer_id());
 
 				if (humbleNetState.myPeerId != 0) {
 					LOG("Error: got HelloClient but we already have a peer id\n");
@@ -120,8 +120,8 @@ namespace humblenet {
 
 				humbleNetState.iceServers.clear();
 
-				if (hello->iceServers()) {
-					auto iceList = hello->iceServers();
+				if (hello->ice_servers()) {
+					auto iceList = hello->ice_servers();
 					for (const auto& it : *iceList) {
 						if (it->type() == HumblePeer::ICEServerType::STUNServer) {
 							humbleNetState.iceServers.emplace_back(it->server()->str());
@@ -157,7 +157,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::ICECandidate:
 			{
 				auto iceCandidate = reinterpret_cast<const HumblePeer::ICECandidate*>(msg->message());
-				PeerId peer = static_cast<PeerId>(iceCandidate->peerId());
+				PeerId peer = static_cast<PeerId>(iceCandidate->peer_id());
 
 				auto it = humbleNetState.pendingPeerConnectionsIn.find( peer );
 
@@ -187,7 +187,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2PReject:
 			{
 				auto reject = reinterpret_cast<const HumblePeer::P2PReject*>(msg->message());
-				PeerId peer = static_cast<PeerId>(reject->peerId());
+				PeerId peer = static_cast<PeerId>(reject->peer_id());
 
 				switch (reject->reason()) {
 					case HumblePeer::P2PRejectReason::NotFound: {
@@ -221,10 +221,10 @@ namespace humblenet {
 			{
 				auto connect = reinterpret_cast<const HumblePeer::P2PConnected*>(msg->message());
 
-				LOG("Established connection to peer %u", connect->peerId());
+				LOG("Established connection to peer %u", connect->peer_id());
 
 				HumbleNet_Event event = {HUMBLENET_EVENT_PEER_CONNECTED};
-				event.peer.peer_id = connect->peerId();
+				event.peer.peer_id = connect->peer_id();
 				humblenet_event_push( event );
 			}
 				break;
@@ -233,10 +233,10 @@ namespace humblenet {
 			{
 				auto disconnect = reinterpret_cast<const HumblePeer::P2PDisconnect*>(msg->message());
 
-				LOG("Disconnecting peer %u", disconnect->peerId());
+				LOG("Disconnecting peer %u", disconnect->peer_id());
 
 				HumbleNet_Event event = {HUMBLENET_EVENT_PEER_DISCONNECTED};
-				event.peer.peer_id = disconnect->peerId();
+				event.peer.peer_id = disconnect->peer_id();
 				humblenet_event_push( event );
 			}
 				break;
@@ -244,7 +244,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2PRelayData:
 			{
 				auto relay = reinterpret_cast<const HumblePeer::P2PRelayData*>(msg->message());
-				auto peer = relay->peerId();
+				auto peer = relay->peer_id();
 				auto data = relay->data();
 
 				LOG("Got %d bytes relayed from peer %u\n", data->Length(), peer );
@@ -274,12 +274,12 @@ namespace humblenet {
 			{
 				auto resolved = reinterpret_cast<const HumblePeer::AliasResolved*>(msg->message());
 
-				internal_alias_resolved_to( resolved->alias()->c_str(), resolved->peerId() );
+				internal_alias_resolved_to( resolved->alias()->c_str(), resolved->peer_id() );
 
 				HumbleNet_Event event = {HUMBLENET_EVENT_ALIAS_RESOLVED};
-				event.common.request_id = msg->requestId();
-				if (resolved->peerId()) {
-					event.peer.peer_id = resolved->peerId();
+				event.common.request_id = msg->request_id();
+				if (resolved->peer_id()) {
+					event.peer.peer_id = resolved->peer_id();
 				} else {
 					event.type = HUMBLENET_EVENT_ALIAS_NOT_FOUND;
 #pragma message ("TODO provide better error message that maybe includes the hostname?")
@@ -293,7 +293,7 @@ namespace humblenet {
 				auto message = reinterpret_cast<const HumblePeer::Error*>(msg->message());
 
 				HumbleNet_Event event = {HUMBLENET_EVENT_ALIAS_REGISTER_ERROR};
-				event.common.request_id = msg->requestId();
+				event.common.request_id = msg->request_id();
 #pragma message ("TODO provide better error/alo message including contents from peer server?")
 				strcpy(event.error.error, "Failed to register alias");
 				humblenet_event_push(event);
@@ -304,7 +304,7 @@ namespace humblenet {
 				auto message = reinterpret_cast<const HumblePeer::Success*>(msg->message());
 
 				HumbleNet_Event event = {HUMBLENET_EVENT_ALIAS_REGISTER_SUCCESS};
-				event.common.request_id = msg->requestId();
+				event.common.request_id = msg->request_id();
 				humblenet_event_push(event);
 			}
 				break;

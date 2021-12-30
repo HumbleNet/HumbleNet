@@ -160,11 +160,11 @@ SCENARIO( "server processMsg : HelloServer" )
 
 			auto msg = reinterpret_cast<const HumblePeer::HelloClient*>(messages[1].message->message());
 
-			CHECK( msg->peerId() == 1 );
+			CHECK( msg->peer_id() == 1 );
 
 			CHECK( msg->reconnectToken() == nullptr );
 
-			CHECK( msg->iceServers() == nullptr );
+			CHECK( msg->ice_servers() == nullptr );
 		}
 
 		THEN( "It sets up the game state on the peer connection" ) {
@@ -206,7 +206,7 @@ SCENARIO_METHOD( ConnectedPeerFixture, "server processMsg : AliasRegister" )
 
 				auto msg = reinterpret_cast<const HumblePeer::Success*>(curMsg->message());
 
-				CHECK( curMsg->requestId() == reqId );
+				CHECK( curMsg->request_id() == reqId );
 			}
 		}
 
@@ -245,7 +245,7 @@ SCENARIO_METHOD( ConnectedPeerFixture, "server processMsg : AliasRegister" )
 
 				auto msg = reinterpret_cast<const HumblePeer::Error*>(curMsg->message());
 
-				CHECK( curMsg->requestId() == reqId );
+				CHECK( curMsg->request_id() == reqId );
 				CHECK( msg->error()->str() == "Alias already registered" );
 			}
 		}
@@ -279,7 +279,7 @@ SCENARIO_METHOD( ConnectedPeerFixture, "server processMsg : AliasUnregister" )
 
 				auto msg = reinterpret_cast<const HumblePeer::Success*>(curMsg->message());
 
-				CHECK( curMsg->requestId() == reqId );
+				CHECK( curMsg->request_id() == reqId );
 			}
 		}
 
@@ -317,7 +317,7 @@ SCENARIO_METHOD( ConnectedPeerFixture, "server processMsg : AliasUnregister" )
 
 				auto msg = reinterpret_cast<const HumblePeer::Error*>(curMsg->message());
 
-				CHECK( curMsg->requestId() == reqId );
+				CHECK( curMsg->request_id() == reqId );
 				CHECK( msg->error()->str() == "Unregister failed" );
 			}
 		}
@@ -350,7 +350,7 @@ SCENARIO_METHOD( ConnectedPeerFixture, "server processMsg : AliasUnregister" )
 
 				auto msg = reinterpret_cast<const HumblePeer::Success*>(curMsg->message());
 
-				CHECK( curMsg->requestId() == reqId );
+				CHECK( curMsg->request_id() == reqId );
 			}
 		}
 
@@ -389,8 +389,8 @@ SCENARIO_METHOD( ConnectedPeerFixture, "server processMsg : AliasLookup" )
 
 				auto msg = reinterpret_cast<const HumblePeer::AliasResolved*>(curMsg->message());
 
-				CHECK( curMsg->requestId() == reqId );
-				CHECK( msg->peerId() == conn.peerId );
+				CHECK( curMsg->request_id() == reqId );
+				CHECK( msg->peer_id() == conn.peerId );
 			}
 		}
 	}
@@ -414,8 +414,8 @@ SCENARIO_METHOD( ConnectedPeerFixture, "server processMsg : AliasLookup" )
 
 				auto msg = reinterpret_cast<const HumblePeer::AliasResolved*>(curMsg->message());
 
-				CHECK( curMsg->requestId() == reqId );
-				CHECK( msg->peerId() == connAlt.peerId);
+				CHECK( curMsg->request_id() == reqId );
+				CHECK( msg->peer_id() == connAlt.peerId);
 			}
 		}
 	}
@@ -439,8 +439,8 @@ SCENARIO_METHOD( ConnectedPeerFixture, "server processMsg : AliasLookup" )
 
 				auto msg = reinterpret_cast<const HumblePeer::AliasResolved*>(curMsg->message());
 
-				CHECK( curMsg->requestId() == reqId );
-				CHECK( msg->peerId() == 0 );
+				CHECK( curMsg->request_id() == reqId );
+				CHECK( msg->peer_id() == 0 );
 			}
 		}
 	}

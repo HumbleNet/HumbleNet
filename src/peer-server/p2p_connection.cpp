@@ -26,7 +26,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2POffer:
 			{
 				auto p2p = reinterpret_cast<const HumblePeer::P2POffer*>(msg->message());
-				auto peer = p2p->peerId();
+				auto peer = p2p->peer_id();
 
 				// look up target peer, send message on
 				// TODO: should ensure there's not already a negotiation going
@@ -73,7 +73,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2PAnswer:
 			{
 				auto p2p = reinterpret_cast<const HumblePeer::P2PAnswer*>(msg->message());
-				auto peer = p2p->peerId();
+				auto peer = p2p->peer_id();
 
 				// look up target peer, send message on
 				// TODO: should only send if peers are currently negotiating connection
@@ -111,7 +111,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::ICECandidate:
 			{
 				auto p2p = reinterpret_cast<const HumblePeer::ICECandidate*>(msg->message());
-				auto peer = p2p->peerId();
+				auto peer = p2p->peer_id();
 
 				// look up target peer, send message on
 				// TODO: should only send if peers are currently negotiating connection
@@ -133,7 +133,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2PReject:
 			{
 				auto p2p = reinterpret_cast<const HumblePeer::P2PReject*>(msg->message());
-				auto peer = p2p->peerId();
+				auto peer = p2p->peer_id();
 
 				auto it = game->peers.find(peer);
 				// TODO: check there's such a connection attempt ongoing
@@ -239,7 +239,7 @@ namespace humblenet {
 			case HumblePeer::MessageType::P2PRelayData:
 			{
 				auto relay = reinterpret_cast<const HumblePeer::P2PRelayData*>(msg->message());
-				auto peer = relay->peerId();
+				auto peer = relay->peer_id();
 				auto data = relay->data();
 
 				LOG_INFO("P2PRelayData relaying %d bytes from peer %u to %u\n", data->Length(), this->peerId, peer );
@@ -268,13 +268,13 @@ namespace humblenet {
 
 				if( existing != game->aliases.end() && existing->second != peerId ) {
 					LOG_INFO("Rejecting peer %u's request to register alias '%s' which is already registered to peer %u\n", peerId, alias->c_str(), existing->second );
-					sendError(this, msg->requestId(), "Alias already registered", HumblePeer::MessageType::AliasRegisterError);
+					sendError(this, msg->request_id(), "Alias already registered", HumblePeer::MessageType::AliasRegisterError);
 				} else {
 					if( existing == game->aliases.end() ) {
 						game->aliases.insert( std::make_pair( alias->c_str(), peerId ) );
 					}
 					LOG_INFO("Registering alias '%s' to peer %u\n", alias->c_str(), peerId );
-					sendSuccess(this, msg->requestId(), HumblePeer::MessageType::AliasRegisterSuccess);
+					sendSuccess(this, msg->request_id(), HumblePeer::MessageType::AliasRegisterSuccess);
 				}
 			}
 				break;
@@ -292,18 +292,18 @@ namespace humblenet {
 
 						LOG_INFO("Unregistering alias '%s' for peer %u\n", alias->c_str(), peerId );
 
-						sendSuccess( this, msg->requestId(), HumblePeer::MessageType::AliasUnregisterSuccess );
+						sendSuccess( this, msg->request_id(), HumblePeer::MessageType::AliasUnregisterSuccess );
 					} else {
 						LOG_INFO("Rejecting unregister of alias '%s' for peer %u\n", alias->c_str(), peerId );
 
-						sendError(this, msg->requestId(), "Unregister failed", HumblePeer::MessageType::AliasUnregisterError);
+						sendError(this, msg->request_id(), "Unregister failed", HumblePeer::MessageType::AliasUnregisterError);
 					}
 				} else {
 					erase_value(game->aliases, peerId);
 
 					LOG_INFO("Unregistering all aliases for peer for peer %u\n", peerId );
 
-					sendSuccess( this, msg->requestId(), HumblePeer::MessageType::AliasUnregisterSuccess );
+					sendSuccess( this, msg->request_id(), HumblePeer::MessageType::AliasUnregisterSuccess );
 				}
 			}
 				break;
@@ -317,10 +317,10 @@ namespace humblenet {
 
 				if( existing != game->aliases.end() ) {
 					LOG_INFO("Lookup of alias '%s' for peer %u resolved to peer %u\n", alias->c_str(), peerId, existing->second );
-					sendAliasResolved(this, alias->c_str(), existing->second, msg->requestId());
+					sendAliasResolved(this, alias->c_str(), existing->second, msg->request_id());
 				} else {
 					LOG_INFO("Lookup of alias '%s' for peer %u failed. No alias registered\n", alias->c_str(), peerId );
-					sendAliasResolved(this, alias->c_str(), 0, msg->requestId());
+					sendAliasResolved(this, alias->c_str(), 0, msg->request_id());
 				}
 			}
 				break;
