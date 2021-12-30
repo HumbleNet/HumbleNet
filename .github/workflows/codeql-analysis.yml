@@ -17,15 +17,12 @@ on:
       - master
       - 'develop-*'
   pull_request:
-    # The branches below must be a subset of the branches above
     branches:
       - master
       - 'develop-*'
-  schedule:
-    - cron: '45 3 * * 0'
 
 concurrency:
-  group: ${{ github.ref }}
+  group: codeql-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -62,21 +59,10 @@ jobs:
         # queries: ./path/to/local/query, your-org/your-repo/queries@main
         config-file: ./.github/codeql/codeql-config.yml
 
-    # Autobuild attempts to build any compiled languages  (C/C++, C#, or Java).
-    # If this step fails, then you should remove it and run the build manually (see below)
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@v1
-
-    # ℹ️ Command-line programs to run using the OS shell.
-    # 📚 https://git.io/JvXDl
-
-    # ✏️ If the Autobuild fails above, remove it and uncomment the following three lines
-    #    and modify them (or add more) to build your code if your project
-    #    uses a compiled language
-
-    #- run: |
-    #   make bootstrap
-    #   make release
+    - name: build humblenet
+      uses: urkle/action-cmake-build@feat-wrapper-command
+      with:
+        parallel: 4
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v1

@@ -8,7 +8,7 @@ on:
   pull_request:
 
 concurrency:
-  group: ${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
         uses: urkle/action-cmake-build@feat-wrapper-command
         with:
           run-test: true
-          parallel: 1
+          parallel: 4
 
   build_emscripten:
     runs-on: ubuntu-latest
