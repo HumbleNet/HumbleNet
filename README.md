@@ -1,3 +1,5 @@
+[![Build](https://github.com/HumbleNet/HumbleNet/actions/workflows/build.yml/badge.svg)](https://github.com/HumbleNet/HumbleNet/actions/workflows/build.yml)
+
 HumbleNet
 =========
 
