@@ -11,9 +11,9 @@
 			"binaryDir": "build/${presetName}"
 		},
 		{
-			"name": "make-debug",
+			"name": "ninja-debug",
 			"inherits": ["base"],
-			"generator": "Unix Makefiles",
+			"generator": "Ninja",
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": {
 					"type": "BOOL",
@@ -22,7 +22,7 @@
 			}
 		},
 		{
-			"name": "make-release",
+			"name": "ninja-release",
 			"inherits": ["base", "ninja-debug"],
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": {
@@ -45,12 +45,12 @@
 	],
 	"buildPresets": [
 		{
-			"name": "make-debug",
-			"configurePreset": "make-debug"
+			"name": "ninja-debug",
+			"configurePreset": "ninja-debug"
 		},
 		{
-			"name": "make-release",
-			"configurePreset": "make-release"
+			"name": "ninja-release",
+			"configurePreset": "ninja-release"
 		},
 		{
 			"name": "ninja-multi",

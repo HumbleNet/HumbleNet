@@ -96,19 +96,9 @@ if(HUMBLENET_NATIVE)
 		ExternalProject_Get_Property(BoringSSL-build INSTALL_DIR BINARY_DIR)
 
 		if (CMAKE_CONFIGURATION_TYPES)
-			SET(BoringSSL_crypto_LIBRARY_DEBUG ${BINARY_DIR}/crypto/Debug/${CMAKE_STATIC_LIBRARY_PREFIX}crypto${CMAKE_STATIC_LIBRARY_SUFFIX})
-			SET(BoringSSL_crypto_LIBRARY_RELEASE ${BINARY_DIR}/crypto/Release/${CMAKE_STATIC_LIBRARY_PREFIX}crypto${CMAKE_STATIC_LIBRARY_SUFFIX})
-			select_library_configurations(BoringSSL_crypto)
-			SET(BoringSSL_ssl_LIBRARY_DEBUG ${BINARY_DIR}/ssl/Debug/${CMAKE_STATIC_LIBRARY_PREFIX}ssl${CMAKE_STATIC_LIBRARY_SUFFIX})
-			SET(BoringSSL_ssl_LIBRARY_RELEASE ${BINARY_DIR}/ssl/Release/${CMAKE_STATIC_LIBRARY_PREFIX}ssl${CMAKE_STATIC_LIBRARY_SUFFIX})
-			select_library_configurations(BoringSSL_ssl)
+			SET(BoringSSL_crypto_LIBRARY ${BINARY_DIR}/crypto/$<CONFIG>/${CMAKE_STATIC_LIBRARY_PREFIX}crypto${CMAKE_STATIC_LIBRARY_SUFFIX})
+			SET(BoringSSL_ssl_LIBRARY ${BINARY_DIR}/ssl/$<CONFIG>/${CMAKE_STATIC_LIBRARY_PREFIX}ssl${CMAKE_STATIC_LIBRARY_SUFFIX})
 			set(LWS_BORING_LIBS ${BoringSSL_ssl_LIBRARY} ${BoringSSL_crypto_LIBRARY})
-			set(LWS_BORING_INTERFACE
-				$<$<CONFIG:Debug>:${BoringSSL_ssl_LIBRARY_DEBUG}>
-				$<$<NOT:$<CONFIG:Debug>>:${BoringSSL_ssl_LIBRARY_RELEASE}>
-				$<$<CONFIG:Debug>:${BoringSSL_crypto_LIBRARY_DEBUG}>
-				$<$<NOT:$<CONFIG:Debug>>:${BoringSSL_crypto_LIBRARY_RELEASE}>
-			)
 		else()
 			set(BoringSSL_crypto_LIBRARY
 				"${INSTALL_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}crypto${CMAKE_STATIC_LIBRARY_SUFFIX}"
@@ -117,7 +107,6 @@ if(HUMBLENET_NATIVE)
 				"${INSTALL_DIR}/lib/${EP_BUILD_SUFFIX}${CMAKE_STATIC_LIBRARY_PREFIX}ssl${CMAKE_STATIC_LIBRARY_SUFFIX}"
 			)
 			set(LWS_BORING_LIBS ${BoringSSL_ssl_LIBRARY} ${BoringSSL_crypto_LIBRARY})
-			set(LWS_BORING_INTERFACE ${LWS_BORING_LIBS})
 		endif()
 
 		set(BoringSSL_INCLUDE_DIR
@@ -129,6 +118,12 @@ if(HUMBLENET_NATIVE)
 			-DLWS_BORINGSSL_LIB:STRING=${LWS_BORING_LIBS}
 			-DLWS_BORINGSSL_INCLUDE_DIRS:STRING=${BoringSSL_INCLUDE_DIR}
 		)
+
+        add_custom_target(libssl-stub
+                BYPRODUCTS ${LWS_BORING_LIBS}
+                COMMAND ""
+                DEPENDS BoringSSL-build
+                )
 	endif()
 	# endregion
 
@@ -192,6 +187,12 @@ if(HUMBLENET_NATIVE)
 		)
 	endif()
 
+    add_custom_target(websockets-stub
+        BYPRODUCTS ${WEBSOCKET_LIBRARY}
+        COMMAND ""
+        DEPENDS libssl-stub websockets-build
+    )
+
 	CreateInterface(websockets
 	INCLUDES
 		INTERFACE
@@ -200,9 +201,9 @@ if(HUMBLENET_NATIVE)
 		INTERFACE
 			${WEBSOCKET_LIBRARY}
 			${ZLIB_LIBRARY}
-			${LWS_BORING_INTERFACE}
+			${LWS_BORING_LIBS}
 	DEPENDS
-		websockets-build
+		websockets-stub
 	)
 	# endregion
 
