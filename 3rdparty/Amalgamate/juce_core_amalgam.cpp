@@ -1182,7 +1182,7 @@ public:
 	virtual ~VariantType() noexcept {}
 
 	virtual int toInt (const ValueUnion&) const noexcept                        { return 0; }
-	virtual int64 toInt64 (const ValueUnion&) const noexcept                    { return 0; }
+	virtual int64_t toInt64 (const ValueUnion&) const noexcept                    { return 0; }
 	virtual double toDouble (const ValueUnion&) const noexcept                  { return 0; }
 	virtual String toString (const ValueUnion&) const                           { return String::empty; }
 	virtual bool toBool (const ValueUnion&) const noexcept                      { return false; }
@@ -1223,7 +1223,7 @@ public:
 	static const VariantType_Int instance;
 
 	int toInt (const ValueUnion& data) const noexcept       { return data.intValue; };
-	int64 toInt64 (const ValueUnion& data) const noexcept   { return (int64) data.intValue; };
+	int64_t toInt64 (const ValueUnion& data) const noexcept   { return (int64_t) data.intValue; };
 	double toDouble (const ValueUnion& data) const noexcept { return (double) data.intValue; }
 	String toString (const ValueUnion& data) const          { return String (data.intValue); }
 	bool toBool (const ValueUnion& data) const noexcept     { return data.intValue != 0; }
@@ -1249,7 +1249,7 @@ public:
 	static const VariantType_Int64 instance;
 
 	int toInt (const ValueUnion& data) const noexcept       { return (int) data.int64Value; };
-	int64 toInt64 (const ValueUnion& data) const noexcept   { return data.int64Value; };
+	int64_t toInt64 (const ValueUnion& data) const noexcept   { return data.int64Value; };
 	double toDouble (const ValueUnion& data) const noexcept { return (double) data.int64Value; }
 	String toString (const ValueUnion& data) const          { return String (data.int64Value); }
 	bool toBool (const ValueUnion& data) const noexcept     { return data.int64Value != 0; }
@@ -1275,7 +1275,7 @@ public:
 	static const VariantType_Double instance;
 
 	int toInt (const ValueUnion& data) const noexcept       { return (int) data.doubleValue; };
-	int64 toInt64 (const ValueUnion& data) const noexcept   { return (int64) data.doubleValue; };
+	int64_t toInt64 (const ValueUnion& data) const noexcept   { return (int64_t) data.doubleValue; };
 	double toDouble (const ValueUnion& data) const noexcept { return data.doubleValue; }
 	String toString (const ValueUnion& data) const          { return String (data.doubleValue); }
 	bool toBool (const ValueUnion& data) const noexcept     { return data.doubleValue != 0; }
@@ -1301,7 +1301,7 @@ public:
 	static const VariantType_Bool instance;
 
 	int toInt (const ValueUnion& data) const noexcept       { return data.boolValue ? 1 : 0; };
-	int64 toInt64 (const ValueUnion& data) const noexcept   { return data.boolValue ? 1 : 0; };
+	int64_t toInt64 (const ValueUnion& data) const noexcept   { return data.boolValue ? 1 : 0; };
 	double toDouble (const ValueUnion& data) const noexcept { return data.boolValue ? 1.0 : 0.0; }
 	String toString (const ValueUnion& data) const          { return String::charToString (data.boolValue ? (juce_wchar) '1' : (juce_wchar) '0'); }
 	bool toBool (const ValueUnion& data) const noexcept     { return data.boolValue; }
@@ -1330,7 +1330,7 @@ public:
 
 	bool isString() const noexcept                          { return true; }
 	int toInt (const ValueUnion& data) const noexcept       { return getString (data)->getIntValue(); };
-	int64 toInt64 (const ValueUnion& data) const noexcept   { return getString (data)->getLargeIntValue(); };
+	int64_t toInt64 (const ValueUnion& data) const noexcept   { return getString (data)->getLargeIntValue(); };
 	double toDouble (const ValueUnion& data) const noexcept { return getString (data)->getDoubleValue(); }
 	String toString (const ValueUnion& data) const          { return *getString (data); }
 	bool toBool (const ValueUnion& data) const noexcept     { return getString (data)->getIntValue() != 0
@@ -1373,7 +1373,7 @@ public:
 			dest.objectValue->incReferenceCount();
 	}
 
-	String toString (const ValueUnion& data) const                            { return "Object 0x" + String::toHexString ((int) (pointer_sized_int) data.objectValue); }
+	String toString (const ValueUnion& data) const                            { return "Object 0x" + String::toHexString ((int) (intptr_t) data.objectValue); }
 	bool toBool (const ValueUnion& data) const noexcept                       { return data.objectValue != 0; }
 	ReferenceCountedObject* toObject (const ValueUnion& data) const noexcept  { return data.objectValue; }
 	bool isObject() const noexcept                                            { return true; }
@@ -1473,7 +1473,7 @@ var::var (const var& valueToCopy)  : type (valueToCopy.type)
 }
 
 var::var (const int value_) noexcept       : type (&VariantType_Int::instance)    { value.intValue = value_; }
-var::var (const int64 value_) noexcept     : type (&VariantType_Int64::instance)  { value.int64Value = value_; }
+var::var (const int64_t value_) noexcept     : type (&VariantType_Int64::instance)  { value.int64Value = value_; }
 var::var (const bool value_) noexcept      : type (&VariantType_Bool::instance)   { value.boolValue = value_; }
 var::var (const double value_) noexcept    : type (&VariantType_Double::instance) { value.doubleValue = value_; }
 var::var (MethodFunction method_) noexcept : type (&VariantType_Method::instance) { value.methodValue = method_; }
@@ -1506,7 +1506,7 @@ bool var::isArray() const noexcept    { return type->isArray(); }
 bool var::isMethod() const noexcept   { return type->isMethod(); }
 
 var::operator int() const noexcept                      { return type->toInt (value); }
-var::operator int64() const noexcept                    { return type->toInt64 (value); }
+var::operator int64_t() const noexcept                    { return type->toInt64 (value); }
 var::operator bool() const noexcept                     { return type->toBool (value); }
 var::operator float() const noexcept                    { return (float) type->toDouble (value); }
 var::operator double() const noexcept                   { return type->toDouble (value); }
@@ -1524,7 +1524,7 @@ void var::swapWith (var& other) noexcept
 
 var& var::operator= (const var& v)               { type->cleanUp (value); type = v.type; type->createCopy (value, v.value); return *this; }
 var& var::operator= (const int v)                { type->cleanUp (value); type = &VariantType_Int::instance; value.intValue = v; return *this; }
-var& var::operator= (const int64 v)              { type->cleanUp (value); type = &VariantType_Int64::instance; value.int64Value = v; return *this; }
+var& var::operator= (const int64_t v)              { type->cleanUp (value); type = &VariantType_Int64::instance; value.int64Value = v; return *this; }
 var& var::operator= (const bool v)               { type->cleanUp (value); type = &VariantType_Bool::instance; value.boolValue = v; return *this; }
 var& var::operator= (const double v)             { type->cleanUp (value); type = &VariantType_Double::instance; value.doubleValue = v; return *this; }
 var& var::operator= (const char* const v)        { type->cleanUp (value); type = &VariantType_String::instance; new (value.stringValue) String (v); return *this; }
@@ -1797,7 +1797,7 @@ bool DirectoryIterator::next()
 	return next (nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
 }
 
-bool DirectoryIterator::next (bool* const isDirResult, bool* const isHiddenResult, int64* const fileSize,
+bool DirectoryIterator::next (bool* const isDirResult, bool* const isHiddenResult, int64_t* const fileSize,
 							  Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 {
 	hasBeenAdvanced = true;
@@ -2176,7 +2176,7 @@ int File::hashCode() const
 	return fullPath.hashCode();
 }
 
-int64 File::hashCode64() const
+int64_t File::hashCode64() const
 {
 	return fullPath.hashCode64();
 }
@@ -2283,7 +2283,7 @@ File File::getSiblingFile (const String& fileName) const
 	return getParentDirectory().getChildFile (fileName);
 }
 
-String File::descriptionOfSizeInBytes (const int64 bytes)
+String File::descriptionOfSizeInBytes (const int64_t bytes)
 {
 	if (bytes == 1)                       return "1 byte";
 	else if (bytes < 1024)                return String (bytes) + " bytes";
@@ -2332,9 +2332,9 @@ Result File::createDirectory() const
 	return r;
 }
 
-Time File::getLastModificationTime() const                  { int64 m, a, c; getFileTimesInternal (m, a, c); return Time (m); }
-Time File::getLastAccessTime() const                        { int64 m, a, c; getFileTimesInternal (m, a, c); return Time (a); }
-Time File::getCreationTime() const                          { int64 m, a, c; getFileTimesInternal (m, a, c); return Time (c); }
+Time File::getLastModificationTime() const                  { int64_t m, a, c; getFileTimesInternal (m, a, c); return Time (m); }
+Time File::getLastAccessTime() const                        { int64_t m, a, c; getFileTimesInternal (m, a, c); return Time (a); }
+Time File::getCreationTime() const                          { int64_t m, a, c; getFileTimesInternal (m, a, c); return Time (c); }
 
 bool File::setLastModificationTime (const Time& t) const    { return setFileTimesInternal (t.toMilliseconds(), 0, 0); }
 bool File::setLastAccessTime (const Time& t) const          { return setFileTimesInternal (0, t.toMilliseconds(), 0); }
@@ -2941,7 +2941,7 @@ static FileTests fileUnitTests;
 
 
 /*** Start of inlined file: juce_FileInputStream.cpp ***/
-int64 juce_fileSetPosition (void* handle, int64 pos);
+int64_t juce_fileSetPosition (void* handle, int64_t pos);
 
 FileInputStream::FileInputStream (const File& f)
 	: file (f),
@@ -2959,7 +2959,7 @@ FileInputStream::~FileInputStream()
 	closeHandle();
 }
 
-int64 FileInputStream::getTotalLength()
+int64_t FileInputStream::getTotalLength()
 {
 	return totalSize;
 }
@@ -2988,15 +2988,15 @@ bool FileInputStream::isExhausted()
 	return currentPosition >= totalSize;
 }
 
-int64 FileInputStream::getPosition()
+int64_t FileInputStream::getPosition()
 {
 	return currentPosition;
 }
 
-bool FileInputStream::setPosition (int64 pos)
+bool FileInputStream::setPosition (int64_t pos)
 {
 	jassert (openedOk());
-	pos = jlimit ((int64) 0, totalSize, pos);
+	pos = jlimit ((int64_t) 0, totalSize, pos);
 
 	needToSeek |= (currentPosition != pos);
 	currentPosition = pos;
@@ -3008,7 +3008,7 @@ bool FileInputStream::setPosition (int64 pos)
 
 
 /*** Start of inlined file: juce_FileOutputStream.cpp ***/
-int64 juce_fileSetPosition (void* handle, int64 pos);
+int64_t juce_fileSetPosition (void* handle, int64_t pos);
 
 FileOutputStream::FileOutputStream (const File& f, const int bufferSize_)
 	: file (f),
@@ -3029,12 +3029,12 @@ FileOutputStream::~FileOutputStream()
 	closeHandle();
 }
 
-int64 FileOutputStream::getPosition()
+int64_t FileOutputStream::getPosition()
 {
 	return currentPosition;
 }
 
-bool FileOutputStream::setPosition (int64 newPosition)
+bool FileOutputStream::setPosition (int64_t newPosition)
 {
 	if (newPosition != currentPosition)
 	{
@@ -3100,7 +3100,7 @@ bool FileOutputStream::write (const void* const src, const int numBytes)
 	return true;
 }
 
-void FileOutputStream::writeRepeatedByte (uint8 byte, int numBytes)
+void FileOutputStream::writeRepeatedByte (uint8_t byte, int numBytes)
 {
 	jassert (numBytes >= 0);
 
@@ -3434,7 +3434,7 @@ private:
 	{
 		String::CharPointerType oldT (t);
 
-		int64 intValue = t.getAndAdvance() - '0';
+		int64_t intValue = t.getAndAdvance() - '0';
 		jassert (intValue >= 0 && intValue < 10);
 
 		for (;;)
@@ -3467,7 +3467,7 @@ private:
 			return createFail ("Syntax error in number", &oldT);
 		}
 
-		const int64 correctedValue = isNegative ? -intValue : intValue;
+		const int64_t correctedValue = isNegative ? -intValue : intValue;
 
 		if ((intValue >> 31) != 0)
 			result = correctedValue;
@@ -4014,7 +4014,7 @@ void FileLogger::trimFileSize (int maxFileSizeBytes) const
 	}
 	else
 	{
-		const int64 fileSize = logFile.getSize();
+		const int64_t fileSize = logFile.getSize();
 
 		if (fileSize > maxFileSizeBytes)
 		{
@@ -4123,7 +4123,7 @@ void JUCE_API logAssertion (const char* filename, const int lineNum) noexcept
 namespace
 {
 	inline size_t bitToIndex (const int bit) noexcept   { return (size_t) (bit >> 5); }
-	inline uint32 bitToMask  (const int bit) noexcept   { return (uint32) 1 << (bit & 31); }
+	inline uint32_t bitToMask  (const int bit) noexcept   { return (uint32_t) 1 << (bit & 31); }
 }
 
 BigInteger::BigInteger()
@@ -4134,17 +4134,17 @@ BigInteger::BigInteger()
 	values.calloc (numValues + 1);
 }
 
-BigInteger::BigInteger (const int32 value)
+BigInteger::BigInteger (const int32_t value)
 	: numValues (4),
 	  highestBit (31),
 	  negative (value < 0)
 {
 	values.calloc (numValues + 1);
-	values[0] = (uint32) abs (value);
+	values[0] = (uint32_t) abs (value);
 	highestBit = getHighestBit();
 }
 
-BigInteger::BigInteger (const uint32 value)
+BigInteger::BigInteger (const uint32_t value)
 	: numValues (4),
 	  highestBit (31),
 	  negative (false)
@@ -4154,7 +4154,7 @@ BigInteger::BigInteger (const uint32 value)
 	highestBit = getHighestBit();
 }
 
-BigInteger::BigInteger (int64 value)
+BigInteger::BigInteger (int64_t value)
 	: numValues (4),
 	  highestBit (63),
 	  negative (value < 0)
@@ -4164,8 +4164,8 @@ BigInteger::BigInteger (int64 value)
 	if (value < 0)
 		value = -value;
 
-	values[0] = (uint32) value;
-	values[1] = (uint32) (value >> 32);
+	values[0] = (uint32_t) value;
+	values[1] = (uint32_t) (value >> 32);
 	highestBit = getHighestBit();
 }
 
@@ -4175,12 +4175,12 @@ BigInteger::BigInteger (const BigInteger& other)
 	  negative (other.negative)
 {
 	values.malloc (numValues + 1);
-	memcpy (values, other.values, sizeof (uint32) * (numValues + 1));
+	memcpy (values, other.values, sizeof (uint32_t) * (numValues + 1));
 }
 
 #if JUCE_COMPILER_SUPPORTS_MOVE_SEMANTICS
 BigInteger::BigInteger (BigInteger&& other) noexcept
-	: values (static_cast <HeapBlock <uint32>&&> (other.values)),
+	: values (static_cast <HeapBlock <uint32_t>&&> (other.values)),
 	  numValues (other.numValues),
 	  highestBit (other.highestBit),
 	  negative (other.negative)
@@ -4189,7 +4189,7 @@ BigInteger::BigInteger (BigInteger&& other) noexcept
 
 BigInteger& BigInteger::operator= (BigInteger&& other) noexcept
 {
-	values = static_cast <HeapBlock <uint32>&&> (other.values);
+	values = static_cast <HeapBlock <uint32_t>&&> (other.values);
 	numValues = other.numValues;
 	highestBit = other.highestBit;
 	negative = other.negative;
@@ -4218,7 +4218,7 @@ BigInteger& BigInteger::operator= (const BigInteger& other)
 		numValues = (size_t) jmax ((size_t) 4, bitToIndex (highestBit) + 1);
 		negative = other.negative;
 		values.malloc (numValues + 1);
-		memcpy (values, other.values, sizeof (uint32) * (numValues + 1));
+		memcpy (values, other.values, sizeof (uint32_t) * (numValues + 1));
 	}
 
 	return *this;
@@ -4268,7 +4268,7 @@ BigInteger BigInteger::getBitRange (int startBit, int numBits) const
 	return r;
 }
 
-uint32 BigInteger::getBitRangeAsInt (const int startBit, int numBits) const noexcept
+uint32_t BigInteger::getBitRangeAsInt (const int startBit, int numBits) const noexcept
 {
 	if (numBits > 32)
 	{
@@ -4285,15 +4285,15 @@ uint32 BigInteger::getBitRangeAsInt (const int startBit, int numBits) const noex
 	const int offset = startBit & 31;
 	const int endSpace = 32 - numBits;
 
-	uint32 n = ((uint32) values [pos]) >> offset;
+	uint32_t n = ((uint32_t) values [pos]) >> offset;
 
 	if (offset > endSpace)
-		n |= ((uint32) values [pos + 1]) << (32 - offset);
+		n |= ((uint32_t) values [pos + 1]) << (32 - offset);
 
-	return n & (((uint32) 0xffffffff) >> endSpace);
+	return n & (((uint32_t) 0xffffffff) >> endSpace);
 }
 
-void BigInteger::setBitRangeAsInt (const int startBit, int numBits, uint32 valueToSet)
+void BigInteger::setBitRangeAsInt (const int startBit, int numBits, uint32_t valueToSet)
 {
 	if (numBits > 32)
 	{
@@ -4397,7 +4397,7 @@ void BigInteger::negate() noexcept
 
 namespace BitFunctions
 {
-	inline int countBitsInInt32 (uint32 n) noexcept
+	inline int countBitsInInt32 (uint32_t n) noexcept
 	{
 		n -= ((n >> 1) & 0x55555555);
 		n =  (((n >> 2) & 0x33333333) + (n & 0x33333333));
@@ -4407,7 +4407,7 @@ namespace BitFunctions
 		return (int) (n & 0x3f);
 	}
 
-	inline int highestBitInInt (uint32 n) noexcept
+	inline int highestBitInInt (uint32_t n) noexcept
 	{
 		jassert (n != 0); // (the built-in functions may not work for n = 0)
 
@@ -4442,7 +4442,7 @@ int BigInteger::getHighestBit() const noexcept
 {
 	for (int i = (int) bitToIndex (highestBit + 1); i >= 0; --i)
 	{
-		const uint32 n = values[i];
+		const uint32_t n = values[i];
 
 		if (n != 0)
 			return BitFunctions::highestBitInInt (n) + (i << 5);
@@ -4500,7 +4500,7 @@ BigInteger& BigInteger::operator+= (const BigInteger& other)
 		const size_t numInts = bitToIndex (highestBit) + 1;
 		ensureSize (numInts);
 
-		int64 remainder = 0;
+		int64_t remainder = 0;
 
 		for (size_t i = 0; i <= numInts; ++i)
 		{
@@ -4510,7 +4510,7 @@ BigInteger& BigInteger::operator+= (const BigInteger& other)
 			if (i < other.numValues)
 				remainder += other.values[i];
 
-			values[i] = (uint32) remainder;
+			values[i] = (uint32_t) remainder;
 			remainder >>= 32;
 		}
 
@@ -4547,22 +4547,22 @@ BigInteger& BigInteger::operator-= (const BigInteger& other)
 
 	const size_t numInts = bitToIndex (highestBit) + 1;
 	const size_t maxOtherInts = bitToIndex (other.highestBit) + 1;
-	int64 amountToSubtract = 0;
+	int64_t amountToSubtract = 0;
 
 	for (size_t i = 0; i <= numInts; ++i)
 	{
 		if (i <= maxOtherInts)
-			amountToSubtract += (int64) other.values[i];
+			amountToSubtract += (int64_t) other.values[i];
 
 		if (values[i] >= amountToSubtract)
 		{
-			values[i] = (uint32) (values[i] - amountToSubtract);
+			values[i] = (uint32_t) (values[i] - amountToSubtract);
 			amountToSubtract = 0;
 		}
 		else
 		{
-			const int64 n = ((int64) values[i] + (((int64) 1) << 32)) - amountToSubtract;
-			values[i] = (uint32) n;
+			const int64_t n = ((int64_t) values[i] + (((int64_t) 1) << 32)) - amountToSubtract;
+			values[i] = (uint32_t) n;
 			amountToSubtract = 1;
 		}
 	}
@@ -5002,14 +5002,14 @@ String BigInteger::toString (const int base, const int minimumNumCharacters) con
 
 		for (;;)
 		{
-			const uint32 remainder = v.getBitRangeAsInt (0, bits);
+			const uint32_t remainder = v.getBitRangeAsInt (0, bits);
 
 			v >>= bits;
 
 			if (remainder == 0 && v.isZero())
 				break;
 
-			s = String::charToString ((juce_wchar) (uint8) hexDigits [remainder]) + s;
+			s = String::charToString ((juce_wchar) (uint8_t) hexDigits [remainder]) + s;
 		}
 	}
 	else if (base == 10)
@@ -5052,7 +5052,7 @@ void BigInteger::parseString (const String& text, const int base)
 			const juce_wchar c = t.getAndAdvance();
 			const int digit = CharacterFunctions::getHexDigitValue (c);
 
-			if (((uint32) digit) < (uint32) base)
+			if (((uint32_t) digit) < (uint32_t) base)
 			{
 				operator<<= (bits);
 				operator+= (digit);
@@ -5065,7 +5065,7 @@ void BigInteger::parseString (const String& text, const int base)
 	}
 	else if (base == 10)
 	{
-		const BigInteger ten ((uint32) 10);
+		const BigInteger ten ((uint32_t) 10);
 
 		for (;;)
 		{
@@ -5102,7 +5102,7 @@ void BigInteger::loadFromMemoryBlock (const MemoryBlock& data)
 	clear();
 
 	for (int i = (int) data.getSize(); --i >= 0;)
-		this->setBitRangeAsInt (i << 3, 8, (uint32) data [i]);
+		this->setBitRangeAsInt (i << 3, 8, (uint32_t) data [i]);
 }
 
 /*** End of inlined file: juce_BigInteger.cpp ***/
@@ -5768,7 +5768,7 @@ struct Expression::Helpers
 
 			while (*ops != 0)
 			{
-				if (readChar ((juce_wchar) (uint8) *ops))
+				if (readChar ((juce_wchar) (uint8_t) *ops))
 				{
 					if (opType != nullptr)
 						*opType = *ops;
@@ -5845,7 +5845,7 @@ struct Expression::Helpers
 				TermPtr rhs (readMultiplyOrDivideExpression());
 
 				if (rhs == nullptr)
-					throw ParseError ("Expected expression after \"" + String::charToString ((juce_wchar) (uint8) opType) + "\"");
+					throw ParseError ("Expected expression after \"" + String::charToString ((juce_wchar) (uint8_t) opType) + "\"");
 
 				if (opType == '+')
 					lhs = new Add (lhs, rhs);
@@ -5866,7 +5866,7 @@ struct Expression::Helpers
 				TermPtr rhs (readUnaryExpression());
 
 				if (rhs == nullptr)
-					throw ParseError ("Expected expression after \"" + String::charToString ((juce_wchar) (uint8) opType) + "\"");
+					throw ParseError ("Expected expression after \"" + String::charToString ((juce_wchar) (uint8_t) opType) + "\"");
 
 				if (opType == '*')
 					lhs = new Multiply (lhs, rhs);
@@ -5885,7 +5885,7 @@ struct Expression::Helpers
 				TermPtr term (readUnaryExpression());
 
 				if (term == nullptr)
-					throw ParseError ("Expected expression after \"" + String::charToString ((juce_wchar) (uint8) opType) + "\"");
+					throw ParseError ("Expected expression after \"" + String::charToString ((juce_wchar) (uint8_t) opType) + "\"");
 
 				if (opType == '-')
 					term = term->negated();
@@ -6244,7 +6244,7 @@ String Expression::Scope::getScopeUID() const
 
 
 /*** Start of inlined file: juce_Random.cpp ***/
-Random::Random (const int64 seedValue) noexcept
+Random::Random (const int64_t seedValue) noexcept
 	: seed (seedValue)
 {
 }
@@ -6259,21 +6259,21 @@ Random::~Random() noexcept
 {
 }
 
-void Random::setSeed (const int64 newSeed) noexcept
+void Random::setSeed (const int64_t newSeed) noexcept
 {
 	seed = newSeed;
 }
 
-void Random::combineSeed (const int64 seedValue) noexcept
+void Random::combineSeed (const int64_t seedValue) noexcept
 {
 	seed ^= nextInt64() ^ seedValue;
 }
 
 void Random::setSeedRandomly()
 {
-	static int64 globalSeed = 0;
+	static int64_t globalSeed = 0;
 
-	combineSeed (globalSeed ^ (int64) (pointer_sized_int) this);
+	combineSeed (globalSeed ^ (int64_t) (intptr_t) this);
 	combineSeed (Time::getMillisecondCounter());
 	combineSeed (Time::getHighResolutionTicks());
 	combineSeed (Time::getHighResolutionTicksPerSecond());
@@ -6297,12 +6297,12 @@ int Random::nextInt() noexcept
 int Random::nextInt (const int maxValue) noexcept
 {
 	jassert (maxValue > 0);
-	return (int) ((((unsigned int) nextInt()) * (uint64) maxValue) >> 32);
+	return (int) ((((unsigned int) nextInt()) * (uint64_t) maxValue) >> 32);
 }
 
-int64 Random::nextInt64() noexcept
+int64_t Random::nextInt64() noexcept
 {
-	return (((int64) nextInt()) << 32) | (int64) (uint64) (uint32) nextInt();
+	return (((int64_t) nextInt()) << 32) | (int64_t) (uint64_t) (uint32_t) nextInt();
 }
 
 bool Random::nextBool() noexcept
@@ -6312,12 +6312,12 @@ bool Random::nextBool() noexcept
 
 float Random::nextFloat() noexcept
 {
-	return static_cast <uint32> (nextInt()) / (float) 0xffffffff;
+	return static_cast <uint32_t> (nextInt()) / (float) 0xffffffff;
 }
 
 double Random::nextDouble() noexcept
 {
-	return static_cast <uint32> (nextInt()) / (double) 0xffffffff;
+	return static_cast <uint32_t> (nextInt()) / (double) 0xffffffff;
 }
 
 BigInteger Random::nextLargeNumber (const BigInteger& maximumValue)
@@ -6527,7 +6527,7 @@ void MemoryBlock::swapWith (MemoryBlock& other) noexcept
 	data.swapWith (other.data);
 }
 
-void MemoryBlock::fillWith (const uint8 value) noexcept
+void MemoryBlock::fillWith (const uint8_t value) noexcept
 {
 	memset (data, (int) value, size);
 }
@@ -6731,7 +6731,7 @@ String MemoryBlock::toBase64Encoding() const
 	d.write ('.');
 
 	for (size_t i = 0; i < numChars; ++i)
-		d.write ((juce_wchar) (uint8) encodingTable [getBitRange (i * 6, 6)]);
+		d.write ((juce_wchar) (uint8_t) encodingTable [getBitRange (i * 6, 6)]);
 
 	d.writeNull();
 	return destString;
@@ -6841,7 +6841,7 @@ bool Result::operator!() const noexcept     { return errorMessage.isNotEmpty(); 
 /*** Start of inlined file: juce_Uuid.cpp ***/
 namespace
 {
-	int64 getRandomSeedFromMACAddresses()
+	int64_t getRandomSeedFromMACAddresses()
 	{
 		Array<MACAddress> result;
 		MACAddress::findAllAddresses (result);
@@ -6863,7 +6863,7 @@ Uuid::Uuid()
 	Random r2;
 
 	for (size_t i = 0; i < sizeof (uuid); ++i)
-		uuid[i] = (uint8) (r1.nextInt() ^ r2.nextInt());
+		uuid[i] = (uint8_t) (r1.nextInt() ^ r2.nextInt());
 }
 
 Uuid::~Uuid() noexcept {}
@@ -6910,12 +6910,12 @@ Uuid& Uuid::operator= (const String& uuidString)
 	return *this;
 }
 
-Uuid::Uuid (const uint8* const rawData)
+Uuid::Uuid (const uint8_t* const rawData)
 {
 	operator= (rawData);
 }
 
-Uuid& Uuid::operator= (const uint8* const rawData) noexcept
+Uuid& Uuid::operator= (const uint8_t* const rawData) noexcept
 {
 	if (rawData != nullptr)
 		memcpy (uuid, rawData, sizeof (uuid));
@@ -6945,7 +6945,7 @@ MACAddress& MACAddress::operator= (const MACAddress& other)
 	return *this;
 }
 
-MACAddress::MACAddress (const uint8 bytes[6])
+MACAddress::MACAddress (const uint8_t bytes[6])
 {
 	memcpy (address, bytes, sizeof (address));
 }
@@ -6965,9 +6965,9 @@ String MACAddress::toString() const
 	return s;
 }
 
-int64 MACAddress::toInt64() const noexcept
+int64_t MACAddress::toInt64() const noexcept
 {
-	int64 n = 0;
+	int64_t n = 0;
 
 	for (int i = (int) sizeof (address); --i >= 0;)
 		n = (n << 8) | address[i];
@@ -7061,7 +7061,7 @@ namespace SocketHelpers
 		struct sockaddr_in servTmpAddr = { 0 };
 		servTmpAddr.sin_family = PF_INET;
 		servTmpAddr.sin_addr.s_addr = htonl (INADDR_ANY);
-		servTmpAddr.sin_port = htons ((uint16) port);
+		servTmpAddr.sin_port = htons ((uint16_t) port);
 
 		return bind (handle, (struct sockaddr*) &servTmpAddr, sizeof (struct sockaddr_in)) >= 0;
 	}
@@ -7378,7 +7378,7 @@ bool StreamingSocket::createListener (const int newPortNumber, const String& loc
 	if (localHostName.isNotEmpty())
 		servTmpAddr.sin_addr.s_addr = ::inet_addr (localHostName.toUTF8());
 
-	servTmpAddr.sin_port = htons ((uint16) portNumber);
+	servTmpAddr.sin_port = htons ((uint16_t) portNumber);
 
 	handle = (int) socket (AF_INET, SOCK_STREAM, 0);
 
@@ -7951,8 +7951,8 @@ String URL::removeEscapeChars (const String& s)
 	{
 		if (utf8.getUnchecked(i) == '%')
 		{
-			const int hexDigit1 = CharacterFunctions::getHexDigitValue ((juce_wchar) (uint8) utf8 [i + 1]);
-			const int hexDigit2 = CharacterFunctions::getHexDigitValue ((juce_wchar) (uint8) utf8 [i + 2]);
+			const int hexDigit1 = CharacterFunctions::getHexDigitValue ((juce_wchar) (uint8_t) utf8 [i + 1]);
+			const int hexDigit2 = CharacterFunctions::getHexDigitValue ((juce_wchar) (uint8_t) utf8 [i + 2]);
 
 			if (hexDigit1 >= 0 && hexDigit2 >= 0)
 			{
@@ -7980,7 +7980,7 @@ String URL::addEscapeChars (const String& s, const bool isParameter)
 				 || legalChars.indexOf ((juce_wchar) c) >= 0))
 		{
 			utf8.set (i, '%');
-			utf8.insert (++i, "0123456789abcdef" [((uint8) c) >> 4]);
+			utf8.insert (++i, "0123456789abcdef" [((uint8_t) c) >> 4]);
 			utf8.insert (++i, "0123456789abcdef" [c & 15]);
 		}
 	}
@@ -8011,7 +8011,7 @@ namespace
 
 		requestedSize = jmax (256, requestedSize);
 
-		const int64 sourceSize = source->getTotalLength();
+		const int64_t sourceSize = source->getTotalLength();
 		if (sourceSize >= 0 && sourceSize < requestedSize)
 			requestedSize = jmax (32, (int) sourceSize);
 
@@ -8046,19 +8046,19 @@ BufferedInputStream::~BufferedInputStream()
 {
 }
 
-int64 BufferedInputStream::getTotalLength()
+int64_t BufferedInputStream::getTotalLength()
 {
 	return source->getTotalLength();
 }
 
-int64 BufferedInputStream::getPosition()
+int64_t BufferedInputStream::getPosition()
 {
 	return position;
 }
 
-bool BufferedInputStream::setPosition (int64 newPosition)
+bool BufferedInputStream::setPosition (int64_t newPosition)
 {
-	position = jmax ((int64) 0, newPosition);
+	position = jmax ((int64_t) 0, newPosition);
 	return true;
 }
 
@@ -8070,7 +8070,7 @@ bool BufferedInputStream::isExhausted()
 
 void BufferedInputStream::ensureBuffered()
 {
-	const int64 bufferEndOverlap = lastReadPos - bufferOverlap;
+	const int64_t bufferEndOverlap = lastReadPos - bufferOverlap;
 
 	if (position < bufferStart || position >= bufferEndOverlap)
 	{
@@ -8136,7 +8136,7 @@ int BufferedInputStream::read (void* destBuffer, int maxBytesToRead)
 				destBuffer = static_cast <char*> (destBuffer) + bytesAvailable;
 			}
 
-			const int64 oldLastReadPos = lastReadPos;
+			const int64_t oldLastReadPos = lastReadPos;
 			ensureBuffered();
 
 			if (oldLastReadPos == lastReadPos)
@@ -8195,9 +8195,9 @@ InputStream* FileInputSource::createInputStreamFor (const String& relatedItemPat
 	return file.getSiblingFile (relatedItemPath).createInputStream();
 }
 
-int64 FileInputSource::hashCode() const
+int64_t FileInputSource::hashCode() const
 {
-	int64 h = file.hashCode();
+	int64_t h = file.hashCode();
 
 	if (useFileTimeInHashGeneration)
 		h ^= file.getLastModificationTime().toMilliseconds();
@@ -8209,9 +8209,9 @@ int64 FileInputSource::hashCode() const
 
 
 /*** Start of inlined file: juce_InputStream.cpp ***/
-int64 InputStream::getNumBytesRemaining()
+int64_t InputStream::getNumBytesRemaining()
 {
-	int64 len = getTotalLength();
+	int64_t len = getTotalLength();
 
 	if (len >= 0)
 		len -= getPosition();
@@ -8273,7 +8273,7 @@ int InputStream::readIntBigEndian()
 
 int InputStream::readCompressedInt()
 {
-	const uint8 sizeByte = (uint8) readByte();
+	const uint8_t sizeByte = (uint8_t) readByte();
 	if (sizeByte == 0)
 		return 0;
 
@@ -8293,22 +8293,22 @@ int InputStream::readCompressedInt()
 	return (sizeByte >> 7) ? -num : num;
 }
 
-int64 InputStream::readInt64()
+int64_t InputStream::readInt64()
 {
-	union { uint8 asBytes[8]; uint64 asInt64; } n;
+	union { uint8_t asBytes[8]; uint64_t asInt64; } n;
 
 	if (read (n.asBytes, 8) == 8)
-		return (int64) ByteOrder::swapIfBigEndian (n.asInt64);
+		return (int64_t) ByteOrder::swapIfBigEndian (n.asInt64);
 
 	return 0;
 }
 
-int64 InputStream::readInt64BigEndian()
+int64_t InputStream::readInt64BigEndian()
 {
-	union { uint8 asBytes[8]; uint64 asInt64; } n;
+	union { uint8_t asBytes[8]; uint64_t asInt64; } n;
 
 	if (read (n.asBytes, 8) == 8)
-		return (int64) ByteOrder::swapIfLittleEndian (n.asInt64);
+		return (int64_t) ByteOrder::swapIfLittleEndian (n.asInt64);
 
 	return 0;
 }
@@ -8316,29 +8316,29 @@ int64 InputStream::readInt64BigEndian()
 float InputStream::readFloat()
 {
 	// the union below relies on these types being the same size...
-	static_jassert (sizeof (int32) == sizeof (float));
-	union { int32 asInt; float asFloat; } n;
-	n.asInt = (int32) readInt();
+	static_jassert (sizeof (int32_t) == sizeof (float));
+	union { int32_t asInt; float asFloat; } n;
+	n.asInt = (int32_t) readInt();
 	return n.asFloat;
 }
 
 float InputStream::readFloatBigEndian()
 {
-	union { int32 asInt; float asFloat; } n;
-	n.asInt = (int32) readIntBigEndian();
+	union { int32_t asInt; float asFloat; } n;
+	n.asInt = (int32_t) readIntBigEndian();
 	return n.asFloat;
 }
 
 double InputStream::readDouble()
 {
-	union { int64 asInt; double asDouble; } n;
+	union { int64_t asInt; double asDouble; } n;
 	n.asInt = readInt64();
 	return n.asDouble;
 }
 
 double InputStream::readDoubleBigEndian()
 {
-	union { int64 asInt; double asDouble; } n;
+	union { int64_t asInt; double asDouble; } n;
 	n.asInt = readInt64BigEndian();
 	return n.asDouble;
 }
@@ -8374,7 +8374,7 @@ String InputStream::readNextLine()
 
 		if (data[i] == '\r')
 		{
-			const int64 lastPos = getPosition();
+			const int64_t lastPos = getPosition();
 
 			if (readByte() != '\n')
 				setPosition (lastPos);
@@ -8392,7 +8392,7 @@ String InputStream::readNextLine()
 	return String::fromUTF8 (data, (int) i);
 }
 
-int InputStream::readIntoMemoryBlock (MemoryBlock& block, ssize_t numBytes)
+int InputStream::readIntoMemoryBlock (MemoryBlock& block, size_t numBytes)
 {
 	MemoryOutputStream mo (block, true);
 	return mo.writeFromInputStream (*this, numBytes);
@@ -8405,15 +8405,15 @@ String InputStream::readEntireStreamAsString()
 	return mo.toString();
 }
 
-void InputStream::skipNextBytes (int64 numBytesToSkip)
+void InputStream::skipNextBytes (int64_t numBytesToSkip)
 {
 	if (numBytesToSkip > 0)
 	{
-		const int skipBufferSize = (int) jmin (numBytesToSkip, (int64) 16384);
+		const int skipBufferSize = (int) jmin (numBytesToSkip, (int64_t) 16384);
 		HeapBlock<char> temp ((size_t) skipBufferSize);
 
 		while (numBytesToSkip > 0 && ! isExhausted())
-			numBytesToSkip -= read (temp, (int) jmin (numBytesToSkip, (int64) skipBufferSize));
+			numBytesToSkip -= read (temp, (int) jmin (numBytesToSkip, (int64_t) skipBufferSize));
 	}
 }
 
@@ -8453,7 +8453,7 @@ MemoryInputStream::~MemoryInputStream()
 {
 }
 
-int64 MemoryInputStream::getTotalLength()
+int64_t MemoryInputStream::getTotalLength()
 {
 	return dataSize;
 }
@@ -8476,13 +8476,13 @@ bool MemoryInputStream::isExhausted()
 	return position >= dataSize;
 }
 
-bool MemoryInputStream::setPosition (const int64 pos)
+bool MemoryInputStream::setPosition (const int64_t pos)
 {
-	position = (size_t) jlimit ((int64) 0, (int64) dataSize, pos);
+	position = (size_t) jlimit ((int64_t) 0, (int64_t) dataSize, pos);
 	return true;
 }
 
-int64 MemoryInputStream::getPosition()
+int64_t MemoryInputStream::getPosition()
 {
 	return position;
 }
@@ -8500,7 +8500,7 @@ public:
 		Random r;
 
 		int randomInt = r.nextInt();
-		int64 randomInt64 = r.nextInt64();
+		int64_t randomInt64 = r.nextInt64();
 		double randomDouble = r.nextDouble();
 		String randomString (createRandomWideCharString());
 
@@ -8624,7 +8624,7 @@ bool MemoryOutputStream::write (const void* const buffer, int howMany)
 	return true;
 }
 
-void MemoryOutputStream::writeRepeatedByte (uint8 byte, int howMany)
+void MemoryOutputStream::writeRepeatedByte (uint8_t byte, int howMany)
 {
 	if (howMany > 0)
 	{
@@ -8648,9 +8648,9 @@ const void* MemoryOutputStream::getData() const noexcept
 	return data.getData();
 }
 
-bool MemoryOutputStream::setPosition (int64 newPosition)
+bool MemoryOutputStream::setPosition (int64_t newPosition)
 {
-	if (newPosition <= (int64) size)
+	if (newPosition <= (int64_t) size)
 	{
 		// ok to seek backwards
 		position = jlimit ((size_t) 0, size, (size_t) newPosition);
@@ -8663,10 +8663,10 @@ bool MemoryOutputStream::setPosition (int64 newPosition)
 	}
 }
 
-int MemoryOutputStream::writeFromInputStream (InputStream& source, int64 maxNumBytesToWrite)
+int MemoryOutputStream::writeFromInputStream (InputStream& source, int64_t maxNumBytesToWrite)
 {
 	// before writing from an input, see if we can preallocate to make it more efficient..
-	int64 availableData = source.getTotalLength() - source.getPosition();
+	int64_t availableData = source.getTotalLength() - source.getPosition();
 
 	if (availableData > 0)
 	{
@@ -8752,7 +8752,7 @@ void OutputStream::writeByte (char byte)
 	write (&byte, 1);
 }
 
-void OutputStream::writeRepeatedByte (uint8 byte, int numTimesToRepeat)
+void OutputStream::writeRepeatedByte (uint8_t byte, int numTimesToRepeat)
 {
 	while (--numTimesToRepeat >= 0)
 		writeByte ((char) byte);
@@ -8787,16 +8787,16 @@ void OutputStream::writeCompressedInt (int value)
 	unsigned int un = (value < 0) ? (unsigned int) -value
 								  : (unsigned int) value;
 
-	uint8 data[5];
+	uint8_t data[5];
 	int num = 0;
 
 	while (un > 0)
 	{
-		data[++num] = (uint8) un;
+		data[++num] = (uint8_t) un;
 		un >>= 8;
 	}
 
-	data[0] = (uint8) num;
+	data[0] = (uint8_t) num;
 
 	if (value < 0)
 		data[0] |= 0x80;
@@ -8804,15 +8804,15 @@ void OutputStream::writeCompressedInt (int value)
 	write (data, num + 1);
 }
 
-void OutputStream::writeInt64 (int64 value)
+void OutputStream::writeInt64 (int64_t value)
 {
-	const uint64 v = ByteOrder::swapIfBigEndian ((uint64) value);
+	const uint64_t v = ByteOrder::swapIfBigEndian ((uint64_t) value);
 	write (&v, 8);
 }
 
-void OutputStream::writeInt64BigEndian (int64 value)
+void OutputStream::writeInt64BigEndian (int64_t value)
 {
-	const uint64 v = ByteOrder::swapIfLittleEndian ((uint64) value);
+	const uint64_t v = ByteOrder::swapIfLittleEndian ((uint64_t) value);
 	write (&v, 8);
 }
 
@@ -8832,14 +8832,14 @@ void OutputStream::writeFloatBigEndian (float value)
 
 void OutputStream::writeDouble (double value)
 {
-	union { int64 asInt; double asDouble; } n;
+	union { int64_t asInt; double asDouble; } n;
 	n.asDouble = value;
 	writeInt64 (n.asInt);
 }
 
 void OutputStream::writeDoubleBigEndian (double value)
 {
-	union { int64 asInt; double asDouble; } n;
+	union { int64_t asInt; double asDouble; } n;
 	n.asDouble = value;
 	writeInt64BigEndian (n.asInt);
 }
@@ -8912,17 +8912,17 @@ void OutputStream::writeText (const String& text, const bool asUTF16,
 	}
 }
 
-int OutputStream::writeFromInputStream (InputStream& source, int64 numBytesToWrite)
+int OutputStream::writeFromInputStream (InputStream& source, int64_t numBytesToWrite)
 {
 	if (numBytesToWrite < 0)
-		numBytesToWrite = std::numeric_limits<int64>::max();
+		numBytesToWrite = std::numeric_limits<int64_t>::max();
 
 	int numWritten = 0;
 
 	while (numBytesToWrite > 0 && ! source.isExhausted())
 	{
 		char buffer [8192];
-		const int num = source.read (buffer, (int) jmin (numBytesToWrite, (int64) sizeof (buffer)));
+		const int num = source.read (buffer, (int) jmin (numBytesToWrite, (int64_t) sizeof (buffer)));
 
 		if (num <= 0)
 			break;
@@ -8997,8 +8997,8 @@ OutputStream& JUCE_CALLTYPE operator<< (OutputStream& stream, const NewLine&)
 
 /*** Start of inlined file: juce_SubregionStream.cpp ***/
 SubregionStream::SubregionStream (InputStream* const sourceStream,
-								  const int64 startPositionInSourceStream_,
-								  const int64 lengthOfSourceStream_,
+								  const int64_t startPositionInSourceStream_,
+								  const int64_t lengthOfSourceStream_,
 								  const bool deleteSourceWhenDestroyed)
   : source (sourceStream, deleteSourceWhenDestroyed),
 	startPositionInSourceStream (startPositionInSourceStream_),
@@ -9011,22 +9011,22 @@ SubregionStream::~SubregionStream()
 {
 }
 
-int64 SubregionStream::getTotalLength()
+int64_t SubregionStream::getTotalLength()
 {
-	const int64 srcLen = source->getTotalLength() - startPositionInSourceStream;
+	const int64_t srcLen = source->getTotalLength() - startPositionInSourceStream;
 
 	return (lengthOfSourceStream >= 0) ? jmin (lengthOfSourceStream, srcLen)
 									   : srcLen;
 }
 
-int64 SubregionStream::getPosition()
+int64_t SubregionStream::getPosition()
 {
 	return source->getPosition() - startPositionInSourceStream;
 }
 
-bool SubregionStream::setPosition (int64 newPosition)
+bool SubregionStream::setPosition (int64_t newPosition)
 {
-	return source->setPosition (jmax ((int64) 0, newPosition + startPositionInSourceStream));
+	return source->setPosition (jmax ((int64_t) 0, newPosition + startPositionInSourceStream));
 }
 
 int SubregionStream::read (void* destBuffer, int maxBytesToRead)
@@ -9039,7 +9039,7 @@ int SubregionStream::read (void* destBuffer, int maxBytesToRead)
 	}
 	else
 	{
-		maxBytesToRead = (int) jmin ((int64) maxBytesToRead, lengthOfSourceStream - getPosition());
+		maxBytesToRead = (int) jmin ((int64_t) maxBytesToRead, lengthOfSourceStream - getPosition());
 
 		if (maxBytesToRead <= 0)
 			return 0;
@@ -9070,15 +9070,15 @@ String SystemStats::getJUCEVersion()
 {
 	// Some basic tests, to keep an eye on things and make sure these types work ok
 	// on all platforms. Let me know if any of these assertions fail on your system!
-	static_jassert (sizeof (pointer_sized_int) == sizeof (void*));
-	static_jassert (sizeof (int8) == 1);
-	static_jassert (sizeof (uint8) == 1);
-	static_jassert (sizeof (int16) == 2);
-	static_jassert (sizeof (uint16) == 2);
-	static_jassert (sizeof (int32) == 4);
-	static_jassert (sizeof (uint32) == 4);
-	static_jassert (sizeof (int64) == 8);
-	static_jassert (sizeof (uint64) == 8);
+	static_jassert (sizeof (intptr_t) == sizeof (void*));
+	static_jassert (sizeof (int8_t) == 1);
+	static_jassert (sizeof (uint8_t) == 1);
+	static_jassert (sizeof (int16_t) == 2);
+	static_jassert (sizeof (uint16_t) == 2);
+	static_jassert (sizeof (int32_t) == 4);
+	static_jassert (sizeof (uint32_t) == 4);
+	static_jassert (sizeof (int64_t) == 8);
+	static_jassert (sizeof (uint64_t) == 8);
 
 	return "JUCE v" JUCE_STRINGIFY(JUCE_MAJOR_VERSION)
 				"." JUCE_STRINGIFY(JUCE_MINOR_VERSION)
@@ -9763,10 +9763,10 @@ String String::charToString (const juce_wchar character)
 namespace NumberToStringConverters
 {
 	// pass in a pointer to the END of a buffer..
-	static char* numberToString (char* t, const int64 n) noexcept
+	static char* numberToString (char* t, const int64_t n) noexcept
 	{
 		*--t = 0;
-		int64 v = (n >= 0) ? n : -n;
+		int64_t v = (n >= 0) ? n : -n;
 
 		do
 		{
@@ -9781,7 +9781,7 @@ namespace NumberToStringConverters
 		return t;
 	}
 
-	static char* numberToString (char* t, uint64 v) noexcept
+	static char* numberToString (char* t, uint64_t v) noexcept
 	{
 		*--t = 0;
 
@@ -9798,7 +9798,7 @@ namespace NumberToStringConverters
 	static char* numberToString (char* t, const int n) noexcept
 	{
 		if (n == (int) 0x80000000) // (would cause an overflow)
-			return numberToString (t, (int64) n);
+			return numberToString (t, (int64_t) n);
 
 		*--t = 0;
 		int v = abs (n);
@@ -9836,7 +9836,7 @@ namespace NumberToStringConverters
 		{
 			char* const end = buffer + numChars;
 			char* t = end;
-			int64 v = (int64) (pow (10.0, numDecPlaces) * std::abs (n) + 0.5);
+			int64_t v = (int64_t) (pow (10.0, numDecPlaces) * std::abs (n) + 0.5);
 			*--t = (char) 0;
 
 			while (numDecPlaces >= 0 || v > 0)
@@ -9894,8 +9894,8 @@ String::String (const int number)            : text (NumberToStringConverters::c
 String::String (const unsigned int number)   : text (NumberToStringConverters::createFromInteger (number)) {}
 String::String (const short number)          : text (NumberToStringConverters::createFromInteger ((int) number)) {}
 String::String (const unsigned short number) : text (NumberToStringConverters::createFromInteger ((unsigned int) number)) {}
-String::String (const int64 number)          : text (NumberToStringConverters::createFromInteger (number)) {}
-String::String (const uint64 number)         : text (NumberToStringConverters::createFromInteger (number)) {}
+String::String (const int64_t number)          : text (NumberToStringConverters::createFromInteger (number)) {}
+String::String (const uint64_t number)         : text (NumberToStringConverters::createFromInteger (number)) {}
 
 String::String (const float number)          : text (NumberToStringConverters::createFromDouble ((double) number, 0)) {}
 String::String (const double number)         : text (NumberToStringConverters::createFromDouble (number, 0)) {}
@@ -9929,10 +9929,10 @@ int String::hashCode() const noexcept
 	return result;
 }
 
-int64 String::hashCode64() const noexcept
+int64_t String::hashCode64() const noexcept
 {
 	CharPointerType t (text);
-	int64 result = 0;
+	int64_t result = 0;
 
 	while (! t.isEmpty())
 		result = 101 * result + t.getAndAdvance();
@@ -10092,7 +10092,7 @@ JUCE_API String JUCE_CALLTYPE operator+ (const wchar_t* const string1, const Str
 	return s += string2;
 }
 
-JUCE_API String JUCE_CALLTYPE operator+ (const char s1, const String& s2)       { return String::charToString ((juce_wchar) (uint8) s1) + s2; }
+JUCE_API String JUCE_CALLTYPE operator+ (const char s1, const String& s2)       { return String::charToString ((juce_wchar) (uint8_t) s1) + s2; }
 JUCE_API String JUCE_CALLTYPE operator+ (const wchar_t s1, const String& s2)    { return String::charToString (s1) + s2; }
 #if ! JUCE_NATIVE_WCHAR_IS_UTF32
 JUCE_API String JUCE_CALLTYPE operator+ (const juce_wchar s1, const String& s2) { return String::charToString (s1) + s2; }
@@ -11183,7 +11183,7 @@ int String::getTrailingIntValue() const noexcept
 	return n;
 }
 
-int64 String::getLargeIntValue() const noexcept
+int64_t String::getLargeIntValue() const noexcept
 {
 	return text.getIntValue64();
 }
@@ -11241,9 +11241,9 @@ String String::toHexString (const int number)
 	return HexConverter <unsigned int>::hexToString ((unsigned int) number);
 }
 
-String String::toHexString (const int64 number)
+String String::toHexString (const int64_t number)
 {
-	return HexConverter <uint64>::hexToString ((uint64) number);
+	return HexConverter <uint64_t>::hexToString ((uint64_t) number);
 }
 
 String String::toHexString (const short number)
@@ -11284,14 +11284,14 @@ int String::getHexValue32() const noexcept
 	return HexConverter<int>::stringToHex (text);
 }
 
-int64 String::getHexValue64() const noexcept
+int64_t String::getHexValue64() const noexcept
 {
-	return HexConverter<int64>::stringToHex (text);
+	return HexConverter<int64_t>::stringToHex (text);
 }
 
 String String::createStringFromData (const void* const data_, const int size)
 {
-	const uint8* const data = static_cast <const uint8*> (data_);
+	const uint8_t* const data = static_cast <const uint8_t*> (data_);
 
 	if (size <= 0 || data == nullptr)
 	{
@@ -11301,15 +11301,15 @@ String String::createStringFromData (const void* const data_, const int size)
 	{
 		return charToString ((juce_wchar) data[0]);
 	}
-	else if ((data[0] == (uint8) CharPointer_UTF16::byteOrderMarkBE1 && data[1] == (uint8) CharPointer_UTF16::byteOrderMarkBE2)
-		  || (data[0] == (uint8) CharPointer_UTF16::byteOrderMarkLE1 && data[1] == (uint8) CharPointer_UTF16::byteOrderMarkLE2))
+	else if ((data[0] == (uint8_t) CharPointer_UTF16::byteOrderMarkBE1 && data[1] == (uint8_t) CharPointer_UTF16::byteOrderMarkBE2)
+		  || (data[0] == (uint8_t) CharPointer_UTF16::byteOrderMarkLE1 && data[1] == (uint8_t) CharPointer_UTF16::byteOrderMarkLE2))
 	{
-		const bool bigEndian = (data[0] == (uint8) CharPointer_UTF16::byteOrderMarkBE1);
+		const bool bigEndian = (data[0] == (uint8_t) CharPointer_UTF16::byteOrderMarkBE1);
 		const int numChars = size / 2 - 1;
 
 		StringCreationHelper builder ((size_t) numChars);
 
-		const uint16* const src = (const uint16*) (data + 2);
+		const uint16_t* const src = (const uint16_t*) (data + 2);
 
 		if (bigEndian)
 		{
@@ -11327,13 +11327,13 @@ String String::createStringFromData (const void* const data_, const int size)
 	}
 	else
 	{
-		const uint8* start = data;
-		const uint8* end = data + size;
+		const uint8_t* start = data;
+		const uint8_t* end = data + size;
 
 		if (size >= 3
-			  && data[0] == (uint8) CharPointer_UTF8::byteOrderMark1
-			  && data[1] == (uint8) CharPointer_UTF8::byteOrderMark2
-			  && data[2] == (uint8) CharPointer_UTF8::byteOrderMark3)
+			  && data[0] == (uint8_t) CharPointer_UTF8::byteOrderMark1
+			  && data[1] == (uint8_t) CharPointer_UTF8::byteOrderMark2
+			  && data[2] == (uint8_t) CharPointer_UTF8::byteOrderMark3)
 			start += 3;
 
 		return String (CharPointer_UTF8 ((const char*) start),
@@ -11591,18 +11591,18 @@ public:
 			expect (String::empty.getDoubleValue() == 0.0);
 			expect (String::empty.getFloatValue() == 0.0f);
 			expect (s.getIntValue() == 12345678);
-			expect (s.getLargeIntValue() == (int64) 12345678);
+			expect (s.getLargeIntValue() == (int64_t) 12345678);
 			expect (s.getDoubleValue() == 12345678.0);
 			expect (s.getFloatValue() == 12345678.0f);
 			expect (String (-1234).getIntValue() == -1234);
-			expect (String ((int64) -1234).getLargeIntValue() == -1234);
+			expect (String ((int64_t) -1234).getLargeIntValue() == -1234);
 			expect (String (-1234.56).getDoubleValue() == -1234.56);
 			expect (String (-1234.56f).getFloatValue() == -1234.56f);
 			expect (("xyz" + s).getTrailingIntValue() == s.getIntValue());
 			expect (s.getHexValue32() == 0x12345678);
-			expect (s.getHexValue64() == (int64) 0x12345678);
+			expect (s.getHexValue64() == (int64_t) 0x12345678);
 			expect (String::toHexString (0x1234abcd).equalsIgnoreCase ("1234abcd"));
-			expect (String::toHexString ((int64) 0x1234abcd).equalsIgnoreCase ("1234abcd"));
+			expect (String::toHexString ((int64_t) 0x1234abcd).equalsIgnoreCase ("1234abcd"));
 			expect (String::toHexString ((short) 0x12ab).equalsIgnoreCase ("12ab"));
 
 			unsigned char data[] = { 1, 2, 3, 4, 0xa, 0xb, 0xc, 0xd };
@@ -12462,7 +12462,7 @@ ChildProcess::~ChildProcess() {}
 
 bool ChildProcess::waitForProcessToFinish (const int timeoutMs) const
 {
-	const int64 timeoutTime = Time::getMillisecondCounter() + timeoutMs;
+	const int64_t timeoutTime = Time::getMillisecondCounter() + timeoutMs;
 
 	do
 	{
@@ -12560,7 +12560,7 @@ void ReadWriteLock::enterRead() const noexcept
 		{
 			if (i < readerThreads.size())
 			{
-				readerThreads.set (i + 1, (Thread::ThreadID) (1 + (pointer_sized_int) readerThreads.getUnchecked (i + 1)));
+				readerThreads.set (i + 1, (Thread::ThreadID) (1 + (intptr_t) readerThreads.getUnchecked (i + 1)));
 			}
 			else
 			{
@@ -12585,7 +12585,7 @@ void ReadWriteLock::exitRead() const noexcept
 	{
 		if (readerThreads.getUnchecked(i) == threadId)
 		{
-			const pointer_sized_int newCount = ((pointer_sized_int) readerThreads.getUnchecked (i + 1)) - 1;
+			const intptr_t newCount = ((intptr_t) readerThreads.getUnchecked (i + 1)) - 1;
 
 			if (newCount == 0)
 			{
@@ -12858,7 +12858,7 @@ bool Thread::setCurrentThreadPriority (const int newPriority)
 	return setThreadPriority (0, newPriority);
 }
 
-void Thread::setAffinityMask (const uint32 newAffinityMask)
+void Thread::setAffinityMask (const uint32_t newAffinityMask)
 {
 	affinityMask = newAffinityMask;
 }
@@ -12902,18 +12902,18 @@ public:
 		int a2[3];
 		expect (numElementsInArray(a2) == 3);
 
-		expect (ByteOrder::swap ((uint16) 0x1122) == 0x2211);
-		expect (ByteOrder::swap ((uint32) 0x11223344) == 0x44332211);
-		expect (ByteOrder::swap ((uint64) literal64bit (0x1122334455667788)) == literal64bit (0x8877665544332211));
+		expect (ByteOrder::swap ((uint16_t) 0x1122) == 0x2211);
+		expect (ByteOrder::swap ((uint32_t) 0x11223344) == 0x44332211);
+		expect (ByteOrder::swap ((uint64_t) literal64bit (0x1122334455667788)) == literal64bit (0x8877665544332211));
 
 		beginTest ("Atomic int");
 		AtomicTester <int>::testInteger (*this);
 		beginTest ("Atomic unsigned int");
 		AtomicTester <unsigned int>::testInteger (*this);
-		beginTest ("Atomic int32");
-		AtomicTester <int32>::testInteger (*this);
-		beginTest ("Atomic uint32");
-		AtomicTester <uint32>::testInteger (*this);
+		beginTest ("Atomic int32_t");
+		AtomicTester <int32_t>::testInteger (*this);
+		beginTest ("Atomic uint32_t");
+		AtomicTester <uint32_t>::testInteger (*this);
 		beginTest ("Atomic long");
 		AtomicTester <long>::testInteger (*this);
 		beginTest ("Atomic void*");
@@ -12923,10 +12923,10 @@ public:
 		beginTest ("Atomic float");
 		AtomicTester <float>::testFloat (*this);
 	  #if ! JUCE_64BIT_ATOMICS_UNAVAILABLE  // 64-bit intrinsics aren't available on some old platforms
-		beginTest ("Atomic int64");
-		AtomicTester <int64>::testInteger (*this);
-		beginTest ("Atomic uint64");
-		AtomicTester <uint64>::testInteger (*this);
+		beginTest ("Atomic int64_t");
+		AtomicTester <int64_t>::testInteger (*this);
+		beginTest ("Atomic uint64_t");
+		AtomicTester <uint64_t>::testInteger (*this);
 		beginTest ("Atomic double");
 		AtomicTester <double>::testFloat (*this);
 	  #endif
@@ -13135,7 +13135,7 @@ bool ThreadPool::waitForJobToFinish (const ThreadPoolJob* const job,
 {
 	if (job != nullptr)
 	{
-		const uint32 start = Time::getMillisecondCounter();
+		const uint32_t start = Time::getMillisecondCounter();
 
 		while (contains (job))
 		{
@@ -13214,7 +13214,7 @@ bool ThreadPool::removeAllJobs (const bool interruptRunningJobs, const int timeO
 		}
 	}
 
-	const uint32 start = Time::getMillisecondCounter();
+	const uint32_t start = Time::getMillisecondCounter();
 
 	for (;;)
 	{
@@ -13458,7 +13458,7 @@ void TimeSliceThread::run()
 
 			if (nextClientTime > now)
 			{
-				timeToWait = (int) jmin ((int64) 500, (nextClientTime - now).inMilliseconds());
+				timeToWait = (int) jmin ((int64_t) 500, (nextClientTime - now).inMilliseconds());
 			}
 			else
 			{
@@ -13528,7 +13528,7 @@ void PerformanceCounter::start()
 
 void PerformanceCounter::stop()
 {
-	const int64 now = Time::getHighResolutionTicks();
+	const int64_t now = Time::getHighResolutionTicks();
 
 	totalTime += 1000.0 * Time::highResolutionTicksToSeconds (now - started);
 
@@ -13583,13 +13583,13 @@ RelativeTime::~RelativeTime() noexcept
 }
 
 const RelativeTime RelativeTime::milliseconds (const int milliseconds) noexcept   { return RelativeTime (milliseconds * 0.001); }
-const RelativeTime RelativeTime::milliseconds (const int64 milliseconds) noexcept { return RelativeTime (milliseconds * 0.001); }
+const RelativeTime RelativeTime::milliseconds (const int64_t milliseconds) noexcept { return RelativeTime (milliseconds * 0.001); }
 const RelativeTime RelativeTime::minutes (const double numberOfMinutes) noexcept  { return RelativeTime (numberOfMinutes * 60.0); }
 const RelativeTime RelativeTime::hours (const double numberOfHours) noexcept      { return RelativeTime (numberOfHours * (60.0 * 60.0)); }
 const RelativeTime RelativeTime::days (const double numberOfDays) noexcept        { return RelativeTime (numberOfDays  * (60.0 * 60.0 * 24.0)); }
 const RelativeTime RelativeTime::weeks (const double numberOfWeeks) noexcept      { return RelativeTime (numberOfWeeks * (60.0 * 60.0 * 24.0 * 7.0)); }
 
-int64 RelativeTime::inMilliseconds() const noexcept { return (int64) (seconds * 1000.0); }
+int64_t RelativeTime::inMilliseconds() const noexcept { return (int64_t) (seconds * 1000.0); }
 double RelativeTime::inMinutes() const noexcept     { return seconds / 60.0; }
 double RelativeTime::inHours() const noexcept       { return seconds / (60.0 * 60.0); }
 double RelativeTime::inDays() const noexcept        { return seconds / (60.0 * 60.0 * 24.0); }
@@ -13725,16 +13725,16 @@ RelativeTime operator- (const RelativeTime&  t1, const RelativeTime& t2) noexcep
 
 namespace TimeHelpers
 {
-	static struct tm millisToLocal (const int64 millis) noexcept
+	static struct tm millisToLocal (const int64_t millis) noexcept
 	{
 		struct tm result;
-		const int64 seconds = millis / 1000;
+		const int64_t seconds = millis / 1000;
 
 		if (seconds < literal64bit (86400) || seconds >= literal64bit (2145916800))
 		{
 			// use extended maths for dates beyond 1970 to 2037..
 			const int timeZoneAdjustment = 31536000 - (int) (Time (1971, 0, 1, 0, 0).toMilliseconds() / 1000);
-			const int64 jdm = seconds + timeZoneAdjustment + literal64bit (210866803200);
+			const int64_t jdm = seconds + timeZoneAdjustment + literal64bit (210866803200);
 
 			const int days = (int) (jdm / literal64bit (86400));
 			const int a = 32044 + days;
@@ -13779,7 +13779,7 @@ namespace TimeHelpers
 		return result;
 	}
 
-	static int extendedModulo (const int64 value, const int modulo) noexcept
+	static int extendedModulo (const int64_t value, const int modulo) noexcept
 	{
 		return (int) (value >= 0 ? (value % modulo)
 								 : (value - ((value / modulo) + 1) * modulo));
@@ -13807,7 +13807,7 @@ namespace TimeHelpers
 	   #endif
 	}
 
-	static uint32 lastMSCounterValue = 0;
+	static uint32_t lastMSCounterValue = 0;
 }
 
 Time::Time() noexcept
@@ -13820,7 +13820,7 @@ Time::Time (const Time& other) noexcept
 {
 }
 
-Time::Time (const int64 ms) noexcept
+Time::Time (const int64_t ms) noexcept
 	: millisSinceEpoch (ms)
 {
 }
@@ -13847,7 +13847,7 @@ Time::Time (const int year,
 						   + (y * 365) + (y /  4) - (y / 100) + (y / 400)
 						   - 32045;
 
-		const int64 s = ((int64) jd) * literal64bit (86400) - literal64bit (210866803200);
+		const int64_t s = ((int64_t) jd) * literal64bit (86400) - literal64bit (210866803200);
 
 		millisSinceEpoch = 1000 * (s + (hours * 3600 + minutes * 60 + seconds - timeZoneAdjustment))
 							 + milliseconds;
@@ -13863,7 +13863,7 @@ Time::Time (const int year,
 		t.tm_sec    = seconds;
 		t.tm_isdst  = -1;
 
-		millisSinceEpoch = 1000 * (int64) mktime (&t);
+		millisSinceEpoch = 1000 * (int64_t) mktime (&t);
 
 		if (millisSinceEpoch < 0)
 			millisSinceEpoch = 0;
@@ -13882,12 +13882,12 @@ Time& Time::operator= (const Time& other) noexcept
 	return *this;
 }
 
-int64 Time::currentTimeMillis() noexcept
+int64_t Time::currentTimeMillis() noexcept
 {
-	static uint32 lastCounterResult = 0xffffffff;
-	static int64 correction = 0;
+	static uint32_t lastCounterResult = 0xffffffff;
+	static int64_t correction = 0;
 
-	const uint32 now = getMillisecondCounter();
+	const uint32_t now = getMillisecondCounter();
 
 	// check the counter hasn't wrapped (also triggered the first time this function is called)
 	if (now < lastCounterResult)
@@ -13904,12 +13904,12 @@ int64 Time::currentTimeMillis() noexcept
 		   #else
 			_ftime (&t);
 		   #endif
-			correction = (((int64) t.time) * 1000 + t.millitm) - now;
+			correction = (((int64_t) t.time) * 1000 + t.millitm) - now;
 		  #else
 			struct timeval tv;
 			struct timezone tz;
 			gettimeofday (&tv, &tz);
-			correction = (((int64) tv.tv_sec) * 1000 + tv.tv_usec / 1000) - now;
+			correction = (((int64_t) tv.tv_sec) * 1000 + tv.tv_usec / 1000) - now;
 		  #endif
 		}
 	}
@@ -13919,11 +13919,11 @@ int64 Time::currentTimeMillis() noexcept
 	return correction + now;
 }
 
-uint32 juce_millisecondsSinceStartup() noexcept;
+uint32_t juce_millisecondsSinceStartup() noexcept;
 
-uint32 Time::getMillisecondCounter() noexcept
+uint32_t Time::getMillisecondCounter() noexcept
 {
-	const uint32 now = juce_millisecondsSinceStartup();
+	const uint32_t now = juce_millisecondsSinceStartup();
 
 	if (now < TimeHelpers::lastMSCounterValue)
 	{
@@ -13941,7 +13941,7 @@ uint32 Time::getMillisecondCounter() noexcept
 	return now;
 }
 
-uint32 Time::getApproximateMillisecondCounter() noexcept
+uint32_t Time::getApproximateMillisecondCounter() noexcept
 {
 	if (TimeHelpers::lastMSCounterValue == 0)
 		getMillisecondCounter();
@@ -13949,11 +13949,11 @@ uint32 Time::getApproximateMillisecondCounter() noexcept
 	return TimeHelpers::lastMSCounterValue;
 }
 
-void Time::waitForMillisecondCounter (const uint32 targetTime) noexcept
+void Time::waitForMillisecondCounter (const uint32_t targetTime) noexcept
 {
 	for (;;)
 	{
-		const uint32 now = getMillisecondCounter();
+		const uint32_t now = getMillisecondCounter();
 
 		if (now >= targetTime)
 			break;
@@ -13974,14 +13974,14 @@ void Time::waitForMillisecondCounter (const uint32 targetTime) noexcept
 	}
 }
 
-double Time::highResolutionTicksToSeconds (const int64 ticks) noexcept
+double Time::highResolutionTicksToSeconds (const int64_t ticks) noexcept
 {
 	return ticks / (double) getHighResolutionTicksPerSecond();
 }
 
-int64 Time::secondsToHighResolutionTicks (const double seconds) noexcept
+int64_t Time::secondsToHighResolutionTicks (const double seconds) noexcept
 {
-	return (int64) (seconds * (double) getHighResolutionTicksPerSecond());
+	return (int64_t) (seconds * (double) getHighResolutionTicksPerSecond());
 }
 
 Time JUCE_CALLTYPE Time::getCurrentTime() noexcept
@@ -14428,7 +14428,7 @@ namespace XmlIdentifierChars
 
 	static bool isIdentifierChar (const juce_wchar c) noexcept
 	{
-		static const uint32 legalChars[] = { 0, 0x7ff6000, 0x87fffffe, 0x7fffffe, 0 };
+		static const uint32_t legalChars[] = { 0, 0x7ff6000, 0x87fffffe, 0x7fffffe, 0 };
 
 		return ((int) c < (int) numElementsInArray (legalChars) * 32) ? ((legalChars [c >> 5] & (1 << (c & 31))) != 0)
 																	  : isIdentifierCharSlow (c);
@@ -14436,7 +14436,7 @@ namespace XmlIdentifierChars
 
 	/*static void generateIdentifierCharConstants()
 	{
-		uint32 n[8] = { 0 };
+		uint32_t n[8] = { 0 };
 		for (int i = 0; i < 256; ++i)
 			if (isIdentifierCharSlow (i))
 				n[i >> 5] |= (1 << (i & 31));
@@ -15321,7 +15321,7 @@ namespace XmlOutputFunctions
 
 		do
 		{
-			if (((juce_wchar) (uint8) *t) == character)
+			if (((juce_wchar) (uint8_t) *t) == character)
 				return true;
 		}
 		while (*++t != 0);
@@ -15331,7 +15331,7 @@ namespace XmlOutputFunctions
 
 	void generateLegalCharLookupTable()
 	{
-		uint8 n[32] = { 0 };
+		uint8_t n[32] = { 0 };
 		for (int i = 0; i < 256; ++i)
 			if (isLegalXmlCharSlow (i))
 				n[i >> 3] |= (1 << (i & 7));
@@ -15344,7 +15344,7 @@ namespace XmlOutputFunctions
 	}
    #endif
 
-	static bool isLegalXmlChar (const uint32 c) noexcept
+	static bool isLegalXmlChar (const uint32_t c) noexcept
 	{
 		static const unsigned char legalChars[] = { 0, 0, 0, 0, 187, 255, 255, 175, 255, 255, 255, 191, 254, 255, 255, 127 };
 
@@ -15358,7 +15358,7 @@ namespace XmlOutputFunctions
 
 		for (;;)
 		{
-			const uint32 character = (uint32) t.getAndAdvance();
+			const uint32_t character = (uint32_t) t.getAndAdvance();
 
 			if (character == 0)
 				break;
@@ -15425,7 +15425,7 @@ void XmlElement::writeElementAsText (OutputStream& outputStream,
 					lineLen = 0;
 				}
 
-				const int64 startPos = outputStream.getPosition();
+				const int64_t startPos = outputStream.getPosition();
 				outputStream.writeByte (' ');
 				outputStream << att->name;
 				outputStream.write ("=\"", 2);
@@ -18872,8 +18872,8 @@ unsigned long ZEXPORT crc32 (unsigned long crc, const unsigned char FAR *buf, un
 /* ========================================================================= */
 local unsigned long crc32_little(unsigned long crc, const unsigned char FAR *buf, unsigned len)
 {
-	register u4 c;
-	register const u4 FAR *buf4;
+	u4 c;
+	const u4 FAR *buf4;
 
 	c = (u4)crc;
 	c = ~c;
@@ -18909,8 +18909,8 @@ local unsigned long crc32_little(unsigned long crc, const unsigned char FAR *buf
 /* ========================================================================= */
 local unsigned long crc32_big (unsigned long crc, const unsigned char FAR *buf, unsigned len)
 {
-	register u4 c;
-	register const u4 FAR *buf4;
+	u4 c;
+	const u4 FAR *buf4;
 
 	c = REV((u4)crc);
 	c = ~c;
@@ -20330,9 +20330,9 @@ local void lm_init (deflate_state *s)
 local uInt longest_match(deflate_state *s, IPos cur_match)
 {
 	unsigned chain_length = s->max_chain_length;/* max hash chain length */
-	register Bytef *scan = s->window + s->strstart; /* current string */
-	register Bytef *match;                       /* matched string */
-	register int len;                           /* length of current match */
+	Bytef *scan = s->window + s->strstart; /* current string */
+	Bytef *match;                       /* matched string */
+	int len;                           /* length of current match */
 	int best_len = s->prev_length;              /* best match length so far */
 	int nice_match = s->nice_match;             /* stop if match long enough */
 	IPos limit = s->strstart > (IPos)MAX_DIST(s) ?
@@ -20347,13 +20347,13 @@ local uInt longest_match(deflate_state *s, IPos cur_match)
 	/* Compare two bytes at a time. Note: this is not always beneficial.
 	 * Try with and without -DUNALIGNED_OK to check.
 	 */
-	register Bytef *strend = s->window + s->strstart + MAX_MATCH - 1;
-	register ush scan_start = *(ushf*)scan;
-	register ush scan_end   = *(ushf*)(scan+best_len-1);
+	Bytef *strend = s->window + s->strstart + MAX_MATCH - 1;
+	ush scan_start = *(ushf*)scan;
+	ush scan_end   = *(ushf*)(scan+best_len-1);
 #else
-	register Bytef *strend = s->window + s->strstart + MAX_MATCH;
-	register Byte scan_end1  = scan[best_len-1];
-	register Byte scan_end   = scan[best_len];
+	Bytef *strend = s->window + s->strstart + MAX_MATCH;
+	Byte scan_end1  = scan[best_len-1];
+	Byte scan_end   = scan[best_len];
 #endif
 
 	/* The code is optimized for HASH_BITS >= 8 and MAX_MATCH-2 multiple of 16.
@@ -20475,10 +20475,10 @@ local uInt longest_match(deflate_state *s, IPos cur_match)
  */
 local uInt longest_match_fast (deflate_state *s, IPos cur_match)
 {
-	register Bytef *scan = s->window + s->strstart; /* current string */
-	register Bytef *match;                       /* matched string */
-	register int len;                           /* length of current match */
-	register Bytef *strend = s->window + s->strstart + MAX_MATCH;
+	Bytef *scan = s->window + s->strstart; /* current string */
+	Bytef *match;                       /* matched string */
+	int len;                           /* length of current match */
+	Bytef *strend = s->window + s->strstart + MAX_MATCH;
 
 	/* The code is optimized for HASH_BITS >= 8 and MAX_MATCH-2 multiple of 16.
 	 * It is easy to get rid of this optimization if necessary.
@@ -20561,8 +20561,8 @@ local void check_match(deflate_state *s, IPos start, IPos match, int length)
  */
 local void fill_window (deflate_state *s)
 {
-	register unsigned n, m;
-	register Posf *p;
+	unsigned n, m;
+	Posf *p;
 	unsigned more;    /* Amount of free space at the end of the window. */
 	uInt wsize = s->w_size;
 
@@ -24548,7 +24548,7 @@ local void set_data_type (deflate_state *s)
  */
 local unsigned bi_reverse (unsigned code, int len)
 {
-	register unsigned res = 0;
+	unsigned res = 0;
 	do {
 		res |= code & 1;
 		code >>= 1, res <<= 1;
@@ -24961,13 +24961,13 @@ public:
 
 	bool needsInput() const noexcept        { return dataSize <= 0; }
 
-	void setInput (uint8* const data_, const size_t size) noexcept
+	void setInput (uint8_t* const data_, const size_t size) noexcept
 	{
 		data = data_;
 		dataSize = size;
 	}
 
-	int doNextBlock (uint8* const dest, const int destSize)
+	int doNextBlock (uint8_t* const dest, const int destSize)
 	{
 		using namespace zlibNamespace;
 		if (streamIsValid && data != nullptr && ! finished)
@@ -25011,7 +25011,7 @@ public:
 
 private:
 	zlibNamespace::z_stream stream;
-	uint8* data;
+	uint8_t* data;
 	size_t dataSize;
 
 	JUCE_DECLARE_NON_COPYABLE (GZIPDecompressHelper);
@@ -25020,7 +25020,7 @@ private:
 GZIPDecompressorInputStream::GZIPDecompressorInputStream (InputStream* const sourceStream_,
 														  const bool deleteSourceWhenDestroyed,
 														  const bool noWrap_,
-														  const int64 uncompressedStreamLength_)
+														  const int64_t uncompressedStreamLength_)
   : sourceStream (sourceStream_, deleteSourceWhenDestroyed),
 	uncompressedStreamLength (uncompressedStreamLength_),
 	noWrap (noWrap_),
@@ -25050,7 +25050,7 @@ GZIPDecompressorInputStream::~GZIPDecompressorInputStream()
 {
 }
 
-int64 GZIPDecompressorInputStream::getTotalLength()
+int64_t GZIPDecompressorInputStream::getTotalLength()
 {
 	return uncompressedStreamLength;
 }
@@ -25062,7 +25062,7 @@ int GZIPDecompressorInputStream::read (void* destBuffer, int howMany)
 	if (howMany > 0 && ! isEof)
 	{
 		int numRead = 0;
-		uint8* d = static_cast <uint8*> (destBuffer);
+		uint8_t* d = static_cast <uint8_t*> (destBuffer);
 
 		while (! helper->error)
 		{
@@ -25112,12 +25112,12 @@ bool GZIPDecompressorInputStream::isExhausted()
 	return helper->error || isEof;
 }
 
-int64 GZIPDecompressorInputStream::getPosition()
+int64_t GZIPDecompressorInputStream::getPosition()
 {
 	return currentPos;
 }
 
-bool GZIPDecompressorInputStream::setPosition (int64 newPos)
+bool GZIPDecompressorInputStream::setPosition (int64_t newPos)
 {
 	if (newPos < currentPos)
 	{
@@ -25168,7 +25168,7 @@ public:
 			zlibNamespace::deflateEnd (&stream);
 	}
 
-	bool write (const uint8* data, int dataSize, OutputStream& destStream)
+	bool write (const uint8_t* data, int dataSize, OutputStream& destStream)
 	{
 		// When you call flush() on a gzip stream, the stream is closed, and you can
 		// no longer continue to write data to it!
@@ -25183,7 +25183,7 @@ public:
 
 	void finish (OutputStream& destStream)
 	{
-		const uint8* data = nullptr;
+		const uint8_t* data = nullptr;
 		int dataSize = 0;
 
 		while (! finished)
@@ -25198,12 +25198,12 @@ private:
 	bool isFirstDeflate, streamIsValid, finished;
 	zlibNamespace::Bytef buffer[32768];
 
-	bool doNextBlock (const uint8*& data, int& dataSize, OutputStream& destStream, const int flushMode)
+	bool doNextBlock (const uint8_t*& data, int& dataSize, OutputStream& destStream, const int flushMode)
 	{
 		using namespace zlibNamespace;
 		if (streamIsValid)
 		{
-			stream.next_in   = const_cast <uint8*> (data);
+			stream.next_in   = const_cast <uint8_t*> (data);
 			stream.next_out  = buffer;
 			stream.avail_in  = (z_uInt) dataSize;
 			stream.avail_out = (z_uInt) sizeof (buffer);
@@ -25261,15 +25261,15 @@ bool GZIPCompressorOutputStream::write (const void* destBuffer, int howMany)
 {
 	jassert (destBuffer != nullptr && howMany >= 0);
 
-	return helper->write (static_cast <const uint8*> (destBuffer), howMany, *destStream);
+	return helper->write (static_cast <const uint8_t*> (destBuffer), howMany, *destStream);
 }
 
-int64 GZIPCompressorOutputStream::getPosition()
+int64_t GZIPCompressorOutputStream::getPosition()
 {
 	return destStream->getPosition();
 }
 
-bool GZIPCompressorOutputStream::setPosition (int64 /*newPosition*/)
+bool GZIPCompressorOutputStream::setPosition (int64_t /*newPosition*/)
 {
 	jassertfalse; // can't do it!
 	return false;
@@ -25384,8 +25384,8 @@ namespace
 		BufferedInputStream in (input, 8192);
 
 		in.setPosition (in.getTotalLength());
-		int64 pos = in.getPosition();
-		const int64 lowestPos = jmax ((int64) 0, pos - 1024);
+		int64_t pos = in.getPosition();
+		const int64_t lowestPos = jmax ((int64_t) 0, pos - 1024);
 
 		char buffer [32] = { 0 };
 
@@ -25456,7 +25456,7 @@ public:
 	   #endif
 	}
 
-	int64 getTotalLength()
+	int64_t getTotalLength()
 	{
 		return zipEntryHolder.compressedSize;
 	}
@@ -25466,7 +25466,7 @@ public:
 		if (headerSize <= 0)
 			return 0;
 
-		howMany = (int) jmin ((int64) howMany, (int64) (zipEntryHolder.compressedSize - pos));
+		howMany = (int) jmin ((int64_t) howMany, (int64_t) (zipEntryHolder.compressedSize - pos));
 
 		if (inputStream == nullptr)
 			return 0;
@@ -25491,24 +25491,24 @@ public:
 
 	bool isExhausted()
 	{
-		return headerSize <= 0 || pos >= (int64) zipEntryHolder.compressedSize;
+		return headerSize <= 0 || pos >= (int64_t) zipEntryHolder.compressedSize;
 	}
 
-	int64 getPosition()
+	int64_t getPosition()
 	{
 		return pos;
 	}
 
-	bool setPosition (int64 newPos)
+	bool setPosition (int64_t newPos)
 	{
-		pos = jlimit ((int64) 0, (int64) zipEntryHolder.compressedSize, newPos);
+		pos = jlimit ((int64_t) 0, (int64_t) zipEntryHolder.compressedSize, newPos);
 		return true;
 	}
 
 private:
 	ZipFile& file;
 	ZipEntryHolder zipEntryHolder;
-	int64 pos;
+	int64_t pos;
 	int headerSize;
 	InputStream* inputStream;
 	ScopedPointer<InputStream> streamToDelete;
@@ -25736,7 +25736,7 @@ public:
 	{
 	}
 
-	bool writeData (OutputStream& target, const int64 overallStartPosition)
+	bool writeData (OutputStream& target, const int64_t overallStartPosition)
 	{
 		MemoryOutputStream compressedData;
 
@@ -25843,7 +25843,7 @@ void ZipFile::Builder::addFile (const File& fileToAdd, const int compressionLeve
 
 bool ZipFile::Builder::writeToStream (OutputStream& target, double* const progress) const
 {
-	const int64 fileStart = target.getPosition();
+	const int64_t fileStart = target.getPosition();
 
 	for (int i = 0; i < items.size(); ++i)
 	{
@@ -25854,13 +25854,13 @@ bool ZipFile::Builder::writeToStream (OutputStream& target, double* const progre
 			return false;
 	}
 
-	const int64 directoryStart = target.getPosition();
+	const int64_t directoryStart = target.getPosition();
 
 	for (int i = 0; i < items.size(); ++i)
 		if (! items.getUnchecked (i)->writeDirectoryEntry (target))
 			return false;
 
-	const int64 directoryEnd = target.getPosition();
+	const int64_t directoryEnd = target.getPosition();
 
 	target.writeInt (0x06054b50);
 	target.writeShort (0);
@@ -26546,7 +26546,7 @@ namespace
 		return statfs (f.getFullPathName().toUTF8(), &result) == 0;
 	}
 
-	void updateStatInfoForFile (const String& path, bool* const isDir, int64* const fileSize,
+	void updateStatInfoForFile (const String& path, bool* const isDir, int64_t* const fileSize,
 								Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 	{
 		if (isDir != nullptr || fileSize != nullptr || modTime != nullptr || creationTime != nullptr)
@@ -26556,8 +26556,8 @@ namespace
 
 			if (isDir != nullptr)         *isDir        = statOk && ((info.st_mode & S_IFDIR) != 0);
 			if (fileSize != nullptr)      *fileSize     = statOk ? info.st_size : 0;
-			if (modTime != nullptr)       *modTime      = Time (statOk ? (int64) info.st_mtime * 1000 : 0);
-			if (creationTime != nullptr)  *creationTime = Time (statOk ? (int64) info.st_ctime * 1000 : 0);
+			if (modTime != nullptr)       *modTime      = Time (statOk ? (int64_t) info.st_mtime * 1000 : 0);
+			if (creationTime != nullptr)  *creationTime = Time (statOk ? (int64_t) info.st_ctime * 1000 : 0);
 		}
 
 		if (isReadOnly != nullptr)
@@ -26576,7 +26576,7 @@ namespace
 
 	int getFD (void* handle) noexcept
 	{
-		return (int) (pointer_sized_int) handle;
+		return (int) (intptr_t) handle;
 	}
 }
 
@@ -26599,7 +26599,7 @@ bool File::existsAsFile() const
 	return exists() && ! isDirectory();
 }
 
-int64 File::getSize() const
+int64_t File::getSize() const
 {
 	juce_statStruct info;
 	return juce_stat (fullPath, info) ? info.st_size : 0;
@@ -26633,7 +26633,7 @@ bool File::setFileReadOnlyInternal (const bool shouldBeReadOnly) const
 	return chmod (fullPath.toUTF8(), info.st_mode) == 0;
 }
 
-void File::getFileTimesInternal (int64& modificationTime, int64& accessTime, int64& creationTime) const
+void File::getFileTimesInternal (int64_t& modificationTime, int64_t& accessTime, int64_t& creationTime) const
 {
 	modificationTime = 0;
 	accessTime = 0;
@@ -26642,13 +26642,13 @@ void File::getFileTimesInternal (int64& modificationTime, int64& accessTime, int
 	juce_statStruct info;
 	if (juce_stat (fullPath, info))
 	{
-		modificationTime = (int64) info.st_mtime * 1000;
-		accessTime = (int64) info.st_atime * 1000;
-		creationTime = (int64) info.st_ctime * 1000;
+		modificationTime = (int64_t) info.st_mtime * 1000;
+		accessTime = (int64_t) info.st_atime * 1000;
+		creationTime = (int64_t) info.st_ctime * 1000;
 	}
 }
 
-bool File::setFileTimesInternal (int64 modificationTime, int64 accessTime, int64 /*creationTime*/) const
+bool File::setFileTimesInternal (int64_t modificationTime, int64_t accessTime, int64_t /*creationTime*/) const
 {
 	juce_statStruct info;
 
@@ -26696,7 +26696,7 @@ Result File::createDirectoryInternal (const String& fileName) const
 	return getResultForReturnValue (mkdir (fileName.toUTF8(), 0777));
 }
 
-int64 juce_fileSetPosition (void* handle, int64 pos)
+int64_t juce_fileSetPosition (void* handle, int64_t pos)
 {
 	if (handle != 0 && lseek (getFD (handle), pos, SEEK_SET) == pos)
 		return pos;
@@ -26711,7 +26711,7 @@ void FileInputStream::openHandle()
 	const int f = open (file.getFullPathName().toUTF8(), O_RDONLY, 00644);
 
 	if (f != -1)
-		fileHandle = (void*) f;
+		fileHandle = (void*) (intptr_t) f;
 	else
 		status = getResultForErrno();
 }
@@ -26727,7 +26727,7 @@ void FileInputStream::closeHandle()
 
 size_t FileInputStream::readInternal (void* const buffer, const size_t numBytes)
 {
-	ssize_t result = 0;
+	size_t result = 0;
 
 	if (fileHandle != 0)
 	{
@@ -26755,7 +26755,7 @@ void FileOutputStream::openHandle()
 
 			if (currentPosition >= 0)
 			{
-				fileHandle = (void*) f;
+				fileHandle = (void*) (intptr_t) f;
 			}
 			else
 			{
@@ -26773,7 +26773,7 @@ void FileOutputStream::openHandle()
 		const int f = open (file.getFullPathName().toUTF8(), O_RDWR + O_CREAT, 00644);
 
 		if (f != -1)
-			fileHandle = (void*) f;
+			fileHandle = (void*) (intptr_t) f;
 		else
 			status = getResultForErrno();
 	}
@@ -26790,7 +26790,7 @@ void FileOutputStream::closeHandle()
 
 int FileOutputStream::writeInternal (const void* const data, const int numBytes)
 {
-	ssize_t result = 0;
+	size_t result = 0;
 
 	if (fileHandle != 0)
 	{
@@ -26831,7 +26831,7 @@ MemoryMappedFile::MemoryMappedFile (const File& file, MemoryMappedFile::AccessMo
 
 	if (fileHandle != -1)
 	{
-		const int64 fileSize = file.getSize();
+		const int64_t fileSize = file.getSize();
 
 		void* m = mmap (0, (size_t) fileSize,
 						mode == readWrite ? (PROT_READ | PROT_WRITE) : PROT_READ,
@@ -26875,20 +26875,20 @@ File juce_getExecutableFile()
    #endif
 }
 
-int64 File::getBytesFreeOnVolume() const
+int64_t File::getBytesFreeOnVolume() const
 {
 	struct statfs buf;
 	if (juce_doStatFS (*this, buf))
-		return (int64) buf.f_bsize * (int64) buf.f_bavail; // Note: this returns space available to non-super user
+		return (int64_t) buf.f_bsize * (int64_t) buf.f_bavail; // Note: this returns space available to non-super user
 
 	return 0;
 }
 
-int64 File::getVolumeTotalSize() const
+int64_t File::getVolumeTotalSize() const
 {
 	struct statfs buf;
 	if (juce_doStatFS (*this, buf))
-		return (int64) buf.f_bsize * (int64) buf.f_blocks;
+		return (int64_t) buf.f_bsize * (int64_t) buf.f_blocks;
 
 	return 0;
 }
@@ -27000,7 +27000,7 @@ public:
 			fl.l_whence = SEEK_SET;
 			fl.l_type = F_WRLCK;
 
-			const int64 endTime = Time::currentTimeMillis() + timeOutMillisecs;
+			const int64_t endTime = Time::currentTimeMillis() + timeOutMillisecs;
 
 			for (;;)
 			{
@@ -27190,7 +27190,7 @@ void Thread::yield()
  #define SUPPORT_AFFINITIES 1
 #endif
 
-void Thread::setCurrentThreadAffinityMask (const uint32 affinityMask)
+void Thread::setCurrentThreadAffinityMask (const uint32_t affinityMask)
 {
    #if SUPPORT_AFFINITIES
 	cpu_set_t affinity;
@@ -27446,7 +27446,7 @@ public:
 		}
 
 		bytesWritten = 0;
-		const uint32 timeOutTime = Time::getMillisecondCounter() + timeOutMilliseconds;
+		const uint32_t timeOutTime = Time::getMillisecondCounter() + timeOutMilliseconds;
 
 		while (bytesWritten < numBytesToWrite
 				&& (timeOutMilliseconds < 0 || Time::getMillisecondCounter() < timeOutTime))
@@ -27858,7 +27858,7 @@ public:
 	}
 
 	bool next (String& filenameFound,
-			   bool* const isDir, bool* const isHidden, int64* const fileSize,
+			   bool* const isDir, bool* const isHidden, int64_t* const fileSize,
 			   Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 	{
 		JUCE_AUTORELEASEPOOL
@@ -27906,7 +27906,7 @@ DirectoryIterator::NativeIterator::~NativeIterator()
 }
 
 bool DirectoryIterator::NativeIterator::next (String& filenameFound,
-											  bool* const isDir, bool* const isHidden, int64* const fileSize,
+											  bool* const isDir, bool* const isHidden, int64_t* const fileSize,
 											  Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 {
 	return pimpl->next (filenameFound, isDir, isHidden, fileSize, modTime, creationTime, isReadOnly);
@@ -28023,7 +28023,7 @@ void MACAddress::findAllAddresses (Array<MACAddress>& result)
 				#endif
 
 				if (sadd->sdl_type == IFT_ETHER)
-					result.addIfNotAlreadyThere (MACAddress (((const uint8*) sadd->sdl_data) + sadd->sdl_nlen));
+					result.addIfNotAlreadyThere (MACAddress (((const uint8_t*) sadd->sdl_data) + sadd->sdl_nlen));
 			}
 		}
 
@@ -28093,7 +28093,7 @@ using namespace juce;
 	Thread* runLoopThread;
 	bool initialised, hasFailed, hasFinished;
 	int position;
-	int64 contentLength;
+	int64_t contentLength;
 	NSDictionary* headers;
 	NSLock* dataLock;
 }
@@ -28332,9 +28332,9 @@ public:
 	}
 
 	bool isError() const        { return connection == nil; }
-	int64 getTotalLength()      { return connection == nil ? -1 : connection->contentLength; }
+	int64_t getTotalLength()      { return connection == nil ? -1 : connection->contentLength; }
 	bool isExhausted()          { return finished; }
-	int64 getPosition()         { return position; }
+	int64_t getPosition()         { return position; }
 
 	int read (void* buffer, int bytesToRead)
 	{
@@ -28357,7 +28357,7 @@ public:
 		}
 	}
 
-	bool setPosition (int64 wantedPos)
+	bool setPosition (int64_t wantedPos)
 	{
 		if (wantedPos != position)
 		{
@@ -28380,7 +28380,7 @@ private:
 	JuceURLConnection* connection;
 	String address, headers;
 	MemoryBlock postData;
-	int64 position;
+	int64_t position;
 	bool finished;
 	const bool isPost;
 	const int timeOutMs;
@@ -28540,9 +28540,9 @@ void Logger::outputDebugString (const String& text)
 namespace SystemStatsHelpers
 {
    #if JUCE_INTEL
-	static void doCPUID (uint32& a, uint32& b, uint32& c, uint32& d, uint32 type)
+	static void doCPUID (uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d, uint32_t type)
 	{
-		uint32 la = a, lb = b, lc = c, ld = d;
+		uint32_t la = a, lb = b, lc = c, ld = d;
 
 		asm ("mov %%ebx, %%esi \n\t"
 			 "cpuid \n\t"
@@ -28561,7 +28561,7 @@ namespace SystemStatsHelpers
 SystemStats::CPUFlags::CPUFlags()
 {
    #if JUCE_INTEL
-	uint32 familyModel = 0, extFeatures = 0, features = 0, dummy = 0;
+	uint32_t familyModel = 0, extFeatures = 0, features = 0, dummy = 0;
 	SystemStatsHelpers::doCPUID (familyModel, extFeatures, dummy, features, 1);
 
 	hasMMX   = (features & (1 << 23)) != 0;
@@ -28626,7 +28626,7 @@ bool SystemStats::isOperatingSystem64Bit()
 
 int SystemStats::getMemorySizeInMegabytes()
 {
-	uint64 mem = 0;
+	uint64_t mem = 0;
 	size_t memSize = sizeof (mem);
 	int mib[] = { CTL_HW, HW_MEMSIZE };
 	sysctl (mib, 2, &mem, &memSize, 0, 0);
@@ -28636,8 +28636,8 @@ int SystemStats::getMemorySizeInMegabytes()
 String SystemStats::getCpuVendor()
 {
    #if JUCE_INTEL
-	uint32 dummy = 0;
-	uint32 vendor[4] = { 0 };
+	uint32_t dummy = 0;
+	uint32_t vendor[4] = { 0 };
 
 	SystemStatsHelpers::doCPUID (dummy, vendor[0], vendor[2], vendor[1], 0);
 
@@ -28649,7 +28649,7 @@ String SystemStats::getCpuVendor()
 
 int SystemStats::getCpuSpeedInMegaherz()
 {
-	uint64 speedHz = 0;
+	uint64_t speedHz = 0;
 	size_t speedSize = sizeof (speedHz);
 	int mib[] = { CTL_HW, HW_CPU_FREQ };
 	sysctl (mib, 2, &speedHz, &speedSize, 0, 0);
@@ -28697,16 +28697,16 @@ public:
 		else
 		{
 			numerator = timebase.numer;
-			denominator = timebase.denom * (int64) 1000000;
+			denominator = timebase.denom * (int64_t) 1000000;
 		}
 
-		highResTimerFrequency = (timebase.denom * (int64) 1000000000) / timebase.numer;
+		highResTimerFrequency = (timebase.denom * (int64_t) 1000000000) / timebase.numer;
 		highResTimerToMillisecRatio = numerator / (double) denominator;
 	}
 
-	inline uint32 millisecondsSinceStartup() const noexcept
+	inline uint32_t millisecondsSinceStartup() const noexcept
 	{
-		return (uint32) ((mach_absolute_time() * numerator) / denominator);
+		return (uint32_t) ((mach_absolute_time() * numerator) / denominator);
 	}
 
 	inline double getMillisecondCounterHiRes() const noexcept
@@ -28714,19 +28714,19 @@ public:
 		return mach_absolute_time() * highResTimerToMillisecRatio;
 	}
 
-	int64 highResTimerFrequency;
+	int64_t highResTimerFrequency;
 
 private:
-	int64 numerator, denominator;
+	int64_t numerator, denominator;
 	double highResTimerToMillisecRatio;
 };
 
 static HiResCounterHandler hiResCounterHandler;
 
-uint32 juce_millisecondsSinceStartup() noexcept         { return hiResCounterHandler.millisecondsSinceStartup(); }
+uint32_t juce_millisecondsSinceStartup() noexcept         { return hiResCounterHandler.millisecondsSinceStartup(); }
 double Time::getMillisecondCounterHiRes() noexcept      { return hiResCounterHandler.getMillisecondCounterHiRes(); }
-int64  Time::getHighResolutionTicksPerSecond() noexcept { return hiResCounterHandler.highResTimerFrequency; }
-int64  Time::getHighResolutionTicks() noexcept          { return (int64) mach_absolute_time(); }
+int64_t  Time::getHighResolutionTicksPerSecond() noexcept { return hiResCounterHandler.highResTimerFrequency; }
+int64_t  Time::getHighResolutionTicks() noexcept          { return (int64_t) mach_absolute_time(); }
 
 bool Time::setSystemTimeToThisTime() const
 {
@@ -28929,14 +28929,14 @@ namespace WindowsFileHelpers
 		return GetFileAttributes (path.toWideCharPointer());
 	}
 
-	int64 fileTimeToTime (const FILETIME* const ft)
+	int64_t fileTimeToTime (const FILETIME* const ft)
 	{
 		static_jassert (sizeof (ULARGE_INTEGER) == sizeof (FILETIME)); // tell me if this fails!
 
-		return (int64) ((reinterpret_cast<const ULARGE_INTEGER*> (ft)->QuadPart - literal64bit (116444736000000000)) / 10000);
+		return (int64_t) ((reinterpret_cast<const ULARGE_INTEGER*> (ft)->QuadPart - literal64bit (116444736000000000)) / 10000);
 	}
 
-	FILETIME* timeToFileTime (const int64 time, FILETIME* const ft) noexcept
+	FILETIME* timeToFileTime (const int64_t time, FILETIME* const ft) noexcept
 	{
 		if (time <= 0)
 			return nullptr;
@@ -28961,13 +28961,13 @@ namespace WindowsFileHelpers
 		return path;
 	}
 
-	int64 getDiskSpaceInfo (const String& path, const bool total)
+	int64_t getDiskSpaceInfo (const String& path, const bool total)
 	{
 		ULARGE_INTEGER spc, tot, totFree;
 
 		if (GetDiskFreeSpaceEx (getDriveFromPath (path).toWideCharPointer(), &spc, &tot, &totFree))
-			return total ? (int64) tot.QuadPart
-						 : (int64) spc.QuadPart;
+			return total ? (int64_t) tot.QuadPart
+						 : (int64_t) spc.QuadPart;
 
 		return 0;
 	}
@@ -29101,7 +29101,7 @@ Result File::createDirectoryInternal (const String& fileName) const
 															 : WindowsFileHelpers::getResultForLastError();
 }
 
-int64 juce_fileSetPosition (void* handle, int64 pos)
+int64_t juce_fileSetPosition (void* handle, int64_t pos)
 {
 	LARGE_INTEGER li;
 	li.QuadPart = pos;
@@ -29223,7 +29223,7 @@ MemoryMappedFile::MemoryMappedFile (const File& file, MemoryMappedFile::AccessMo
 	if (h != INVALID_HANDLE_VALUE)
 	{
 		fileHandle = (void*) h;
-		const int64 fileSize = file.getSize();
+		const int64_t fileSize = file.getSize();
 
 		HANDLE mappingHandle = CreateFileMapping (h, 0, protect, (DWORD) (fileSize >> 32), (DWORD) fileSize, 0);
 		if (mappingHandle != 0)
@@ -29247,17 +29247,17 @@ MemoryMappedFile::~MemoryMappedFile()
 		CloseHandle ((HANDLE) fileHandle);
 }
 
-int64 File::getSize() const
+int64_t File::getSize() const
 {
 	WIN32_FILE_ATTRIBUTE_DATA attributes;
 
 	if (GetFileAttributesEx (fullPath.toWideCharPointer(), GetFileExInfoStandard, &attributes))
-		return (((int64) attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow;
+		return (((int64_t) attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow;
 
 	return 0;
 }
 
-void File::getFileTimesInternal (int64& modificationTime, int64& accessTime, int64& creationTime) const
+void File::getFileTimesInternal (int64_t& modificationTime, int64_t& accessTime, int64_t& creationTime) const
 {
 	using namespace WindowsFileHelpers;
 	WIN32_FILE_ATTRIBUTE_DATA attributes;
@@ -29274,7 +29274,7 @@ void File::getFileTimesInternal (int64& modificationTime, int64& accessTime, int
 	}
 }
 
-bool File::setFileTimesInternal (int64 modificationTime, int64 accessTime, int64 creationTime) const
+bool File::setFileTimesInternal (int64_t modificationTime, int64_t accessTime, int64_t creationTime) const
 {
 	using namespace WindowsFileHelpers;
 
@@ -29341,12 +29341,12 @@ int File::getVolumeSerialNumber() const
 	return (int) serialNum;
 }
 
-int64 File::getBytesFreeOnVolume() const
+int64_t File::getBytesFreeOnVolume() const
 {
 	return WindowsFileHelpers::getDiskSpaceInfo (getFullPathName(), false);
 }
 
-int64 File::getVolumeTotalSize() const
+int64_t File::getVolumeTotalSize() const
 {
 	return WindowsFileHelpers::getDiskSpaceInfo (getFullPathName(), true);
 }
@@ -29507,7 +29507,7 @@ public:
 	}
 
 	bool next (String& filenameFound,
-			   bool* const isDir, bool* const isHidden, int64* const fileSize,
+			   bool* const isDir, bool* const isHidden, int64_t* const fileSize,
 			   Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 	{
 		using namespace WindowsFileHelpers;
@@ -29531,7 +29531,7 @@ public:
 		if (isDir != nullptr)         *isDir        = ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
 		if (isHidden != nullptr)      *isHidden     = ((findData.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0);
 		if (isReadOnly != nullptr)    *isReadOnly   = ((findData.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0);
-		if (fileSize != nullptr)      *fileSize     = findData.nFileSizeLow + (((int64) findData.nFileSizeHigh) << 32);
+		if (fileSize != nullptr)      *fileSize     = findData.nFileSizeLow + (((int64_t) findData.nFileSizeHigh) << 32);
 		if (modTime != nullptr)       *modTime      = Time (fileTimeToTime (&findData.ftLastWriteTime));
 		if (creationTime != nullptr)  *creationTime = Time (fileTimeToTime (&findData.ftCreationTime));
 
@@ -29555,7 +29555,7 @@ DirectoryIterator::NativeIterator::~NativeIterator()
 }
 
 bool DirectoryIterator::NativeIterator::next (String& filenameFound,
-											  bool* const isDir, bool* const isHidden, int64* const fileSize,
+											  bool* const isDir, bool* const isHidden, int64_t* const fileSize,
 											  Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 {
 	return pimpl->next (filenameFound, isDir, isHidden, fileSize, modTime, creationTime, isReadOnly);
@@ -29935,16 +29935,16 @@ public:
 
 	bool isError() const        { return request == 0; }
 	bool isExhausted()          { return finished; }
-	int64 getPosition()         { return position; }
+	int64_t getPosition()         { return position; }
 
-	int64 getTotalLength()
+	int64_t getTotalLength()
 	{
 		if (! isError())
 		{
 			DWORD index = 0, result = 0, size = sizeof (result);
 
 			if (HttpQueryInfo (request, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &result, &size, &index))
-				return (int64) result;
+				return (int64_t) result;
 		}
 
 		return -1;
@@ -29967,7 +29967,7 @@ public:
 		return (int) bytesRead;
 	}
 
-	bool setPosition (int64 wantedPos)
+	bool setPosition (int64_t wantedPos)
 	{
 		if (isError())
 			return false;
@@ -29975,7 +29975,7 @@ public:
 		if (wantedPos != position)
 		{
 			finished = false;
-			position = (int64) InternetSetFilePointer (request, (LONG) wantedPos, 0, FILE_BEGIN, 0);
+			position = (int64_t) InternetSetFilePointer (request, (LONG) wantedPos, 0, FILE_BEGIN, 0);
 
 			if (position == wantedPos)
 				return true;
@@ -29998,7 +29998,7 @@ private:
 	HINTERNET connection, request;
 	String address, headers;
 	MemoryBlock postData;
-	int64 position;
+	int64_t position;
 	bool finished;
 	const bool isPost;
 	int timeOutMs;
@@ -30342,7 +30342,7 @@ struct RegistryKeyWrapper
 								  (DWORD) dataSize) == ERROR_SUCCESS;
 	}
 
-	static uint32 getBinaryValue (const String& regValuePath, MemoryBlock& result, DWORD wow64Flags)
+	static uint32_t getBinaryValue (const String& regValuePath, MemoryBlock& result, DWORD wow64Flags)
 	{
 		const RegistryKeyWrapper key (regValuePath, false, wow64Flags);
 
@@ -30390,7 +30390,7 @@ struct RegistryKeyWrapper
 	JUCE_DECLARE_NON_COPYABLE (RegistryKeyWrapper);
 };
 
-uint32 WindowsRegistry::getBinaryValue (const String& regValuePath, MemoryBlock& result)
+uint32_t WindowsRegistry::getBinaryValue (const String& regValuePath, MemoryBlock& result)
 {
 	return RegistryKeyWrapper::getBinaryValue (regValuePath, result, 0);
 }
@@ -30411,12 +30411,12 @@ bool WindowsRegistry::setValue (const String& regValuePath, const String& value)
 										 CharPointer_UTF16::getBytesRequiredFor (value.getCharPointer()));
 }
 
-bool WindowsRegistry::setValue (const String& regValuePath, const uint32 value)
+bool WindowsRegistry::setValue (const String& regValuePath, const uint32_t value)
 {
 	return RegistryKeyWrapper::setValue (regValuePath, REG_DWORD, &value, sizeof (value));
 }
 
-bool WindowsRegistry::setValue (const String& regValuePath, const uint64 value)
+bool WindowsRegistry::setValue (const String& regValuePath, const uint64_t value)
 {
 	return RegistryKeyWrapper::setValue (regValuePath, REG_QWORD, &value, sizeof (value));
 }
@@ -30650,9 +30650,9 @@ int SystemStats::getMemorySizeInMegabytes()
 	return (int) (mem.ullTotalPhys / (1024 * 1024)) + 1;
 }
 
-uint32 juce_millisecondsSinceStartup() noexcept
+uint32_t juce_millisecondsSinceStartup() noexcept
 {
-	return (uint32) timeGetTime();
+	return (uint32_t) timeGetTime();
 }
 
 class HiResCounterHandler
@@ -30671,17 +30671,17 @@ public:
 		hiResTicksScaleFactor = 1000.0 / hiResTicksPerSecond;
 	}
 
-	inline int64 getHighResolutionTicks() noexcept
+	inline int64_t getHighResolutionTicks() noexcept
 	{
 		LARGE_INTEGER ticks;
 		QueryPerformanceCounter (&ticks);
 
-		const int64 mainCounterAsHiResTicks = (juce_millisecondsSinceStartup() * hiResTicksPerSecond) / 1000;
-		const int64 newOffset = mainCounterAsHiResTicks - ticks.QuadPart;
+		const int64_t mainCounterAsHiResTicks = (juce_millisecondsSinceStartup() * hiResTicksPerSecond) / 1000;
+		const int64_t newOffset = mainCounterAsHiResTicks - ticks.QuadPart;
 
 		// fix for a very obscure PCI hardware bug that can make the counter
 		// sometimes jump forwards by a few seconds..
-		const int64 offsetDrift = abs64 (newOffset - hiResTicksOffset);
+		const int64_t offsetDrift = abs64 (newOffset - hiResTicksOffset);
 
 		if (offsetDrift > (hiResTicksPerSecond >> 1))
 			hiResTicksOffset = newOffset;
@@ -30694,21 +30694,21 @@ public:
 		return getHighResolutionTicks() * hiResTicksScaleFactor;
 	}
 
-	int64 hiResTicksPerSecond, hiResTicksOffset;
+	int64_t hiResTicksPerSecond, hiResTicksOffset;
 	double hiResTicksScaleFactor;
 };
 
 static HiResCounterHandler hiResCounterHandler;
 
-int64  Time::getHighResolutionTicksPerSecond() noexcept  { return hiResCounterHandler.hiResTicksPerSecond; }
-int64  Time::getHighResolutionTicks() noexcept           { return hiResCounterHandler.getHighResolutionTicks(); }
+int64_t  Time::getHighResolutionTicksPerSecond() noexcept  { return hiResCounterHandler.hiResTicksPerSecond; }
+int64_t  Time::getHighResolutionTicks() noexcept           { return hiResCounterHandler.getHighResolutionTicks(); }
 double Time::getMillisecondCounterHiRes() noexcept       { return hiResCounterHandler.getMillisecondCounterHiRes(); }
 
-static int64 juce_getClockCycleCounter() noexcept
+static int64_t juce_getClockCycleCounter() noexcept
 {
    #if JUCE_USE_INTRINSICS
 	// MS intrinsics version...
-	return (int64) __rdtsc();
+	return (int64_t) __rdtsc();
 
    #elif JUCE_GCC
 	// GNU inline asm version...
@@ -30725,7 +30725,7 @@ static int64 juce_getClockCycleCounter() noexcept
 		   [lo] "m" (lo)
 		 : "cc", "eax", "ebx", "ecx", "edx", "memory");
 
-	return (int64) ((((uint64) hi) << 32) | lo);
+	return (int64_t) ((((uint64_t) hi) << 32) | lo);
    #else
 	// MSVC inline asm version...
 	unsigned int hi = 0, lo = 0;
@@ -30739,14 +30739,14 @@ static int64 juce_getClockCycleCounter() noexcept
 		mov hi, edx
 	}
 
-	return (int64) ((((uint64) hi) << 32) | lo);
+	return (int64_t) ((((uint64_t) hi) << 32) | lo);
    #endif
 }
 
 int SystemStats::getCpuSpeedInMegaherz()
 {
-	const int64 cycles = juce_getClockCycleCounter();
-	const uint32 millis = Time::getMillisecondCounter();
+	const int64_t cycles = juce_getClockCycleCounter();
+	const uint32_t millis = Time::getMillisecondCounter();
 	int lastResult = 0;
 
 	for (;;)
@@ -30754,8 +30754,8 @@ int SystemStats::getCpuSpeedInMegaherz()
 		int n = 1000000;
 		while (--n > 0) {}
 
-		const uint32 millisElapsed = Time::getMillisecondCounter() - millis;
-		const int64 cyclesNow = juce_getClockCycleCounter();
+		const uint32_t millisElapsed = Time::getMillisecondCounter() - millis;
+		const int64_t cyclesNow = juce_getClockCycleCounter();
 
 		if (millisElapsed > 80)
 		{
@@ -30848,11 +30848,7 @@ __int64 juce_InterlockedCompareExchange64 (volatile __int64* value, __int64 newV
 CriticalSection::CriticalSection() noexcept
 {
 	// (just to check the MS haven't changed this structure and broken things...)
-  #if JUCE_VC7_OR_EARLIER
-	static_jassert (sizeof (CRITICAL_SECTION) <= 24);
-  #else
 	static_jassert (sizeof (CRITICAL_SECTION) <= sizeof (internal));
-  #endif
 
 	InitializeCriticalSection ((CRITICAL_SECTION*) internal);
 }
@@ -30920,7 +30916,7 @@ void Thread::launchThread()
 {
 	unsigned int newThreadId;
 	threadHandle = (void*) _beginthreadex (0, 0, &threadEntryProc, this, 0, &newThreadId);
-	threadId = (ThreadID) newThreadId;
+	threadId = (ThreadID) (intptr_t) newThreadId;
 }
 
 void Thread::closeThreadHandle()
@@ -30970,7 +30966,7 @@ void Thread::setCurrentThreadName (const String& name)
 
 Thread::ThreadID Thread::getCurrentThreadId()
 {
-	return (ThreadID) (pointer_sized_int) GetCurrentThreadId();
+	return (ThreadID) (intptr_t) GetCurrentThreadId();
 }
 
 bool Thread::setThreadPriority (void* handle, int priority)
@@ -30990,7 +30986,7 @@ bool Thread::setThreadPriority (void* handle, int priority)
 	return SetThreadPriority (handle, pri) != FALSE;
 }
 
-void Thread::setCurrentThreadAffinityMask (const uint32 affinityMask)
+void Thread::setCurrentThreadAffinityMask (const uint32_t affinityMask)
 {
 	SetThreadAffinityMask (GetCurrentThread(), affinityMask);
 }
@@ -31584,7 +31580,7 @@ public:
 	}
 
 	bool next (String& filenameFound,
-			   bool* const isDir, bool* const isHidden, int64* const fileSize,
+			   bool* const isDir, bool* const isHidden, int64_t* const fileSize,
 			   Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 	{
 		if (dir != nullptr)
@@ -31635,7 +31631,7 @@ DirectoryIterator::NativeIterator::~NativeIterator()
 }
 
 bool DirectoryIterator::NativeIterator::next (String& filenameFound,
-											  bool* const isDir, bool* const isHidden, int64* const fileSize,
+											  bool* const isDir, bool* const isHidden, int64_t* const fileSize,
 											  Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 {
 	return pimpl->next (filenameFound, isDir, isHidden, fileSize, modTime, creationTime, isReadOnly);
@@ -31710,7 +31706,7 @@ void MACAddress::findAllAddresses (Array<MACAddress>& result)
 				 && (ifr.ifr_flags & IFF_LOOPBACK) == 0
 				 && ioctl (s, SIOCGIFHWADDR, &ifr) == 0)
 			{
-				result.addIfNotAlreadyThere (MACAddress ((const uint8*) ifr.ifr_hwaddr.sa_data));
+				result.addIfNotAlreadyThere (MACAddress ((const uint8_t*) ifr.ifr_hwaddr.sa_data));
 			}
 		}
 
@@ -31760,9 +31756,9 @@ public:
 
 	bool isError() const        { return socketHandle < 0; }
 	bool isExhausted()          { return finished; }
-	int64 getPosition()         { return position; }
+	int64_t getPosition()         { return position; }
 
-	int64 getTotalLength()
+	int64_t getTotalLength()
 	{
 		//xxx to do
 		return -1;
@@ -31791,7 +31787,7 @@ public:
 		return bytesRead;
 	}
 
-	bool setPosition (int64 wantedPos)
+	bool setPosition (int64_t wantedPos)
 	{
 		if (isError())
 			return false;
@@ -31818,7 +31814,7 @@ private:
 	StringArray headerLines;
 	String address, headers;
 	MemoryBlock postData;
-	int64 position;
+	int64_t position;
 	bool finished;
 	const bool isPost;
 	const int timeOutMs;
@@ -31836,7 +31832,7 @@ private:
 	{
 		closeSocket();
 
-		uint32 timeOutTime = Time::getMillisecondCounter();
+		uint32_t timeOutTime = Time::getMillisecondCounter();
 
 		if (timeOutMs == 0)
 			timeOutTime += 60000;
@@ -31951,7 +31947,7 @@ private:
 		closeSocket();
 	}
 
-	static String readResponse (const int socketHandle, const uint32 timeOutTime)
+	static String readResponse (const int socketHandle, const uint32_t timeOutTime)
 	{
 		int bytesRead = 0, numConsecutiveLFs  = 0;
 		MemoryBlock buffer (1024, true);
@@ -32034,7 +32030,7 @@ private:
 		return header.getMemoryBlock();
 	}
 
-	static bool sendHeader (int socketHandle, const MemoryBlock& requestHeader, const uint32 timeOutTime,
+	static bool sendHeader (int socketHandle, const MemoryBlock& requestHeader, const uint32_t timeOutTime,
 							URL::OpenStreamProgressCallback* progressCallback, void* progressCallbackContext)
 	{
 		size_t totalHeaderSent = 0;
@@ -32226,7 +32222,7 @@ SystemStats::CPUFlags::CPUFlags()
 	numCpus = LinuxStatsHelpers::getCpuInfo ("processor").getIntValue() + 1;
 }
 
-uint32 juce_millisecondsSinceStartup() noexcept
+uint32_t juce_millisecondsSinceStartup() noexcept
 {
 	timespec t;
 	clock_gettime (CLOCK_MONOTONIC, &t);
@@ -32234,15 +32230,15 @@ uint32 juce_millisecondsSinceStartup() noexcept
 	return t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
-int64 Time::getHighResolutionTicks() noexcept
+int64_t Time::getHighResolutionTicks() noexcept
 {
 	timespec t;
 	clock_gettime (CLOCK_MONOTONIC, &t);
 
-	return (t.tv_sec * (int64) 1000000) + (t.tv_nsec / 1000);
+	return (t.tv_sec * (int64_t) 1000000) + (t.tv_nsec / 1000);
 }
 
-int64 Time::getHighResolutionTicksPerSecond() noexcept
+int64_t Time::getHighResolutionTicksPerSecond() noexcept
 {
 	return 1000000;  // (microseconds)
 }
@@ -32480,7 +32476,7 @@ public:
 	}
 
 	bool next (String& filenameFound,
-			   bool* const isDir, bool* const isHidden, int64* const fileSize,
+			   bool* const isDir, bool* const isHidden, int64_t* const fileSize,
 			   Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 	{
 		if (dir != 0)
@@ -32531,7 +32527,7 @@ DirectoryIterator::NativeIterator::~NativeIterator()
 }
 
 bool DirectoryIterator::NativeIterator::next (String& filenameFound,
-											  bool* const isDir, bool* const isHidden, int64* const fileSize,
+											  bool* const isDir, bool* const isHidden, int64_t* const fileSize,
 											  Time* const modTime, Time* const creationTime, bool* const isReadOnly)
 {
 	return pimpl->next (filenameFound, isDir, isHidden, fileSize, modTime, creationTime, isReadOnly);
@@ -32660,9 +32656,9 @@ public:
 	}
 
 	bool isExhausted()                  { return stream != nullptr && stream.callBooleanMethod (HTTPStream.isExhausted); }
-	int64 getTotalLength()              { return stream != nullptr ? stream.callLongMethod (HTTPStream.getTotalLength) : 0; }
-	int64 getPosition()                 { return stream != nullptr ? stream.callLongMethod (HTTPStream.getPosition) : 0; }
-	bool setPosition (int64 wantedPos)  { return stream != nullptr && stream.callBooleanMethod (HTTPStream.setPosition, (jlong) wantedPos); }
+	int64_t getTotalLength()              { return stream != nullptr ? stream.callLongMethod (HTTPStream.getTotalLength) : 0; }
+	int64_t getPosition()                 { return stream != nullptr ? stream.callLongMethod (HTTPStream.getPosition) : 0; }
+	bool setPosition (int64_t wantedPos)  { return stream != nullptr && stream.callBooleanMethod (HTTPStream.setPosition, (jlong) wantedPos); }
 
 	int read (void* buffer, int bytesToRead)
 	{
@@ -32938,7 +32934,7 @@ SystemStats::CPUFlags::CPUFlags()
 	numCpus = jmax (1, sysconf (_SC_NPROCESSORS_ONLN));
 }
 
-uint32 juce_millisecondsSinceStartup() noexcept
+uint32_t juce_millisecondsSinceStartup() noexcept
 {
 	timespec t;
 	clock_gettime (CLOCK_MONOTONIC, &t);
@@ -32946,15 +32942,15 @@ uint32 juce_millisecondsSinceStartup() noexcept
 	return t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
-int64 Time::getHighResolutionTicks() noexcept
+int64_t Time::getHighResolutionTicks() noexcept
 {
 	timespec t;
 	clock_gettime (CLOCK_MONOTONIC, &t);
 
-	return (t.tv_sec * (int64) 1000000) + (t.tv_nsec / 1000);
+	return (t.tv_sec * (int64_t) 1000000) + (t.tv_nsec / 1000);
 }
 
-int64 Time::getHighResolutionTicksPerSecond() noexcept
+int64_t Time::getHighResolutionTicksPerSecond() noexcept
 {
 	return 1000000;  // (microseconds)
 }
