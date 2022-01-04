@@ -59,10 +59,13 @@ jobs:
         # queries: ./path/to/local/query, your-org/your-repo/queries@main
         config-file: ./.github/codeql/codeql-config.yml
 
+    - name: Install ninja
+      uses: urkle/action-get-ninja@v1
+
     - name: build humblenet
-      uses: urkle/action-cmake-build@feat-wrapper-command
+      uses: urkle/action-cmake-build@v1
       with:
-        parallel: 4
+        configure-options: -G Ninja
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v1

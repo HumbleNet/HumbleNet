@@ -15,8 +15,6 @@ else()
 	set(PLATFORM_LIBRARIES "")
 endif()
 
-CheckCXXFlags(AMALGAMATE_FLAGS -Wno-deprecated-register -Wno-int-to-void-pointer-cast)
-
 CreateTool(Amalgamate
 DIRS
 	.

@@ -401,7 +401,7 @@ namespace DummyNamespaceStatementToCatchSyntaxErrors {}
 namespace juce
 {
 	template <bool b> struct JuceStaticAssert;
-	template <> struct JuceStaticAssert <true> { static void dummy() {} };
+	template <> struct JuceStaticAssert <true> { static void dummy(const char* file, int line) {} };
 }
 #endif
 
@@ -410,7 +410,7 @@ namespace juce
 	message that the compiler generates may be completely bizarre and seem to have no relation to
 	the place where you put the static_assert though!)
 */
-#define static_jassert(expression)      juce::JuceStaticAssert<expression>::dummy();
+#define static_jassert(expression)      juce::JuceStaticAssert<expression>::dummy(__FILE__, __LINE__);
 
 /** This is a shorthand macro for declaring stubs for a class's copy constructor and operator=.
 
@@ -692,8 +692,10 @@ extern JUCE_API bool JUCE_CALLTYPE juce_isRunningUnderDebugger();
 #define __JUCE_MEMORY_JUCEHEADER__
 
 #if JUCE_MINGW
+#ifndef alloca
  /** This allocator is not defined in mingw gcc. */
  #define alloca              __builtin_alloca
+#endif
 #endif
 
 /** Fills a block of memory with zeros. */
@@ -766,26 +768,11 @@ inline Type* createCopyIfNotNull (Type* pointer)     { return pointer != nullptr
 	This file sets up some handy mathematical typdefs and functions.
 */
 
-// Definitions for the int8, int16, int32, int64 and pointer_sized_int types.
-
-/** A platform-independent 8-bit signed integer type. */
-typedef signed char                 int8;
-/** A platform-independent 8-bit unsigned integer type. */
-typedef unsigned char               uint8;
-/** A platform-independent 16-bit signed integer type. */
-typedef signed short                int16;
-/** A platform-independent 16-bit unsigned integer type. */
-typedef unsigned short              uint16;
-/** A platform-independent 32-bit signed integer type. */
-typedef signed int                  int32;
-/** A platform-independent 32-bit unsigned integer type. */
-typedef unsigned int                uint32;
+// Change (ED) 2021-01-04 - replace type detection with stdint.h
+// Definitions for the int8_t, int16_t, int32_t, int64_t and intptr_t types.
+#include <stdint.h>
 
 #if JUCE_MSVC
-  /** A platform-independent 64-bit integer type. */
-  typedef __int64                   int64;
-  /** A platform-independent 64-bit unsigned integer type. */
-  typedef unsigned __int64          uint64;
   /** A platform-independent macro for writing 64-bit literals, needed because
 	  different compilers have different syntaxes for this.
 
@@ -794,10 +781,7 @@ typedef unsigned int                uint32;
   */
   #define literal64bit(longLiteral)     ((__int64) longLiteral)
 #else
-  /** A platform-independent 64-bit integer type. */
-  typedef long long                 int64;
-  /** A platform-independent 64-bit unsigned integer type. */
-  typedef unsigned long long        uint64;
+
   /** A platform-independent macro for writing 64-bit literals, needed because
 	  different compilers have different syntaxes for this.
 
@@ -807,28 +791,7 @@ typedef unsigned int                uint32;
   #define literal64bit(longLiteral)     (longLiteral##LL)
 #endif
 
-#if JUCE_64BIT
-  /** A signed integer type that's guaranteed to be large enough to hold a pointer without truncating it. */
-  typedef int64                     pointer_sized_int;
-  /** An unsigned integer type that's guaranteed to be large enough to hold a pointer without truncating it. */
-  typedef uint64                    pointer_sized_uint;
-#elif JUCE_MSVC
-  /** A signed integer type that's guaranteed to be large enough to hold a pointer without truncating it. */
-  typedef _W64 int                  pointer_sized_int;
-  /** An unsigned integer type that's guaranteed to be large enough to hold a pointer without truncating it. */
-  typedef _W64 unsigned int         pointer_sized_uint;
-#else
-  /** A signed integer type that's guaranteed to be large enough to hold a pointer without truncating it. */
-  typedef int                       pointer_sized_int;
-  /** An unsigned integer type that's guaranteed to be large enough to hold a pointer without truncating it. */
-  typedef unsigned int              pointer_sized_uint;
-#endif
-
-#if JUCE_MSVC
-  typedef pointer_sized_int ssize_t;
-#endif
-
-// Some indispensible min/max functions
+// Some indispensable min/max functions
 
 /** Returns the larger of two values. */
 template <typename Type>
@@ -1021,7 +984,7 @@ inline Type juce_hypot (Type a, Type b) noexcept
 }
 
 /** 64-bit abs function. */
-inline int64 abs64 (const int64 n) noexcept
+inline int64_t abs64 (const int64_t n) noexcept
 {
 	return (n >= 0) ? n : -n;
 }
@@ -1193,16 +1156,14 @@ namespace TypeHelpers
    #if ! DOXYGEN
 	template <typename Type> struct ParameterType <Type&>           { typedef Type& type; };
 	template <typename Type> struct ParameterType <Type*>           { typedef Type* type; };
-	template <>              struct ParameterType <char>            { typedef char type; };
-	template <>              struct ParameterType <unsigned char>   { typedef unsigned char type; };
-	template <>              struct ParameterType <short>           { typedef short type; };
-	template <>              struct ParameterType <unsigned short>  { typedef unsigned short type; };
-	template <>              struct ParameterType <int>             { typedef int type; };
-	template <>              struct ParameterType <unsigned int>    { typedef unsigned int type; };
-	template <>              struct ParameterType <long>            { typedef long type; };
-	template <>              struct ParameterType <unsigned long>   { typedef unsigned long type; };
-	template <>              struct ParameterType <int64>           { typedef int64 type; };
-	template <>              struct ParameterType <uint64>          { typedef uint64 type; };
+	template <>              struct ParameterType <int8_t>          { typedef int8_t type; };
+	template <>              struct ParameterType <uint8_t>         { typedef uint8_t type; };
+	template <>              struct ParameterType <int16_t>         { typedef int16_t type; };
+	template <>              struct ParameterType <uint16_t>        { typedef uint16_t type; };
+	template <>              struct ParameterType <int32_t>         { typedef int32_t type; };
+	template <>              struct ParameterType <uint32_t>        { typedef uint32_t type; };
+	template <>              struct ParameterType <int64_t>         { typedef int64_t type; };
+	template <>              struct ParameterType <uint64_t>        { typedef uint64_t type; };
 	template <>              struct ParameterType <bool>            { typedef bool type; };
 	template <>              struct ParameterType <float>           { typedef float type; };
 	template <>              struct ParameterType <double>          { typedef double type; };
@@ -1238,43 +1199,43 @@ class JUCE_API  ByteOrder
 public:
 
 	/** Swaps the upper and lower bytes of a 16-bit integer. */
-	static uint16 swap (uint16 value);
+	static uint16_t swap (uint16_t value);
 
 	/** Reverses the order of the 4 bytes in a 32-bit integer. */
-	static uint32 swap (uint32 value);
+	static uint32_t swap (uint32_t value);
 
 	/** Reverses the order of the 8 bytes in a 64-bit integer. */
-	static uint64 swap (uint64 value);
+	static uint64_t swap (uint64_t value);
 
 	/** Swaps the byte order of a 16-bit int if the CPU is big-endian */
-	static uint16 swapIfBigEndian (uint16 value);
+	static uint16_t swapIfBigEndian (uint16_t value);
 
 	/** Swaps the byte order of a 32-bit int if the CPU is big-endian */
-	static uint32 swapIfBigEndian (uint32 value);
+	static uint32_t swapIfBigEndian (uint32_t value);
 
 	/** Swaps the byte order of a 64-bit int if the CPU is big-endian */
-	static uint64 swapIfBigEndian (uint64 value);
+	static uint64_t swapIfBigEndian (uint64_t value);
 
 	/** Swaps the byte order of a 16-bit int if the CPU is little-endian */
-	static uint16 swapIfLittleEndian (uint16 value);
+	static uint16_t swapIfLittleEndian (uint16_t value);
 
 	/** Swaps the byte order of a 32-bit int if the CPU is little-endian */
-	static uint32 swapIfLittleEndian (uint32 value);
+	static uint32_t swapIfLittleEndian (uint32_t value);
 
 	/** Swaps the byte order of a 64-bit int if the CPU is little-endian */
-	static uint64 swapIfLittleEndian (uint64 value);
+	static uint64_t swapIfLittleEndian (uint64_t value);
 
 	/** Turns 4 bytes into a little-endian integer. */
-	static uint32 littleEndianInt (const void* bytes);
+	static uint32_t littleEndianInt (const void* bytes);
 
 	/** Turns 2 bytes into a little-endian integer. */
-	static uint16 littleEndianShort (const void* bytes);
+	static uint16_t littleEndianShort (const void* bytes);
 
 	/** Turns 4 bytes into a big-endian integer. */
-	static uint32 bigEndianInt (const void* bytes);
+	static uint32_t bigEndianInt (const void* bytes);
 
 	/** Turns 2 bytes into a big-endian integer. */
-	static uint16 bigEndianShort (const void* bytes);
+	static uint16_t bigEndianShort (const void* bytes);
 
 	/** Converts 3 little-endian bytes into a signed 24-bit value (which is sign-extended to 32 bits). */
 	static int littleEndian24Bit (const char* bytes);
@@ -1301,16 +1262,16 @@ private:
  #pragma intrinsic (_byteswap_ulong)
 #endif
 
-inline uint16 ByteOrder::swap (uint16 n)
+inline uint16_t ByteOrder::swap (uint16_t n)
 {
    #if JUCE_USE_INTRINSICSxxx // agh - the MS compiler has an internal error when you try to use this intrinsic!
-	return static_cast <uint16> (_byteswap_ushort (n));
+	return static_cast <uint16_t> (_byteswap_ushort (n));
    #else
-	return static_cast <uint16> ((n << 8) | (n >> 8));
+	return static_cast <uint16_t> ((n << 8) | (n >> 8));
    #endif
 }
 
-inline uint32 ByteOrder::swap (uint32 n)
+inline uint32_t ByteOrder::swap (uint32_t n)
 {
    #if JUCE_MAC || JUCE_IOS
 	return OSSwapInt32 (n);
@@ -1333,45 +1294,45 @@ inline uint32 ByteOrder::swap (uint32 n)
    #endif
 }
 
-inline uint64 ByteOrder::swap (uint64 value)
+inline uint64_t ByteOrder::swap (uint64_t value)
 {
    #if JUCE_MAC || JUCE_IOS
 	return OSSwapInt64 (value);
    #elif JUCE_USE_INTRINSICS
 	return _byteswap_uint64 (value);
    #else
-	return (((int64) swap ((uint32) value)) << 32) | swap ((uint32) (value >> 32));
+	return (((int64_t) swap ((uint32_t) value)) << 32) | swap ((uint32_t) (value >> 32));
    #endif
 }
 
 #if JUCE_LITTLE_ENDIAN
- inline uint16 ByteOrder::swapIfBigEndian (const uint16 v)                                  { return v; }
- inline uint32 ByteOrder::swapIfBigEndian (const uint32 v)                                  { return v; }
- inline uint64 ByteOrder::swapIfBigEndian (const uint64 v)                                  { return v; }
- inline uint16 ByteOrder::swapIfLittleEndian (const uint16 v)                               { return swap (v); }
- inline uint32 ByteOrder::swapIfLittleEndian (const uint32 v)                               { return swap (v); }
- inline uint64 ByteOrder::swapIfLittleEndian (const uint64 v)                               { return swap (v); }
- inline uint32 ByteOrder::littleEndianInt (const void* const bytes)                         { return *static_cast <const uint32*> (bytes); }
- inline uint16 ByteOrder::littleEndianShort (const void* const bytes)                       { return *static_cast <const uint16*> (bytes); }
- inline uint32 ByteOrder::bigEndianInt (const void* const bytes)                            { return swap (*static_cast <const uint32*> (bytes)); }
- inline uint16 ByteOrder::bigEndianShort (const void* const bytes)                          { return swap (*static_cast <const uint16*> (bytes)); }
+ inline uint16_t ByteOrder::swapIfBigEndian (const uint16_t v)                                  { return v; }
+ inline uint32_t ByteOrder::swapIfBigEndian (const uint32_t v)                                  { return v; }
+ inline uint64_t ByteOrder::swapIfBigEndian (const uint64_t v)                                  { return v; }
+ inline uint16_t ByteOrder::swapIfLittleEndian (const uint16_t v)                               { return swap (v); }
+ inline uint32_t ByteOrder::swapIfLittleEndian (const uint32_t v)                               { return swap (v); }
+ inline uint64_t ByteOrder::swapIfLittleEndian (const uint64_t v)                               { return swap (v); }
+ inline uint32_t ByteOrder::littleEndianInt (const void* const bytes)                         { return *static_cast <const uint32_t*> (bytes); }
+ inline uint16_t ByteOrder::littleEndianShort (const void* const bytes)                       { return *static_cast <const uint16_t*> (bytes); }
+ inline uint32_t ByteOrder::bigEndianInt (const void* const bytes)                            { return swap (*static_cast <const uint32_t*> (bytes)); }
+ inline uint16_t ByteOrder::bigEndianShort (const void* const bytes)                          { return swap (*static_cast <const uint16_t*> (bytes)); }
  inline bool ByteOrder::isBigEndian()                                                       { return false; }
 #else
- inline uint16 ByteOrder::swapIfBigEndian (const uint16 v)                                  { return swap (v); }
- inline uint32 ByteOrder::swapIfBigEndian (const uint32 v)                                  { return swap (v); }
- inline uint64 ByteOrder::swapIfBigEndian (const uint64 v)                                  { return swap (v); }
- inline uint16 ByteOrder::swapIfLittleEndian (const uint16 v)                               { return v; }
- inline uint32 ByteOrder::swapIfLittleEndian (const uint32 v)                               { return v; }
- inline uint64 ByteOrder::swapIfLittleEndian (const uint64 v)                               { return v; }
- inline uint32 ByteOrder::littleEndianInt (const void* const bytes)                         { return swap (*static_cast <const uint32*> (bytes)); }
- inline uint16 ByteOrder::littleEndianShort (const void* const bytes)                       { return swap (*static_cast <const uint16*> (bytes)); }
- inline uint32 ByteOrder::bigEndianInt (const void* const bytes)                            { return *static_cast <const uint32*> (bytes); }
- inline uint16 ByteOrder::bigEndianShort (const void* const bytes)                          { return *static_cast <const uint16*> (bytes); }
+ inline uint16_t ByteOrder::swapIfBigEndian (const uint16_t v)                                  { return swap (v); }
+ inline uint32_t ByteOrder::swapIfBigEndian (const uint32_t v)                                  { return swap (v); }
+ inline uint64_t ByteOrder::swapIfBigEndian (const uint64_t v)                                  { return swap (v); }
+ inline uint16_t ByteOrder::swapIfLittleEndian (const uint16_t v)                               { return v; }
+ inline uint32_t ByteOrder::swapIfLittleEndian (const uint32_t v)                               { return v; }
+ inline uint64_t ByteOrder::swapIfLittleEndian (const uint64_t v)                               { return v; }
+ inline uint32_t ByteOrder::littleEndianInt (const void* const bytes)                         { return swap (*static_cast <const uint32_t*> (bytes)); }
+ inline uint16_t ByteOrder::littleEndianShort (const void* const bytes)                       { return swap (*static_cast <const uint16_t*> (bytes)); }
+ inline uint32_t ByteOrder::bigEndianInt (const void* const bytes)                            { return *static_cast <const uint32_t*> (bytes); }
+ inline uint16_t ByteOrder::bigEndianShort (const void* const bytes)                          { return *static_cast <const uint16_t*> (bytes); }
  inline bool ByteOrder::isBigEndian()                                                       { return true; }
 #endif
 
-inline int  ByteOrder::littleEndian24Bit (const char* const bytes)                          { return (((int) bytes[2]) << 16) | (((int) (uint8) bytes[1]) << 8) | ((int) (uint8) bytes[0]); }
-inline int  ByteOrder::bigEndian24Bit (const char* const bytes)                             { return (((int) bytes[0]) << 16) | (((int) (uint8) bytes[1]) << 8) | ((int) (uint8) bytes[2]); }
+inline int  ByteOrder::littleEndian24Bit (const char* const bytes)                          { return (((int) bytes[2]) << 16) | (((int) (uint8_t) bytes[1]) << 8) | ((int) (uint8_t) bytes[0]); }
+inline int  ByteOrder::bigEndian24Bit (const char* const bytes)                             { return (((int) bytes[0]) << 16) | (((int) (uint8_t) bytes[1]) << 8) | ((int) (uint8_t) bytes[2]); }
 inline void ByteOrder::littleEndian24BitToChars (const int value, char* const destBytes)    { destBytes[0] = (char)(value & 0xff); destBytes[1] = (char)((value >> 8) & 0xff); destBytes[2] = (char)((value >> 16) & 0xff); }
 inline void ByteOrder::bigEndian24BitToChars (const int value, char* const destBytes)       { destBytes[0] = (char)((value >> 16) & 0xff); destBytes[1] = (char)((value >> 8) & 0xff); destBytes[2] = (char)(value & 0xff); }
 
@@ -1411,7 +1372,7 @@ inline void ByteOrder::bigEndian24BitToChars (const int value, char* const destB
  /** A platform-independent 32-bit unicode character type. */
  typedef wchar_t        juce_wchar;
 #else
- typedef uint32         juce_wchar;
+ typedef uint32_t         juce_wchar;
 #endif
 
 #ifndef DOXYGEN
@@ -2078,10 +2039,10 @@ public:
 	volatile Type value;
 
 private:
-	static inline Type castFrom32Bit (int32 value) noexcept   { return *(Type*) &value; }
-	static inline Type castFrom64Bit (int64 value) noexcept   { return *(Type*) &value; }
-	static inline int32 castTo32Bit (Type value) noexcept     { return *(int32*) &value; }
-	static inline int64 castTo64Bit (Type value) noexcept     { return *(int64*) &value; }
+	static inline Type castFrom32Bit (int32_t value) noexcept   { return *(Type*) &value; }
+	static inline Type castFrom64Bit (int64_t value) noexcept   { return *(Type*) &value; }
+	static inline int32_t castTo32Bit (Type value) noexcept     { return *(int32_t*) &value; }
+	static inline int64_t castTo64Bit (Type value) noexcept     { return *(int64_t*) &value; }
 
 	Type operator++ (int); // better to just use pre-increment with atomics..
 	Type operator-- (int);
@@ -2093,14 +2054,14 @@ private:
 		return sizeof (ValueType) == 1 ? (ValueType) -(signed char) n
 			: (sizeof (ValueType) == 2 ? (ValueType) -(short) n
 			: (sizeof (ValueType) == 4 ? (ValueType) -(int) n
-			: ((ValueType) -(int64) n)));
+			: ((ValueType) -(int64_t) n)));
 	}
 
 	/** This templated negate function will negate pointers as well as integers */
 	template <typename PointerType>
 	inline PointerType* negateValue (PointerType* n) noexcept
 	{
-		return reinterpret_cast <PointerType*> (-reinterpret_cast <pointer_sized_int> (n));
+		return reinterpret_cast <PointerType*> (-reinterpret_cast <intptr_t> (n));
 	}
 };
 
@@ -2185,14 +2146,14 @@ template <typename Type>
 inline Type Atomic<Type>::get() const noexcept
 {
   #if JUCE_ATOMICS_MAC
-	return sizeof (Type) == 4 ? castFrom32Bit ((int32) OSAtomicAdd32Barrier ((int32_t) 0, (JUCE_MAC_ATOMICS_VOLATILE int32_t*) &value))
-							  : castFrom64Bit ((int64) OSAtomicAdd64Barrier ((int64_t) 0, (JUCE_MAC_ATOMICS_VOLATILE int64_t*) &value));
+	return sizeof (Type) == 4 ? castFrom32Bit ((int32_t) OSAtomicAdd32Barrier ((int32_t) 0, (JUCE_MAC_ATOMICS_VOLATILE int32_t*) &value))
+							  : castFrom64Bit ((int64_t) OSAtomicAdd64Barrier ((int64_t) 0, (JUCE_MAC_ATOMICS_VOLATILE int64_t*) &value));
   #elif JUCE_ATOMICS_WINDOWS
-	return sizeof (Type) == 4 ? castFrom32Bit ((int32) juce_InterlockedExchangeAdd ((volatile long*) &value, (long) 0))
-							  : castFrom64Bit ((int64) juce_InterlockedExchangeAdd64 ((volatile __int64*) &value, (__int64) 0));
+	return sizeof (Type) == 4 ? castFrom32Bit ((int32_t) juce_InterlockedExchangeAdd ((volatile long*) &value, (long) 0))
+							  : castFrom64Bit ((int64_t) juce_InterlockedExchangeAdd64 ((volatile __int64*) &value, (__int64) 0));
   #elif JUCE_ATOMICS_GCC
-	return sizeof (Type) == 4 ? castFrom32Bit ((int32) __sync_add_and_fetch ((volatile int32*) &value, 0))
-							  : castFrom64Bit ((int64) __sync_add_and_fetch ((volatile int64*) &value, 0));
+	return sizeof (Type) == 4 ? castFrom32Bit ((int32_t) __sync_add_and_fetch ((volatile int32_t*) &value, 0))
+							  : castFrom64Bit ((int64_t) __sync_add_and_fetch ((volatile int64_t*) &value, 0));
   #endif
 }
 
@@ -2204,8 +2165,8 @@ inline Type Atomic<Type>::exchange (const Type newValue) noexcept
 	while (! compareAndSetBool (newValue, currentVal)) { currentVal = value; }
 	return currentVal;
   #elif JUCE_ATOMICS_WINDOWS
-	return sizeof (Type) == 4 ? castFrom32Bit ((int32) juce_InterlockedExchange ((volatile long*) &value, (long) castTo32Bit (newValue)))
-							  : castFrom64Bit ((int64) juce_InterlockedExchange64 ((volatile __int64*) &value, (__int64) castTo64Bit (newValue)));
+	return sizeof (Type) == 4 ? castFrom32Bit ((int32_t) juce_InterlockedExchange ((volatile long*) &value, (long) castTo32Bit (newValue)))
+							  : castFrom64Bit ((int64_t) juce_InterlockedExchange64 ((volatile __int64*) &value, (__int64) castTo64Bit (newValue)));
   #endif
 }
 
@@ -2266,8 +2227,8 @@ inline bool Atomic<Type>::compareAndSetBool (const Type newValue, const Type val
   #elif JUCE_ATOMICS_WINDOWS
 	return compareAndSetValue (newValue, valueToCompare) == valueToCompare;
   #elif JUCE_ATOMICS_GCC
-	return sizeof (Type) == 4 ? __sync_bool_compare_and_swap ((volatile int32*) &value, castTo32Bit (valueToCompare), castTo32Bit (newValue))
-							  : __sync_bool_compare_and_swap ((volatile int64*) &value, castTo64Bit (valueToCompare), castTo64Bit (newValue));
+	return sizeof (Type) == 4 ? __sync_bool_compare_and_swap ((volatile int32_t*) &value, castTo32Bit (valueToCompare), castTo32Bit (newValue))
+							  : __sync_bool_compare_and_swap ((volatile int64_t*) &value, castTo64Bit (valueToCompare), castTo64Bit (newValue));
   #endif
 }
 
@@ -2286,11 +2247,11 @@ inline Type Atomic<Type>::compareAndSetValue (const Type newValue, const Type va
 	}
 
   #elif JUCE_ATOMICS_WINDOWS
-	return sizeof (Type) == 4 ? castFrom32Bit ((int32) juce_InterlockedCompareExchange ((volatile long*) &value, (long) castTo32Bit (newValue), (long) castTo32Bit (valueToCompare)))
-							  : castFrom64Bit ((int64) juce_InterlockedCompareExchange64 ((volatile __int64*) &value, (__int64) castTo64Bit (newValue), (__int64) castTo64Bit (valueToCompare)));
+	return sizeof (Type) == 4 ? castFrom32Bit ((int32_t) juce_InterlockedCompareExchange ((volatile long*) &value, (long) castTo32Bit (newValue), (long) castTo32Bit (valueToCompare)))
+							  : castFrom64Bit ((int64_t) juce_InterlockedCompareExchange64 ((volatile __int64*) &value, (__int64) castTo64Bit (newValue), (__int64) castTo64Bit (valueToCompare)));
   #elif JUCE_ATOMICS_GCC
-	return sizeof (Type) == 4 ? castFrom32Bit ((int32) __sync_val_compare_and_swap ((volatile int32*) &value, castTo32Bit (valueToCompare), castTo32Bit (newValue)))
-							  : castFrom64Bit ((int64) __sync_val_compare_and_swap ((volatile int64*) &value, castTo64Bit (valueToCompare), castTo64Bit (newValue)));
+	return sizeof (Type) == 4 ? castFrom32Bit ((int32_t) __sync_val_compare_and_swap ((volatile int32_t*) &value, castTo32Bit (valueToCompare), castTo32Bit (newValue)))
+							  : castFrom64Bit ((int64_t) __sync_val_compare_and_swap ((volatile int64_t*) &value, castTo64Bit (valueToCompare), castTo64Bit (newValue)));
   #endif
 }
 
@@ -2374,11 +2335,11 @@ public:
 		const signed char byte = (signed char) *data;
 
 		if (byte >= 0)
-			return (juce_wchar) (uint8) byte;
+			return (juce_wchar) (uint8_t) byte;
 
-		uint32 n = (uint32) (uint8) byte;
-		uint32 mask = 0x7f;
-		uint32 bit = 0x40;
+		uint32_t n = (uint32_t) (uint8_t) byte;
+		uint32_t mask = 0x7f;
+		uint32_t bit = 0x40;
 		size_t numExtraValues = 0;
 
 		while ((n & bit) != 0 && bit > 0x10)
@@ -2392,7 +2353,7 @@ public:
 
 		for (size_t i = 1; i <= numExtraValues; ++i)
 		{
-			const uint8 nextByte = (uint8) data [i];
+			const uint8_t nextByte = (uint8_t) data [i];
 
 			if ((nextByte & 0xc0) != 0x80)
 				break;
@@ -2449,11 +2410,11 @@ public:
 		const signed char byte = (signed char) *data++;
 
 		if (byte >= 0)
-			return (juce_wchar) (uint8) byte;
+			return (juce_wchar) (uint8_t) byte;
 
-		uint32 n = (uint32) (uint8) byte;
-		uint32 mask = 0x7f;
-		uint32 bit = 0x40;
+		uint32_t n = (uint32_t) (uint8_t) byte;
+		uint32_t mask = 0x7f;
+		uint32_t bit = 0x40;
 		int numExtraValues = 0;
 
 		while ((n & bit) != 0 && bit > 0x8)
@@ -2467,7 +2428,7 @@ public:
 
 		while (--numExtraValues >= 0)
 		{
-			const uint32 nextByte = (uint32) (uint8) *data++;
+			const uint32_t nextByte = (uint32_t) (uint8_t) *data++;
 
 			if ((nextByte & 0xc0) != 0x80)
 				break;
@@ -2540,11 +2501,11 @@ public:
 
 		for (;;)
 		{
-			const uint32 n = (uint32) (uint8) *d++;
+			const uint32_t n = (uint32_t) (uint8_t) *d++;
 
 			if ((n & 0x80) != 0)
 			{
-				uint32 bit = 0x40;
+				uint32_t bit = 0x40;
 
 				while ((n & bit) != 0)
 				{
@@ -2591,7 +2552,7 @@ public:
 	static size_t getBytesRequiredFor (const juce_wchar charToWrite) noexcept
 	{
 		size_t num = 1;
-		const uint32 c = (uint32) charToWrite;
+		const uint32_t c = (uint32_t) charToWrite;
 
 		if (c >= 0x80)
 		{
@@ -2632,7 +2593,7 @@ public:
 	/** Writes a unicode character to this string, and advances this pointer to point to the next position. */
 	void write (const juce_wchar charToWrite) noexcept
 	{
-		const uint32 c = (uint32) charToWrite;
+		const uint32_t c = (uint32_t) charToWrite;
 
 		if (c >= 0x80)
 		{
@@ -2644,7 +2605,7 @@ public:
 					++numExtraBytes;
 			}
 
-			*data++ = (CharType) ((uint32) (0xff << (7 - numExtraBytes)) | (c >> (numExtraBytes * 6)));
+			*data++ = (CharType) ((uint32_t) (0xff << (7 - numExtraBytes)) | (c >> (numExtraBytes * 6)));
 
 			while (--numExtraBytes >= 0)
 				*data++ = (CharType) (0x80 | (0x3f & (c >> (numExtraBytes * 6))));
@@ -2780,14 +2741,14 @@ public:
 	int getIntValue32() const noexcept      { return atoi (data); }
 
 	/** Parses this string as a 64-bit integer. */
-	int64 getIntValue64() const noexcept
+	int64_t getIntValue64() const noexcept
 	{
 	   #if JUCE_LINUX || JUCE_ANDROID
 		return atoll (data);
 	   #elif JUCE_WINDOWS
 		return _atoi64 (data);
 	   #else
-		return CharacterFunctions::getIntValue <int64, CharPointer_UTF8> (*this);
+		return CharacterFunctions::getIntValue <int64_t, CharPointer_UTF8> (*this);
 	   #endif
 	}
 
@@ -2812,9 +2773,9 @@ public:
 
 			if (byte < 0)
 			{
-				uint32 n = (uint32) (uint8) byte;
-				uint32 mask = 0x7f;
-				uint32 bit = 0x40;
+				uint32_t n = (uint32_t) (uint8_t) byte;
+				uint32_t mask = 0x7f;
+				uint32_t bit = 0x40;
 				int numExtraValues = 0;
 
 				while ((n & bit) != 0)
@@ -2831,7 +2792,7 @@ public:
 
 				while (--numExtraValues >= 0)
 				{
-					const uint32 nextByte = (uint32) (uint8) *dataToTest++;
+					const uint32_t nextByte = (uint32_t) (uint8_t) *dataToTest++;
 
 					if ((nextByte & 0xc0) != 0x80)
 						return false;
@@ -2880,7 +2841,7 @@ public:
    #if JUCE_NATIVE_WCHAR_IS_UTF16
 	typedef wchar_t CharType;
    #else
-	typedef int16 CharType;
+	typedef int16_t CharType;
    #endif
 
 	inline explicit CharPointer_UTF16 (const CharType* const rawPointer) noexcept
@@ -2925,10 +2886,10 @@ public:
 	/** Returns the unicode character that this pointer is pointing to. */
 	juce_wchar operator*() const noexcept
 	{
-		uint32 n = (uint32) (uint16) *data;
+		uint32_t n = (uint32_t) (uint16_t) *data;
 
-		if (n >= 0xd800 && n <= 0xdfff && ((uint32) (uint16) data[1]) >= 0xdc00)
-			n = 0x10000 + (((n - 0xd800) << 10) | (((uint32) (uint16) data[1]) - 0xdc00));
+		if (n >= 0xd800 && n <= 0xdfff && ((uint32_t) (uint16_t) data[1]) >= 0xdc00)
+			n = 0x10000 + (((n - 0xd800) << 10) | (((uint32_t) (uint16_t) data[1]) - 0xdc00));
 
 		return (juce_wchar) n;
 	}
@@ -2938,7 +2899,7 @@ public:
 	{
 		const juce_wchar n = *data++;
 
-		if (n >= 0xd800 && n <= 0xdfff && ((uint32) (uint16) *data) >= 0xdc00)
+		if (n >= 0xd800 && n <= 0xdfff && ((uint32_t) (uint16_t) *data) >= 0xdc00)
 			++data;
 
 		return *this;
@@ -2959,10 +2920,10 @@ public:
 		advances the pointer to point to the next character. */
 	juce_wchar getAndAdvance() noexcept
 	{
-		uint32 n = (uint32) (uint16) *data++;
+		uint32_t n = (uint32_t) (uint16_t) *data++;
 
-		if (n >= 0xd800 && n <= 0xdfff && ((uint32) (uint16) *data) >= 0xdc00)
-			n = 0x10000 + ((((n - 0xd800) << 10) | (((uint32) (uint16) *data++) - 0xdc00)));
+		if (n >= 0xd800 && n <= 0xdfff && ((uint32_t) (uint16_t) *data) >= 0xdc00)
+			n = 0x10000 + ((((n - 0xd800) << 10) | (((uint32_t) (uint16_t) *data++) - 0xdc00)));
 
 		return (juce_wchar) n;
 	}
@@ -3254,12 +3215,12 @@ public:
 	}
 
 	/** Parses this string as a 64-bit integer. */
-	int64 getIntValue64() const noexcept
+	int64_t getIntValue64() const noexcept
 	{
 	   #if JUCE_WINDOWS
 		return _wtoi64 (data);
 	   #else
-		return CharacterFunctions::getIntValue <int64, CharPointer_UTF16> (*this);
+		return CharacterFunctions::getIntValue <int64_t, CharPointer_UTF16> (*this);
 	   #endif
 	}
 
@@ -3283,7 +3244,7 @@ public:
 
 		while (--maxBytesToRead >= 0 && *dataToTest != 0)
 		{
-			const uint32 n = (uint32) (uint16) *dataToTest++;
+			const uint32_t n = (uint32_t) (uint16_t) *dataToTest++;
 
 			if (n >= 0xd800)
 			{
@@ -3295,7 +3256,7 @@ public:
 					if (n > 0xdc00)
 						return false;
 
-					const uint32 nextChar = (uint32) (uint16) *dataToTest++;
+					const uint32_t nextChar = (uint32_t) (uint16_t) *dataToTest++;
 
 					if (nextChar < 0xdc00 || nextChar > 0xdfff)
 						return false;
@@ -3651,7 +3612,7 @@ public:
 	/** Parses this string as a 32-bit integer. */
 	int getIntValue32() const noexcept      { return CharacterFunctions::getIntValue <int, CharPointer_UTF32> (*this); }
 	/** Parses this string as a 64-bit integer. */
-	int64 getIntValue64() const noexcept    { return CharacterFunctions::getIntValue <int64, CharPointer_UTF32> (*this); }
+	int64_t getIntValue64() const noexcept    { return CharacterFunctions::getIntValue <int64_t, CharPointer_UTF32> (*this); }
 
 	/** Parses this string as a floating point double. */
 	double getDoubleValue() const noexcept  { return CharacterFunctions::getDoubleValue (*this); }
@@ -3749,7 +3710,7 @@ public:
 	inline bool isEmpty() const noexcept                { return *data == 0; }
 
 	/** Returns the unicode character that this pointer is pointing to. */
-	inline juce_wchar operator*() const noexcept        { return (juce_wchar) (uint8) *data; }
+	inline juce_wchar operator*() const noexcept        { return (juce_wchar) (uint8_t) *data; }
 
 	/** Moves this pointer along to the next character in the string. */
 	inline CharPointer_ASCII& operator++() noexcept
@@ -3767,7 +3728,7 @@ public:
 
 	/** Returns the character that this pointer is currently pointing to, and then
 		advances the pointer to point to the next character. */
-	inline juce_wchar getAndAdvance() noexcept  { return (juce_wchar) (uint8) *data++; }
+	inline juce_wchar getAndAdvance() noexcept  { return (juce_wchar) (uint8_t) *data++; }
 
 	/** Moves this pointer along to the next character in the string. */
 	CharPointer_ASCII operator++ (int) noexcept
@@ -3994,27 +3955,27 @@ public:
 	/** Returns true if the first character of this string is a letter or digit. */
 	bool isLetterOrDigit() const            { return CharacterFunctions::isLetterOrDigit (*data) != 0; }
 	/** Returns true if the first character of this string is upper-case. */
-	bool isUpperCase() const                { return CharacterFunctions::isUpperCase ((juce_wchar) (uint8) *data) != 0; }
+	bool isUpperCase() const                { return CharacterFunctions::isUpperCase ((juce_wchar) (uint8_t) *data) != 0; }
 	/** Returns true if the first character of this string is lower-case. */
-	bool isLowerCase() const                { return CharacterFunctions::isLowerCase ((juce_wchar) (uint8) *data) != 0; }
+	bool isLowerCase() const                { return CharacterFunctions::isLowerCase ((juce_wchar) (uint8_t) *data) != 0; }
 
 	/** Returns an upper-case version of the first character of this string. */
-	juce_wchar toUpperCase() const noexcept { return CharacterFunctions::toUpperCase ((juce_wchar) (uint8) *data); }
+	juce_wchar toUpperCase() const noexcept { return CharacterFunctions::toUpperCase ((juce_wchar) (uint8_t) *data); }
 	/** Returns a lower-case version of the first character of this string. */
-	juce_wchar toLowerCase() const noexcept { return CharacterFunctions::toLowerCase ((juce_wchar) (uint8) *data); }
+	juce_wchar toLowerCase() const noexcept { return CharacterFunctions::toLowerCase ((juce_wchar) (uint8_t) *data); }
 
 	/** Parses this string as a 32-bit integer. */
 	int getIntValue32() const noexcept      { return atoi (data); }
 
 	/** Parses this string as a 64-bit integer. */
-	int64 getIntValue64() const noexcept
+	int64_t getIntValue64() const noexcept
 	{
 	   #if JUCE_LINUX || JUCE_ANDROID
 		return atoll (data);
 	   #elif JUCE_WINDOWS
 		return _atoi64 (data);
 	   #else
-		return CharacterFunctions::getIntValue <int64, CharPointer_ASCII> (*this);
+		return CharacterFunctions::getIntValue <int64_t, CharPointer_ASCII> (*this);
 	   #endif
 	}
 
@@ -4195,7 +4156,7 @@ public:
 	int hashCode() const noexcept;
 
 	/** Generates a probably-unique 64-bit hashcode from this string. */
-	int64 hashCode64() const noexcept;
+	int64_t hashCode64() const noexcept;
 
 	/** Returns the number of characters in the string. */
 	int length() const noexcept;
@@ -4897,12 +4858,12 @@ public:
 	/** Creates a string containing this signed 64-bit integer as a decimal number.
 		@see getLargeIntValue, getFloatValue, getDoubleValue, toHexString
 	*/
-	explicit String (int64 largeIntegerValue);
+	explicit String (int64_t largeIntegerValue);
 
 	/** Creates a string containing this unsigned 64-bit integer as a decimal number.
 		@see getLargeIntValue, getFloatValue, getDoubleValue, toHexString
 	*/
-	explicit String (uint64 largeIntegerValue);
+	explicit String (uint64_t largeIntegerValue);
 
 	/** Creates a string representing this floating-point number.
 		@param floatValue               the value to convert to a string
@@ -4945,7 +4906,7 @@ public:
 
 		@returns the value of the string as a 64 bit signed base-10 integer.
 	*/
-	int64 getLargeIntValue() const noexcept;
+	int64_t getLargeIntValue() const noexcept;
 
 	/** Parses a decimal number from the end of the string.
 
@@ -4992,13 +4953,13 @@ public:
 
 		@returns    a 64-bit number which is the value of the string in hex.
 	*/
-	int64 getHexValue64() const noexcept;
+	int64_t getHexValue64() const noexcept;
 
 	/** Creates a string representing this 32-bit value in hexadecimal. */
 	static String toHexString (int number);
 
 	/** Creates a string representing this 64-bit value in hexadecimal. */
-	static String toHexString (int64 number);
+	static String toHexString (int64_t number);
 
 	/** Creates a string representing this 16-bit value in hexadecimal. */
 	static String toHexString (short number);
@@ -6634,9 +6595,9 @@ private:
 	// block of memory here that's big enough to be used internally as a windows critical
 	// section structure.
 	#if JUCE_64BIT
-	 uint8 internal [44];
+	 uint8_t internal [44];
 	#else
-	 uint8 internal [24];
+	 uint8_t internal [24];
 	#endif
    #else
 	mutable pthread_mutex_t internal;
@@ -7956,13 +7917,13 @@ public:
 
 		@see getPosition
 	*/
-	virtual bool setPosition (int64 newPosition) = 0;
+	virtual bool setPosition (int64_t newPosition) = 0;
 
 	/** Returns the stream's current position.
 
 		@see setPosition
 	*/
-	virtual int64 getPosition() = 0;
+	virtual int64_t getPosition() = 0;
 
 	/** Writes a block of data to the stream.
 
@@ -8014,12 +7975,12 @@ public:
 	/** Writes a 64-bit integer to the stream in a little-endian byte order.
 		@see InputStream::readInt64
 	*/
-	virtual void writeInt64 (int64 value);
+	virtual void writeInt64 (int64_t value);
 
 	/** Writes a 64-bit integer to the stream in a big-endian byte order.
 		@see InputStream::readInt64BigEndian
 	*/
-	virtual void writeInt64BigEndian (int64 value);
+	virtual void writeInt64BigEndian (int64_t value);
 
 	/** Writes a 32-bit floating point value to the stream in a binary format.
 		The binary 32-bit encoding of the float is written as a little-endian int.
@@ -8046,7 +8007,7 @@ public:
 	virtual void writeDoubleBigEndian (double value);
 
 	/** Writes a byte to the output stream a given number of times. */
-	virtual void writeRepeatedByte (uint8 byte, int numTimesToRepeat);
+	virtual void writeRepeatedByte (uint8_t byte, int numTimesToRepeat);
 
 	/** Writes a condensed binary encoding of a 32-bit integer.
 
@@ -8093,7 +8054,7 @@ public:
 									less than zero, it will keep reading until the input
 									is exhausted)
 	*/
-	virtual int writeFromInputStream (InputStream& source, int64 maxNumBytesToWrite);
+	virtual int writeFromInputStream (InputStream& source, int64_t maxNumBytesToWrite);
 
 	/** Sets the string that will be written to the stream when the writeNewLine()
 		method is called.
@@ -8174,13 +8135,13 @@ public:
 
 		@see getNumBytesRemaining
 	*/
-	virtual int64 getTotalLength() = 0;
+	virtual int64_t getTotalLength() = 0;
 
 	/** Returns the number of bytes available for reading, or a negative value if
 		the remaining length is not known.
 		@see getTotalLength
 	*/
-	int64 getNumBytesRemaining();
+	int64_t getNumBytesRemaining();
 
 	/** Returns true if the stream has no more data to read. */
 	virtual bool isExhausted() = 0;
@@ -8272,7 +8233,7 @@ public:
 
 		@see OutputStream::writeInt64, readInt64BigEndian
 	*/
-	virtual int64 readInt64();
+	virtual int64_t readInt64();
 
 	/** Reads eight bytes from the stream as a big-endian 64-bit value.
 
@@ -8283,7 +8244,7 @@ public:
 
 		@see OutputStream::writeInt64BigEndian, readInt64
 	*/
-	virtual int64 readInt64BigEndian();
+	virtual int64_t readInt64BigEndian();
 
 	/** Reads four bytes as a 32-bit floating point value.
 
@@ -8307,7 +8268,7 @@ public:
 
 	/** Reads eight bytes as a 64-bit floating point value.
 
-		The raw 64-bit encoding of the double is read from the stream as a little-endian int64.
+		The raw 64-bit encoding of the double is read from the stream as a little-endian int64_t.
 
 		If the stream is exhausted partway through reading the bytes, this will return zero.
 
@@ -8317,7 +8278,7 @@ public:
 
 	/** Reads eight bytes as a 64-bit floating point value.
 
-		The raw 64-bit encoding of the double is read from the stream as a big-endian int64.
+		The raw 64-bit encoding of the double is read from the stream as a big-endian int64_t.
 
 		If the stream is exhausted partway through reading the bytes, this will return zero.
 
@@ -8370,13 +8331,13 @@ public:
 		@returns the number of bytes that were added to the memory block
 	*/
 	virtual int readIntoMemoryBlock (MemoryBlock& destBlock,
-									 ssize_t maxNumBytesToRead = -1);
+									 size_t maxNumBytesToRead = -1);
 
 	/** Returns the offset of the next byte that will be read from the stream.
 
 		@see setPosition
 	*/
-	virtual int64 getPosition() = 0;
+	virtual int64_t getPosition() = 0;
 
 	/** Tries to move the current read position of the stream.
 
@@ -8390,7 +8351,7 @@ public:
 		@returns  true if the stream manages to reposition itself correctly
 		@see getPosition
 	*/
-	virtual bool setPosition (int64 newPosition) = 0;
+	virtual bool setPosition (int64_t newPosition) = 0;
 
 	/** Reads and discards a number of bytes from the stream.
 
@@ -8398,7 +8359,7 @@ public:
 		class will just keep reading data until the requisite number of bytes
 		have been done.
 	*/
-	virtual void skipNextBytes (int64 numBytesToSkip);
+	virtual void skipNextBytes (int64_t numBytesToSkip);
 
 protected:
 
@@ -8447,7 +8408,7 @@ public:
 
 	var (const var& valueToCopy);
 	var (int value) noexcept;
-	var (int64 value) noexcept;
+	var (int64_t value) noexcept;
 	var (bool value) noexcept;
 	var (double value) noexcept;
 	var (const char* value);
@@ -8459,7 +8420,7 @@ public:
 
 	var& operator= (const var& valueToCopy);
 	var& operator= (int value);
-	var& operator= (int64 value);
+	var& operator= (int64_t value);
 	var& operator= (bool value);
 	var& operator= (double value);
 	var& operator= (const char* value);
@@ -8479,7 +8440,7 @@ public:
 	void swapWith (var& other) noexcept;
 
 	operator int() const noexcept;
-	operator int64() const noexcept;
+	operator int64_t() const noexcept;
 	operator bool() const noexcept;
 	operator float() const noexcept;
 	operator double() const noexcept;
@@ -8626,7 +8587,7 @@ private:
 	union ValueUnion
 	{
 		int intValue;
-		int64 int64Value;
+		int64_t int64Value;
 		bool boolValue;
 		double doubleValue;
 		char stringValue [sizeof (String)];
@@ -10584,7 +10545,7 @@ public:
 	/** Generates a simple hash from an integer. */
 	static int generateHash (const int key, const int upperLimit) noexcept        { return std::abs (key) % upperLimit; }
 	/** Generates a simple hash from a string. */
-	static int generateHash (const String& key, const int upperLimit) noexcept    { return (int) (((uint32) key.hashCode()) % (uint32) upperLimit); }
+	static int generateHash (const String& key, const int upperLimit) noexcept    { return (int) (((uint32_t) key.hashCode()) % (uint32_t) upperLimit); }
 	/** Generates a simple hash from a variant. */
 	static int generateHash (const var& key, const int upperLimit) noexcept       { return generateHash (key.toString(), upperLimit); }
 };
@@ -11491,7 +11452,7 @@ public:
 	/** Creates a new RelativeTime object representing a number of milliseconds.
 		@see minutes, hours, days, weeks
 	*/
-	static const RelativeTime milliseconds (int64 milliseconds) noexcept;
+	static const RelativeTime milliseconds (int64_t milliseconds) noexcept;
 
 	/** Creates a new RelativeTime object representing a number of minutes.
 		@see milliseconds, hours, days, weeks
@@ -11516,7 +11477,7 @@ public:
 	/** Returns the number of milliseconds this time represents.
 		@see milliseconds, inSeconds, inMinutes, inHours, inDays, inWeeks
 	*/
-	int64 inMilliseconds() const noexcept;
+	int64_t inMilliseconds() const noexcept;
 
 	/** Returns the number of seconds this time represents.
 		@see inMilliseconds, inMinutes, inHours, inDays, inWeeks
@@ -11628,7 +11589,7 @@ public:
 										'epoch' (midnight Jan 1st 1970).
 		@see getCurrentTime, currentTimeMillis
 	*/
-	explicit Time (int64 millisecondsSinceEpoch) noexcept;
+	explicit Time (int64_t millisecondsSinceEpoch) noexcept;
 
 	/** Creates a time from a set of date components.
 
@@ -11674,7 +11635,7 @@ public:
 					midnight jan 1st 1970.
 		@see getMilliseconds
 	*/
-	int64 toMilliseconds() const noexcept                           { return millisSinceEpoch; }
+	int64_t toMilliseconds() const noexcept                           { return millisSinceEpoch; }
 
 	/** Returns the year.
 
@@ -11854,7 +11815,7 @@ public:
 		Should be accurate to within a few millisecs, depending on platform,
 		hardware, etc.
 	*/
-	static int64 currentTimeMillis() noexcept;
+	static int64_t currentTimeMillis() noexcept;
 
 	/** Returns the number of millisecs since a fixed event (usually system startup).
 
@@ -11868,7 +11829,7 @@ public:
 
 		@see getApproximateMillisecondCounter
 	*/
-	static uint32 getMillisecondCounter() noexcept;
+	static uint32_t getMillisecondCounter() noexcept;
 
 	/** Returns the number of millisecs since a fixed event (usually system startup).
 
@@ -11883,7 +11844,7 @@ public:
 
 		This will make the thread sleep as efficiently as it can while it's waiting.
 	*/
-	static void waitForMillisecondCounter (uint32 targetTime) noexcept;
+	static void waitForMillisecondCounter (uint32_t targetTime) noexcept;
 
 	/** Less-accurate but faster version of getMillisecondCounter().
 
@@ -11894,7 +11855,7 @@ public:
 
 		@see getMillisecondCounter
 	*/
-	static uint32 getApproximateMillisecondCounter() noexcept;
+	static uint32_t getApproximateMillisecondCounter() noexcept;
 
 	// High-resolution timers..
 
@@ -11906,32 +11867,32 @@ public:
 		@see getHighResolutionTicksPerSecond, highResolutionTicksToSeconds,
 			 secondsToHighResolutionTicks
 	*/
-	static int64 getHighResolutionTicks() noexcept;
+	static int64_t getHighResolutionTicks() noexcept;
 
 	/** Returns the resolution of the high-resolution counter in ticks per second.
 
 		@see getHighResolutionTicks, highResolutionTicksToSeconds,
 			 secondsToHighResolutionTicks
 	*/
-	static int64 getHighResolutionTicksPerSecond() noexcept;
+	static int64_t getHighResolutionTicksPerSecond() noexcept;
 
 	/** Converts a number of high-resolution ticks into seconds.
 
 		@see getHighResolutionTicks, getHighResolutionTicksPerSecond,
 			 secondsToHighResolutionTicks
 	*/
-	static double highResolutionTicksToSeconds (int64 ticks) noexcept;
+	static double highResolutionTicksToSeconds (int64_t ticks) noexcept;
 
 	/** Converts a number seconds into high-resolution ticks.
 
 		@see getHighResolutionTicks, getHighResolutionTicksPerSecond,
 			 highResolutionTicksToSeconds
 	*/
-	static int64 secondsToHighResolutionTicks (double seconds) noexcept;
+	static int64_t secondsToHighResolutionTicks (double seconds) noexcept;
 
 private:
 
-	int64 millisSinceEpoch;
+	int64_t millisSinceEpoch;
 };
 
 /** Adds a RelativeTime to a Time. */
@@ -12073,7 +12034,7 @@ public:
 
 		This is handy for clearing a block of memory to zero.
 	*/
-	void fillWith (uint8 valueToUse) noexcept;
+	void fillWith (uint8_t valueToUse) noexcept;
 
 	/** Adds another block of data to the end of this one.
 		The data pointer must not be null. This block's size will be increased accordingly.
@@ -12365,14 +12326,14 @@ public:
 
 		@returns    the number of bytes in the file, or 0 if it doesn't exist.
 	*/
-	int64 getSize() const;
+	int64_t getSize() const;
 
 	/** Utility function to convert a file size in bytes to a neat string description.
 
 		So for example 100 would return "100 bytes", 2000 would return "2 KB",
 		2000000 would produce "2 MB", etc.
 	*/
-	static String descriptionOfSizeInBytes (int64 bytes);
+	static String descriptionOfSizeInBytes (int64_t bytes);
 
 	/** Returns the complete, absolute path of this file.
 
@@ -12475,7 +12436,7 @@ public:
 		This is based on the filename. Obviously it's possible, although unlikely, that
 		two files will have the same hash-code.
 	*/
-	int64 hashCode64() const;
+	int64_t hashCode64() const;
 
 	/** Returns a file based on a relative path.
 
@@ -12929,14 +12890,14 @@ public:
 		@returns the number of bytes free, or 0 if there's a problem finding this out
 		@see getVolumeTotalSize
 	*/
-	int64 getBytesFreeOnVolume() const;
+	int64_t getBytesFreeOnVolume() const;
 
 	/** Returns the total size of the drive that contains this file.
 
 		@returns the total number of bytes that the volume can hold
 		@see getBytesFreeOnVolume
 	*/
-	int64 getVolumeTotalSize() const;
+	int64_t getVolumeTotalSize() const;
 
 	/** Returns true if this file is on a CD or DVD drive. */
 	bool isOnCDRomDrive() const;
@@ -13165,8 +13126,8 @@ private:
 	Result createDirectoryInternal (const String&) const;
 	bool copyInternal (const File&) const;
 	bool moveInternal (const File&) const;
-	bool setFileTimesInternal (int64 modificationTime, int64 accessTime, int64 creationTime) const;
-	void getFileTimesInternal (int64& modificationTime, int64& accessTime, int64& creationTime) const;
+	bool setFileTimesInternal (int64_t modificationTime, int64_t accessTime, int64_t creationTime) const;
+	void getFileTimesInternal (int64_t& modificationTime, int64_t& accessTime, int64_t& creationTime) const;
 	bool setFileReadOnlyInternal (bool shouldBeReadOnly) const;
 
 	JUCE_LEAK_DETECTOR (File);
@@ -15763,7 +15724,7 @@ private:
 	like keeping the set of selected rows in a listbox.
 
 	The type used as a template paramter must be an integer type, such as int, short,
-	int64, etc.
+	int64_t, etc.
 */
 template <class Type>
 class SparseSet
@@ -16095,7 +16056,7 @@ public:
 	*/
 	bool next (bool* isDirectory,
 			   bool* isHidden,
-			   int64* fileSize,
+			   int64_t* fileSize,
 			   Time* modTime,
 			   Time* creationTime,
 			   bool* isReadOnly);
@@ -16122,7 +16083,7 @@ private:
 		~NativeIterator();
 
 		bool next (String& filenameFound,
-				   bool* isDirectory, bool* isHidden, int64* fileSize,
+				   bool* isDirectory, bool* isHidden, int64_t* fileSize,
 				   Time* modTime, Time* creationTime, bool* isReadOnly);
 
 		class Pimpl;
@@ -16202,17 +16163,17 @@ public:
 	*/
 	bool openedOk() const noexcept                      { return status.wasOk(); }
 
-	int64 getTotalLength();
+	int64_t getTotalLength();
 	int read (void* destBuffer, int maxBytesToRead);
 	bool isExhausted();
-	int64 getPosition();
-	bool setPosition (int64 pos);
+	int64_t getPosition();
+	bool setPosition (int64_t pos);
 
 private:
 
 	File file;
 	void* fileHandle;
-	int64 currentPosition, totalSize;
+	int64_t currentPosition, totalSize;
 	Result status;
 	bool needToSeek;
 
@@ -16290,17 +16251,17 @@ public:
 	Result truncate();
 
 	void flush();
-	int64 getPosition();
-	bool setPosition (int64 pos);
+	int64_t getPosition();
+	bool setPosition (int64_t pos);
 	bool write (const void* data, int numBytes);
-	void writeRepeatedByte (uint8 byte, int numTimesToRepeat);
+	void writeRepeatedByte (uint8_t byte, int numTimesToRepeat);
 
 private:
 
 	File file;
 	void* fileHandle;
 	Result status;
-	int64 currentPosition;
+	int64_t currentPosition;
 	int bufferSize, bytesInBuffer;
 	HeapBlock <char> buffer;
 
@@ -16308,7 +16269,7 @@ private:
 	void closeHandle();
 	void flushInternal();
 	bool flushBuffer();
-	int64 setPositionInternal (int64 newPosition);
+	int64_t setPositionInternal (int64_t newPosition);
 	int writeInternal (const void* data, int numBytes);
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FileOutputStream);
@@ -16868,21 +16829,21 @@ public:
 
 		The low 32 bits of the number are initialised with this value.
 	*/
-	BigInteger (uint32 value);
+	BigInteger (uint32_t value);
 
 	/** Creates a BigInteger containing an integer value in its low bits.
 
 		The low 32 bits of the number are initialised with the absolute value
 		passed in, and its sign is set to reflect the sign of the number.
 	*/
-	BigInteger (int32 value);
+	BigInteger (int32_t value);
 
 	/** Creates a BigInteger containing an integer value in its low bits.
 
 		The low 64 bits of the number are initialised with the absolute value
 		passed in, and its sign is set to reflect the sign of the number.
 	*/
-	BigInteger (int64 value);
+	BigInteger (int64_t value);
 
 	/** Creates a copy of another BigInteger. */
 	BigInteger (const BigInteger& other);
@@ -16954,14 +16915,14 @@ public:
 		Asking for more than 32 bits isn't allowed (obviously) - for that, use
 		getBitRange().
 	*/
-	uint32 getBitRangeAsInt (int startBit, int numBits) const noexcept;
+	uint32_t getBitRangeAsInt (int startBit, int numBits) const noexcept;
 
 	/** Sets a range of bits to an integer value.
 
 		Copies the given integer onto a range of bits, starting at startBit,
 		and using up to numBits of the available bits.
 	*/
-	void setBitRangeAsInt (int startBit, int numBits, uint32 valueToSet);
+	void setBitRangeAsInt (int startBit, int numBits, uint32_t valueToSet);
 
 	/** Shifts a section of bits left or right.
 
@@ -17119,7 +17080,7 @@ public:
 
 private:
 
-	HeapBlock <uint32> values;
+	HeapBlock <uint32_t> values;
 	size_t numValues;
 	int highestBit;
 	bool negative;
@@ -17416,7 +17377,7 @@ public:
 
 		new Random (Time::currentTimeMillis())
 	*/
-	explicit Random (int64 seedValue) noexcept;
+	explicit Random (int64_t seedValue) noexcept;
 
 	/** Creates a Random object using a random seed value.
 		Internally, this calls setSeedRandomly() to randomise the seed.
@@ -17442,7 +17403,7 @@ public:
 
 		@returns a random integer from the full range 0x8000000000000000 to 0x7fffffffffffffff
 	*/
-	int64 nextInt64() noexcept;
+	int64_t nextInt64() noexcept;
 
 	/** Returns the next random floating-point number.
 
@@ -17470,13 +17431,13 @@ public:
 	void fillBitsRandomly (BigInteger& arrayToChange, int startBit, int numBits);
 
 	/** Resets this Random object to a given seed value. */
-	void setSeed (int64 newSeed) noexcept;
+	void setSeed (int64_t newSeed) noexcept;
 
 	/** Merges this object's seed with another value.
 		This sets the seed to be a value created by combining the current seed and this
 		new value.
 	*/
-	void combineSeed (int64 seedValue) noexcept;
+	void combineSeed (int64_t seedValue) noexcept;
 
 	/** Reseeds this generator using a value generated from various semi-random system
 		properties like the current time, etc.
@@ -17496,7 +17457,7 @@ public:
 
 private:
 
-	int64 seed;
+	int64_t seed;
 
 	JUCE_LEAK_DETECTOR (Random);
 };
@@ -18167,19 +18128,19 @@ public:
 		This is an array of 16 bytes. To reconstruct a Uuid from its data, use
 		the constructor or operator= method that takes an array of uint8s.
 	*/
-	const uint8* getRawData() const noexcept                { return uuid; }
+	const uint8_t* getRawData() const noexcept                { return uuid; }
 
 	/** Creates a UUID from a 16-byte array.
 		@see getRawData
 	*/
-	Uuid (const uint8* rawData);
+	Uuid (const uint8_t* rawData);
 
 	/** Sets this UUID from 16-bytes of raw data. */
-	Uuid& operator= (const uint8* rawData) noexcept;
+	Uuid& operator= (const uint8_t* rawData) noexcept;
 
 private:
 
-	uint8 uuid[16];
+	uint8_t uuid[16];
 
 	JUCE_LEAK_DETECTOR (Uuid);
 };
@@ -18225,7 +18186,7 @@ public:
 		e.g. "HKEY_CURRENT_USER\Software\foo\bar"
 		@returns a DWORD indicating the type of the key.
 	*/
-	static uint32 getBinaryValue (const String& regValuePath, MemoryBlock& resultData);
+	static uint32_t getBinaryValue (const String& regValuePath, MemoryBlock& resultData);
 
 	/** Sets a registry value as a string.
 		This will take care of creating any groups needed to get to the given registry value.
@@ -18235,12 +18196,12 @@ public:
 	/** Sets a registry value as a DWORD.
 		This will take care of creating any groups needed to get to the given registry value.
 	*/
-	static bool setValue (const String& regValuePath, uint32 value);
+	static bool setValue (const String& regValuePath, uint32_t value);
 
 	/** Sets a registry value as a QWORD.
 		This will take care of creating any groups needed to get to the given registry value.
 	*/
-	static bool setValue (const String& regValuePath, uint64 value);
+	static bool setValue (const String& regValuePath, uint64_t value);
 
 	/** Sets a registry value as a binary block.
 		This will take care of creating any groups needed to get to the given registry value.
@@ -18322,20 +18283,20 @@ public:
 	MACAddress& operator= (const MACAddress& other);
 
 	/** Creates an address from 6 bytes. */
-	explicit MACAddress (const uint8 bytes[6]);
+	explicit MACAddress (const uint8_t bytes[6]);
 
 	/** Returns a pointer to the 6 bytes that make up this address. */
-	const uint8* getBytes() const noexcept        { return address; }
+	const uint8_t* getBytes() const noexcept        { return address; }
 
 	/** Returns a dash-separated string in the form "11-22-33-44-55-66" */
 	String toString() const;
 
-	/** Returns the address in the lower 6 bytes of an int64.
+	/** Returns the address in the lower 6 bytes of an int64_t.
 
 		This uses a little-endian arrangement, with the first byte of the address being
 		stored in the least-significant byte of the result value.
 	*/
-	int64 toInt64() const noexcept;
+	int64_t toInt64() const noexcept;
 
 	/** Returns true if this address is null (00-00-00-00-00-00). */
 	bool isNull() const noexcept;
@@ -18344,7 +18305,7 @@ public:
 	bool operator!= (const MACAddress& other) const noexcept;
 
 private:
-	uint8 address[6];
+	uint8_t address[6];
 };
 
 #endif   // __JUCE_MACADDRESS_JUCEHEADER__
@@ -19069,9 +19030,9 @@ public:
 	*/
 	~BufferedInputStream();
 
-	int64 getTotalLength();
-	int64 getPosition();
-	bool setPosition (int64 newPosition);
+	int64_t getTotalLength();
+	int64_t getPosition();
+	bool setPosition (int64_t newPosition);
 	int read (void* destBuffer, int maxBytesToRead);
 	String readString();
 	bool isExhausted();
@@ -19080,7 +19041,7 @@ private:
 
 	OptionalScopedPointer<InputStream> source;
 	int bufferSize;
-	int64 position, lastReadPos, bufferStart, bufferOverlap;
+	int64_t position, lastReadPos, bufferStart, bufferOverlap;
 	HeapBlock <char> buffer;
 	void ensureBuffered();
 
@@ -19138,7 +19099,7 @@ public:
 
 	/** Returns a hash code that uniquely represents this item.
 	*/
-	virtual int64 hashCode() const = 0;
+	virtual int64_t hashCode() const = 0;
 
 private:
 
@@ -19170,7 +19131,7 @@ public:
 
 	InputStream* createInputStream();
 	InputStream* createInputStreamFor (const String& relatedItemPath);
-	int64 hashCode() const;
+	int64_t hashCode() const;
 
 private:
 
@@ -19237,9 +19198,9 @@ public:
 	/** Destructor. */
 	~MemoryInputStream();
 
-	int64 getPosition();
-	bool setPosition (int64 pos);
-	int64 getTotalLength();
+	int64_t getPosition();
+	bool setPosition (int64_t pos);
+	int64_t getTotalLength();
 	bool isExhausted();
 	int read (void* destBuffer, int maxBytesToRead);
 
@@ -19340,10 +19301,10 @@ public:
 	void flush();
 
 	bool write (const void* buffer, int howMany);
-	int64 getPosition()                                 { return position; }
-	bool setPosition (int64 newPosition);
-	int writeFromInputStream (InputStream& source, int64 maxNumBytesToWrite);
-	void writeRepeatedByte (uint8 byte, int numTimesToRepeat);
+	int64_t getPosition()                                 { return position; }
+	bool setPosition (int64_t newPosition);
+	int writeFromInputStream (InputStream& source, int64_t maxNumBytesToWrite);
+	void writeRepeatedByte (uint8_t byte, int numTimesToRepeat);
 
 private:
 
@@ -19402,8 +19363,8 @@ public:
 											deleted by this object when it is itself deleted.
 	*/
 	SubregionStream (InputStream* sourceStream,
-					 int64 startPositionInSourceStream,
-					 int64 lengthOfSourceStream,
+					 int64_t startPositionInSourceStream,
+					 int64_t lengthOfSourceStream,
 					 bool deleteSourceWhenDestroyed);
 
 	/** Destructor.
@@ -19413,15 +19374,15 @@ public:
 	*/
 	~SubregionStream();
 
-	int64 getTotalLength();
-	int64 getPosition();
-	bool setPosition (int64 newPosition);
+	int64_t getTotalLength();
+	int64_t getPosition();
+	bool setPosition (int64_t newPosition);
 	int read (void* destBuffer, int maxBytesToRead);
 	bool isExhausted();
 
 private:
 	OptionalScopedPointer<InputStream> source;
-	const int64 startPositionInSourceStream, lengthOfSourceStream;
+	const int64_t startPositionInSourceStream, lengthOfSourceStream;
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SubregionStream);
 };
@@ -20540,7 +20501,7 @@ public:
 
 		@see setCurrentThreadAffinityMask
 	*/
-	void setAffinityMask (uint32 affinityMask);
+	void setAffinityMask (uint32_t affinityMask);
 
 	/** Changes the affinity mask for the caller thread.
 
@@ -20548,7 +20509,7 @@ public:
 
 		@see setAffinityMask
 	*/
-	static void setCurrentThreadAffinityMask (uint32 affinityMask);
+	static void setCurrentThreadAffinityMask (uint32_t affinityMask);
 
 	// this can be called from any thread that needs to pause..
 	static void JUCE_CALLTYPE sleep (int milliseconds);
@@ -20626,7 +20587,7 @@ private:
 	CriticalSection startStopLock;
 	WaitableEvent startSuspensionEvent, defaultEvent;
 	int threadPriority;
-	uint32 affinityMask;
+	uint32_t affinityMask;
 	bool volatile shouldExit;
 
    #ifndef DOXYGEN
@@ -21544,7 +21505,7 @@ private:
 	String name;
 	int numRuns, runsPerPrint;
 	double totalTime;
-	int64 started;
+	int64_t started;
 	File outputFile;
 };
 
@@ -22024,8 +21985,8 @@ public:
 	*/
 	void flush();
 
-	int64 getPosition();
-	bool setPosition (int64 newPosition);
+	int64_t getPosition();
+	bool setPosition (int64_t newPosition);
 	bool write (const void* destBuffer, int howMany);
 
 	/** These are preset values that can be used for the constructor's windowBits paramter.
@@ -22087,7 +22048,7 @@ public:
 	GZIPDecompressorInputStream (InputStream* sourceStream,
 								 bool deleteSourceWhenDestroyed,
 								 bool noWrap = false,
-								 int64 uncompressedStreamLength = -1);
+								 int64_t uncompressedStreamLength = -1);
 
 	/** Creates a decompressor stream.
 
@@ -22099,20 +22060,20 @@ public:
 	/** Destructor. */
 	~GZIPDecompressorInputStream();
 
-	int64 getPosition();
-	bool setPosition (int64 pos);
-	int64 getTotalLength();
+	int64_t getPosition();
+	bool setPosition (int64_t pos);
+	int64_t getTotalLength();
 	bool isExhausted();
 	int read (void* destBuffer, int maxBytesToRead);
 
 private:
 	OptionalScopedPointer<InputStream> sourceStream;
-	const int64 uncompressedStreamLength;
+	const int64_t uncompressedStreamLength;
 	const bool noWrap;
 	bool isEof;
 	int activeBufferSize;
-	int64 originalSourcePos, currentPos;
-	HeapBlock <uint8> buffer;
+	int64_t originalSourcePos, currentPos;
+	HeapBlock <uint8_t> buffer;
 
 	class GZIPDecompressHelper;
 	friend class ScopedPointer <GZIPDecompressHelper>;
@@ -22352,4 +22313,3 @@ private:
 #endif   // __JUCE_CORE_JUCEHEADER__
 
 /*** End of inlined file: juce_core.h ***/
-

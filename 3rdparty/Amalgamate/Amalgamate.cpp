@@ -255,12 +255,12 @@ public:
   }
 
 public:
-  static int64 calculateStreamHashCode (InputStream& in)
+  static int64_t calculateStreamHashCode (InputStream& in)
   {
-    int64 t = 0;
+    int64_t t = 0;
 
     const int bufferSize = 4096;
-    HeapBlock <uint8> buffer;
+    HeapBlock <uint8_t> buffer;
     buffer.malloc (bufferSize);
 
     for (;;)
@@ -277,7 +277,7 @@ public:
     return t;
   }
 
-  static int64 calculateFileHashCode (const File& file)
+  static int64_t calculateFileHashCode (const File& file)
   {
     ScopedPointer <FileInputStream> stream (file.createInputStream());
     return stream != 0 ? calculateStreamHashCode (*stream) : 0;
