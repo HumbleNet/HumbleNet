@@ -24,11 +24,21 @@ jobs:
         with:
           submodules: true
 
-      - name: build humblenet
-        uses: urkle/action-cmake-build@feat-wrapper-command
+      - name: Install ninja
+        uses: urkle/action-get-ninja@v1
+
+      - name: build humblenet with ninja
+        if: matrix.os != 'windows-latest'
+        uses: urkle/action-cmake-build@v1
+        with:
+          configure-options: -G Ninja
+          run-test: true
+
+      - name: build humblenet with visual studio
+        if: matrix.os == 'windows-latest'
+        uses: urkle/action-cmake-build@v1
         with:
           run-test: true
-          parallel: 4
 
   build_emscripten:
     runs-on: ubuntu-latest
@@ -41,19 +51,15 @@ jobs:
         with:
           submodules: true
 
-      - name: Cache flatbuffers
-        id: cache-flatbuffers
-        uses: actions/cache@v2
-        with:
-          path: ${{ github.workspace }}/external/flatbuffers/
-          key: ${{ runner.os }}-flatbuffers-${{ hashFiles('3rdparty/flatbuffers/includes/base.h') }}
+      - name: Install ninja
+        uses: urkle/action-get-ninja@v1
+
       - name: build flatbuffers
-        if: steps.cache-flatbuffers.outputs.cache-hit != 'true'
-        uses: urkle/action-cmake-build@feat-wrapper-command
+        uses: urkle/action-cmake-build@v1
         with:
           source-dir: ${{ github.workspace }}/3rdparty/flatbuffers/
           build-dir: ${{ github.workspace }}/3rdparty/flatbuffers/cmake-build/
-          configure-options: -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/external/flatbuffers/
+          configure-options: -G Ninja -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/external/flatbuffers/
           install-build: true
 
       - name: Cache emsdk
@@ -62,6 +68,7 @@ jobs:
         with:
           path: ${{env.EM_CACHE_FOLDER}}
           key: ${{ runner.os }}-emsdk-${{env.EM_VERSION}}
+
       - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v9
         with:
@@ -69,8 +76,7 @@ jobs:
           actions-cache-folder: ${{env.EM_CACHE_FOLDER}}
 
       - name: build humblenet (emscripten)
-        uses: urkle/action-cmake-build@feat-wrapper-command
+        uses: urkle/action-cmake-build@v1
         with:
           wrapper-command: emcmake
-          configure-options: -DCMAKE_PREFIX_PATH=${{ github.workspace }}/external/flatbuffers/
-          parallel: 1
+          configure-options: -G Ninja -DCMAKE_PREFIX_PATH=${{ github.workspace }}/external/flatbuffers/
